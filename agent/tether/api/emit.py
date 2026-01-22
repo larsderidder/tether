@@ -29,7 +29,9 @@ async def emit_state(session: Session) -> None:
     )
 
 
-async def emit_output(session: Session, text: str, *, kind: str, is_final: bool | None) -> None:
+async def emit_output(
+    session: Session, text: str, *, kind: str, is_final: bool | None
+) -> None:
     """Emit output text if it is not a recent duplicate.
 
     Args:
@@ -48,7 +50,12 @@ async def emit_output(session: Session, text: str, *, kind: str, is_final: bool 
             "ts": now(),
             "seq": store.next_seq(session.id),
             "type": "output",
-            "data": {"stream": "combined", "text": text, "kind": kind, "final": is_final},
+            "data": {
+                "stream": "combined",
+                "text": text,
+                "kind": kind,
+                "final": is_final,
+            },
         },
     )
 
@@ -110,5 +117,33 @@ async def emit_heartbeat(session: Session, elapsed_s: float, done: bool) -> None
             "seq": store.next_seq(session.id),
             "type": "heartbeat",
             "data": {"elapsed_s": elapsed_s, "done": done},
+        },
+    )
+
+
+async def emit_input_required(session: Session, last_output: str | None = None) -> None:
+    """Emit an input_required event when agent needs user input.
+
+    Args:
+        session: Session awaiting input.
+        last_output: Optional recent output to include for context.
+    """
+    truncated = False
+    if last_output and len(last_output) > 500:
+        last_output = last_output[:500] + "..."
+        truncated = True
+
+    await store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "input_required",
+            "data": {
+                "session_name": session.name,
+                "last_output": last_output,
+                "truncated": truncated,
+            },
         },
     )

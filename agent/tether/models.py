@@ -10,6 +10,7 @@ class SessionState(str, Enum):
     """Lifecycle states for a supervised session."""
     CREATED = "CREATED"
     RUNNING = "RUNNING"
+    AWAITING_INPUT = "AWAITING_INPUT"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     ERROR = "ERROR"

@@ -238,8 +238,11 @@ class ClaudeRunner:
             elapsed = time.monotonic() - start_time
             await self._events.on_heartbeat(session_id, elapsed, done=True)
 
-            # Emit exit
-            await self._events.on_exit(session_id, 0)
+            # If stop was requested, emit exit; otherwise signal awaiting input
+            if store.is_stop_requested(session_id):
+                await self._events.on_exit(session_id, 0)
+            else:
+                await self._events.on_awaiting_input(session_id)
 
     async def _call_api(self, session_id: str, messages: list[dict]) -> dict | None:
         """Call the Anthropic API with streaming.

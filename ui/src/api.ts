@@ -1,4 +1,4 @@
-export type SessionState = "CREATED" | "RUNNING" | "STOPPING" | "STOPPED" | "ERROR";
+export type SessionState = "CREATED" | "RUNNING" | "AWAITING_INPUT" | "STOPPING" | "STOPPED" | "ERROR";
 
 export type Session = {
   id: string;

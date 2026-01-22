@@ -116,6 +116,16 @@ async def start_session(
             raise_http_error("NOT_FOUND", "Session not found", 404)
         if session.state not in (SessionState.CREATED, SessionState.STOPPED, SessionState.ERROR):
             raise_http_error("INVALID_STATE", "Session not ready to start", 409)
+
+        # Validate inputs BEFORE state transition
+        if not session.directory:
+            raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
+        prompt = payload.get("prompt", "")
+        approval_choice = payload.get("approval_choice", 1)
+        if approval_choice not in (1, 2):
+            raise_http_error("VALIDATION_ERROR", "approval_choice must be 1 or 2", 422)
+
+        # Clear stale state from previous runs
         if session.state in (SessionState.STOPPED, SessionState.ERROR):
             session.ended_at = None
             session.exit_code = None
@@ -129,24 +139,28 @@ async def start_session(
             store.clear_pending_inputs(session_id)
             store.clear_runner_session_id(session_id)
             store.clear_last_output(session_id)
+
         logger.info("Session start requested")
         session.runner_type = get_runner_type()
-        transition(session, SessionState.RUNNING, started_at=True)
         store.clear_runner_session_id(session_id)
-        if session.directory:
-            if not store.get_workdir(session_id):
-                store.set_workdir(session_id, session.directory, managed=False)
-        else:
-            raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
-        await emit_state(session)
-        prompt = payload.get("prompt", "")
+        if not store.get_workdir(session_id):
+            store.set_workdir(session_id, session.directory, managed=False)
         maybe_set_session_name(session, prompt)
-        approval_choice = payload.get("approval_choice", 1)
-        if approval_choice not in (1, 2):
-            raise_http_error("VALIDATION_ERROR", "approval_choice must be 1 or 2", 422)
-        # The runner decides how to interpret approval_choice; codex_v1 ignores it.
-        await runner.start(session_id, prompt, approval_choice)
-        logger.info("Session started")
+
+        # Transition to RUNNING and attempt to start the runner
+        transition(session, SessionState.RUNNING, started_at=True)
+        await emit_state(session)
+
+        try:
+            await runner.start(session_id, prompt, approval_choice)
+            logger.info("Session started")
+        except Exception as exc:
+            # Revert to ERROR state if runner fails to start
+            logger.exception("Runner failed to start", session_id=session_id)
+            transition(session, SessionState.ERROR, ended_at=True)
+            await emit_state(session)
+            raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
+
         return {"session": _serialize_session(session)}
 
 
@@ -177,7 +191,7 @@ async def send_input(
     payload: dict = Body(...),
     _: None = Depends(require_token),
 ) -> dict:
-    """Send input to a running session's process."""
+    """Send input to a running or awaiting session."""
     with _session_logging_context(session_id):
         text = payload.get("text")
         if not text:
@@ -185,9 +199,13 @@ async def send_input(
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state != SessionState.RUNNING:
-            raise_http_error("INVALID_STATE", "Session not running", 409)
+        if session.state not in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
+            raise_http_error("INVALID_STATE", "Session not running or awaiting input", 409)
         logger.info("Session input received", text_length=len(text))
+        # Transition from AWAITING_INPUT to RUNNING when user provides input
+        if session.state == SessionState.AWAITING_INPUT:
+            transition(session, SessionState.RUNNING)
+            await emit_state(session)
         maybe_set_session_name(session, text)
         await runner.send_input(session_id, text)
         session = store.get_session(session_id)
@@ -200,7 +218,7 @@ async def send_input(
 
 @router.post("/sessions/{session_id}/stop", response_model=dict)
 async def stop_session(session_id: str, _: None = Depends(require_token)) -> dict:
-    """Stop a running session (idempotent beyond terminal states)."""
+    """Stop a running or awaiting session (idempotent beyond terminal states)."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
         if not session:
@@ -210,7 +228,7 @@ async def stop_session(session_id: str, _: None = Depends(require_token)) -> dic
             return {"session": _serialize_session(session)}
         if session.state == SessionState.CREATED:
             raise_http_error("INVALID_STATE", "Session not running", 409)
-        if session.state == SessionState.RUNNING:
+        if session.state in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
             transition(session, SessionState.STOPPING)
             await emit_state(session)
         logger.info("Stopping session")

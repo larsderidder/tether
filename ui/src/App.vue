@@ -392,6 +392,8 @@ const statusDot = computed(() => {
   switch (activeSession.value?.state) {
     case "RUNNING":
       return "bg-emerald-500";
+    case "AWAITING_INPUT":
+      return "bg-amber-400 animate-pulse";
     case "STOPPING":
       return "bg-amber-500";
     case "ERROR":

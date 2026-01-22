@@ -20,6 +20,7 @@ from tether.models import Message, RepoRef, Session, SessionState
 
 class SessionStore:
     """Session registry with SQLite persistence and per-session process bookkeeping."""
+
     def __init__(self) -> None:
         self._data_dir = os.environ.get("AGENT_DATA_DIR") or os.path.join(
             os.path.dirname(__file__), "..", "data"
@@ -53,8 +54,7 @@ class SessionStore:
 
     def _init_db(self) -> None:
         with self._db_lock:
-            self._db.execute(
-                """
+            self._db.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     repo_id TEXT NOT NULL,
@@ -74,15 +74,13 @@ class SessionStore:
                     directory_has_git INTEGER DEFAULT 0,
                     workdir_managed INTEGER DEFAULT 0
                 )
-                """
-            )
+                """)
             self._ensure_header_column()
             self._ensure_column("sessions", "directory", "TEXT")
             self._ensure_column("sessions", "directory_has_git", "INTEGER DEFAULT 0")
             self._ensure_column("sessions", "workdir_managed", "INTEGER DEFAULT 0")
             self._ensure_column("sessions", "runner_type", "TEXT")
-            self._db.execute(
-                """
+            self._db.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -92,8 +90,7 @@ class SessionStore:
                     seq INTEGER NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 )
-                """
-            )
+                """)
             self._db.commit()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -108,7 +105,9 @@ class SessionStore:
             return
         if "codex_header" in existing:
             try:
-                self._db.execute("ALTER TABLE sessions RENAME COLUMN codex_header TO runner_header")
+                self._db.execute(
+                    "ALTER TABLE sessions RENAME COLUMN codex_header TO runner_header"
+                )
                 return
             except sqlite3.OperationalError:
                 self._db.execute("ALTER TABLE sessions ADD COLUMN runner_header TEXT")
@@ -143,7 +142,9 @@ class SessionStore:
                 id=row["id"],
                 repo_id=row["repo_id"],
                 repo_display=row["repo_display"],
-                repo_ref=RepoRef(type=row["repo_ref_type"], value=row["repo_ref_value"]),
+                repo_ref=RepoRef(
+                    type=row["repo_ref_type"], value=row["repo_ref_value"]
+                ),
                 state=SessionState(row["state"]),
                 name=row["name"],
                 created_at=row["created_at"],
@@ -165,7 +166,9 @@ class SessionStore:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _parse_ts(self, value: str) -> datetime:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
 
     def create_session(self, repo_id: str, base_ref: str | None) -> Session:
         """Create and register a new session in CREATED state.
@@ -501,6 +504,17 @@ class SessionStore:
 
     def clear_last_output(self, session_id: str) -> None:
         self._recent_output.pop(session_id, None)
+
+    def get_recent_output(self, session_id: str) -> list[str]:
+        """Get recent output chunks for a session.
+
+        Args:
+            session_id: Internal session identifier.
+
+        Returns:
+            List of recent output strings (up to 10).
+        """
+        return list(self._recent_output.get(session_id, []))
 
     def set_workdir(self, session_id: str, path: str, *, managed: bool) -> str:
         """Record a working directory and update the session metadata."""

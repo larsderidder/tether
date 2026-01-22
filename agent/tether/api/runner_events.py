@@ -5,6 +5,7 @@ from __future__ import annotations
 from tether.api.emit import (
     emit_error,
     emit_heartbeat,
+    emit_input_required,
     emit_metadata,
     emit_output,
     emit_state,
@@ -71,7 +72,27 @@ class ApiRunnerEvents:
         transition(session, SessionState.STOPPED, ended_at=True)
         await emit_state(session)
 
-    async def on_metadata(self, session_id: str, key: str, value: object, raw: str) -> None:
+    async def on_awaiting_input(self, session_id: str) -> None:
+        """Handle runner signaling it's waiting for user input."""
+        session = store.get_session(session_id)
+        if not session:
+            return
+        if session.state in (
+            SessionState.STOPPED,
+            SessionState.ERROR,
+            SessionState.STOPPING,
+        ):
+            return
+        transition(session, SessionState.AWAITING_INPUT)
+        await emit_state(session)
+
+        recent = store.get_recent_output(session_id)
+        last_output = recent[-1] if recent else None
+        await emit_input_required(session, last_output)
+
+    async def on_metadata(
+        self, session_id: str, key: str, value: object, raw: str
+    ) -> None:
         """Forward runner metadata to SSE."""
         session = store.get_session(session_id)
         if not session:

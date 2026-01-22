@@ -52,6 +52,7 @@ class SidecarRunner:
         """
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
+        store.clear_stop_requested(session_id)
         self._capturing_header.pop(session_id, None)
         self._saw_separator.pop(session_id, None)
         self._header_lines.pop(session_id, None)
@@ -91,6 +92,7 @@ class SidecarRunner:
         Args:
             session_id: Internal session identifier.
         """
+        store.request_stop(session_id)
         payload = {"session_id": session_id}
         await self._post_json("/sessions/stop", payload)
         task = self._streams.pop(session_id, None)
@@ -123,8 +125,9 @@ class SidecarRunner:
             await asyncio.to_thread(self._stream_worker, session_id)
         except asyncio.CancelledError:
             return
-        except Exception:
+        except Exception as exc:
             logger.exception("Sidecar stream failed", session_id=session_id)
+            await self._events.on_error(session_id, "STREAM_ERROR", f"Sidecar stream failed: {exc}")
 
     def _stream_worker(self, session_id: str) -> None:
         """Blocking SSE reader that forwards events to the asyncio loop.
@@ -132,24 +135,44 @@ class SidecarRunner:
         Args:
             session_id: Internal session identifier.
         """
+        import socket
+
         url = urllib.parse.urlparse(self._base_url)
         conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=30)
         path = f"/events/{session_id}"
         headers = {}
         if self._token:
             headers["X-Sidecar-Token"] = self._token
-        conn.request("GET", path, headers=headers)
-        resp = conn.getresponse()
+        try:
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+        except (socket.timeout, OSError) as exc:
+            logger.error("Sidecar connection failed", session_id=session_id, error=str(exc))
+            self._dispatch(self._events.on_error(session_id, "CONNECTION_ERROR", f"Sidecar connection failed: {exc}"))
+            conn.close()
+            return
         if resp.status != 200:
             data = resp.read().decode("utf-8", errors="replace")
             logger.error("Sidecar SSE failed", session_id=session_id, status=resp.status, body=data)
+            self._dispatch(self._events.on_error(session_id, "SIDECAR_ERROR", f"Sidecar returned {resp.status}"))
             conn.close()
             return
+        # Set per-read timeout on the socket (60s to allow for heartbeat intervals)
+        read_timeout = float(os.environ.get("SIDECAR_READ_TIMEOUT_SECONDS", "60"))
+        if conn.sock:
+            conn.sock.settimeout(read_timeout)
         try:
             while True:
-                line = resp.fp.readline().decode("utf-8", errors="replace")
+                try:
+                    line = resp.fp.readline().decode("utf-8", errors="replace")
+                except socket.timeout:
+                    logger.warning("Sidecar read timeout", session_id=session_id, timeout_s=read_timeout)
+                    self._dispatch(self._events.on_error(session_id, "READ_TIMEOUT", "Sidecar stream timed out"))
+                    break
                 if not line:
-                    continue
+                    # Empty line means connection closed
+                    logger.info("Sidecar stream closed", session_id=session_id)
+                    break
                 if not line.startswith("data: "):
                     continue
                 payload = line[len("data: ") :].strip()
@@ -207,7 +230,12 @@ class SidecarRunner:
             self._dispatch(self._events.on_error(session_id, code, message))
         elif event_type == "exit":
             exit_code = data.get("exit_code")
-            self._dispatch(self._events.on_exit(session_id, exit_code))
+            # If stop was explicitly requested or exit code is non-zero, it's a real exit
+            # Otherwise, the agent finished a turn and is waiting for input
+            if store.is_stop_requested(session_id) or exit_code not in (0, None):
+                self._dispatch(self._events.on_exit(session_id, exit_code))
+            else:
+                self._dispatch(self._events.on_awaiting_input(session_id))
 
     def _dispatch(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Schedule an event callback on the agent's asyncio loop.
