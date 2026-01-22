@@ -4,21 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import structlog
+import os
 import urllib.parse
 import http.client
-import re
-import os
-from collections import deque
 from typing import Any, Coroutine
 
-from tether.models import SessionState
-from tether.store import store
+import structlog
 
 from tether.runner.base import RunnerEvents
+from tether.store import store
 
 logger = structlog.get_logger("tether.runner.sidecar")
-SESSION_ID_RE = re.compile(r"(?:session id|session_id)[:=]\s*(\S+)", re.IGNORECASE)
 
 
 class SidecarRunner:
@@ -32,15 +28,6 @@ class SidecarRunner:
         self._token = os.environ.get("CODEX_SDK_SIDECAR_TOKEN", "") or os.environ.get("SIDECAR_TOKEN", "")
         self._streams: dict[str, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._capturing_header: dict[str, bool] = {}
-        self._saw_separator: dict[str, bool] = {}
-        self._header_lines: dict[str, list[str]] = {}
-        self._recent_output: dict[str, deque[str]] = {}
-        self._skip_next_tokens_line: dict[str, bool] = {}
-        self._last_output: dict[str, str] = {}
-        self._recent_prompts: dict[str, deque[str]] = {}
-        self._in_thinking: dict[str, bool] = {}
-        self._output_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
         """Start a sidecar-backed session and subscribe to its SSE stream.
@@ -53,17 +40,6 @@ class SidecarRunner:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         store.clear_stop_requested(session_id)
-        self._capturing_header.pop(session_id, None)
-        self._saw_separator.pop(session_id, None)
-        self._header_lines.pop(session_id, None)
-        self._recent_output.pop(session_id, None)
-        self._skip_next_tokens_line.pop(session_id, None)
-        self._last_output.pop(session_id, None)
-        self._recent_prompts.pop(session_id, None)
-        self._in_thinking.pop(session_id, None)
-        self._output_locks.pop(session_id, None)
-        if prompt:
-            self._remember_prompt(session_id, prompt)
         payload = {
             "session_id": session_id,
             "prompt": prompt,
@@ -81,13 +57,11 @@ class SidecarRunner:
         """
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
-        if text:
-            self._remember_prompt(session_id, text)
         payload = {"session_id": session_id, "text": text}
         await self._post_json("/sessions/input", payload)
 
     async def stop(self, session_id: str) -> int | None:
-        """Stop the sidecar session and clean up local parsing state.
+        """Stop the sidecar session.
 
         Args:
             session_id: Internal session identifier.
@@ -98,15 +72,6 @@ class SidecarRunner:
         task = self._streams.pop(session_id, None)
         if task:
             task.cancel()
-        self._capturing_header.pop(session_id, None)
-        self._saw_separator.pop(session_id, None)
-        self._header_lines.pop(session_id, None)
-        self._recent_output.pop(session_id, None)
-        self._skip_next_tokens_line.pop(session_id, None)
-        self._last_output.pop(session_id, None)
-        self._recent_prompts.pop(session_id, None)
-        self._in_thinking.pop(session_id, None)
-        self._output_locks.pop(session_id, None)
         return None
 
     def _ensure_stream(self, session_id: str) -> None:
@@ -213,7 +178,7 @@ class SidecarRunner:
                     )
                 )
             else:
-                self._handle_output(session_id, text)
+                logger.warning("Sidecar output missing kind field", session_id=session_id)
         elif event_type == "metadata":
             key = data.get("key")
             value = data.get("value")
@@ -246,184 +211,6 @@ class SidecarRunner:
         if not self._loop:
             return
         asyncio.run_coroutine_threadsafe(coro, self._loop)
-
-    def _handle_output(self, session_id: str, text: str) -> None:
-        """Parse raw output for session id/header and forward clean output.
-
-        Args:
-            session_id: Internal session identifier.
-            text: Raw output chunk from the sidecar.
-        """
-        lock = self._output_locks.get(session_id)
-        if not lock:
-            lock = asyncio.Lock()
-            self._output_locks[session_id] = lock
-        async def _run() -> None:
-            async with lock:
-                for line in text.splitlines(keepends=True):
-                    if not line:
-                        continue
-                    raw = line.rstrip("\n")
-                    session = store.get_session(session_id)
-                    if not session or session.state != SessionState.RUNNING:
-                        return
-                    if self._skip_next_tokens_line.pop(session_id, False):
-                        if re.fullmatch(r"[0-9][0-9,]*", raw.strip().lower()):
-                            value = int(raw.strip().replace(",", ""))
-                            self._dispatch(
-                                self._events.on_metadata(
-                                    session_id, "tokens_used", value, raw.strip()
-                                )
-                            )
-                            continue
-                    if raw.strip().lower().startswith("tokens used"):
-                        match = re.search(r"([0-9][0-9,]*)", raw)
-                        if match:
-                            value = int(match.group(1).replace(",", ""))
-                            self._dispatch(
-                                self._events.on_metadata(
-                                    session_id, "tokens_used", value, match.group(1)
-                                )
-                            )
-                            continue
-                    match = SESSION_ID_RE.search(raw)
-                    if match and not store.get_runner_session_id(session_id):
-                        store.set_runner_session_id(session_id, match.group(1))
-                        continue
-                    if self._maybe_capture_header(session_id, raw):
-                        continue
-                    if self._should_skip_line(session_id, raw):
-                        continue
-                    normalized = self._normalize_output(raw)
-                    if not normalized:
-                        continue
-                    if self._last_output.get(session_id) == normalized:
-                        continue
-                    if self._seen_recently(session_id, normalized):
-                        continue
-                    self._last_output[session_id] = normalized
-                    kind = "step" if self._in_thinking.pop(session_id, False) else "final"
-                    is_final = kind == "final"
-                    self._dispatch(
-                        self._events.on_output(
-                            session_id, "combined", line, kind=kind, is_final=is_final
-                        )
-                    )
-        self._dispatch(_run())
-
-    def _maybe_capture_header(self, session_id: str, line: str) -> bool:
-        """Capture the Codex header block and emit it as a header event.
-
-        Args:
-            session_id: Internal session identifier.
-            line: Raw output line.
-        """
-        capturing = self._capturing_header.get(session_id, False)
-        if "OpenAI Codex" in line and not capturing:
-            self._capturing_header[session_id] = True
-            self._saw_separator[session_id] = False
-            self._header_lines[session_id] = [line]
-            return True
-        if not capturing:
-            return False
-        self._header_lines.setdefault(session_id, []).append(line)
-        if line.strip() == "--------":
-            if self._saw_separator.get(session_id):
-                header = "\n".join(self._header_lines.get(session_id, []))
-                self._dispatch(
-                    self._events.on_output(session_id, "combined", header, kind="header", is_final=None)
-                )
-                self._capturing_header[session_id] = False
-                self._saw_separator[session_id] = False
-                self._header_lines.pop(session_id, None)
-            else:
-                self._saw_separator[session_id] = True
-        return True
-
-    def _should_skip_line(self, session_id: str, line: str) -> bool:
-        """Return True if a line is non-user output or prompt echo.
-
-        Args:
-            session_id: Internal session identifier.
-            line: Raw output line.
-        """
-        lower = line.strip().lower()
-        if self._skip_next_tokens_line.pop(session_id, False):
-            if re.fullmatch(r"[0-9][0-9,]*", lower):
-                normalized_tokens = self._normalize_output(f"tokens used: {lower}")
-                self._last_output[session_id] = normalized_tokens
-                self._seen_recently(session_id, normalized_tokens)
-                self._dispatch(
-                    self._events.on_output(
-                        session_id, "combined", f"tokens used: {lower}\n", kind="step", is_final=False
-                    )
-                )
-                return True
-        if lower in {"user", "codex", "assistant", "thinking"}:
-            if lower == "thinking":
-                self._in_thinking[session_id] = True
-            return True
-        if lower.startswith("mcp startup:"):
-            return True
-        if lower.startswith("tokens used"):
-            self._skip_next_tokens_line[session_id] = True
-            return True
-        if self._should_skip_prompt_echo(session_id, self._normalize_output(line)):
-            return True
-        return False
-
-    def _normalize_output(self, text: str) -> str:
-        """Strip ANSI escapes and collapse whitespace for comparisons.
-
-        Args:
-            text: Output text to normalize.
-        """
-        stripped = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
-        return " ".join(stripped.strip().split())
-
-    def _seen_recently(self, session_id: str, normalized: str) -> bool:
-        """Track de-duplication history for output lines.
-
-        Args:
-            session_id: Internal session identifier.
-            normalized: Normalized output line.
-        """
-        history = self._recent_output.get(session_id)
-        if history is None:
-            history = deque(maxlen=50)
-            self._recent_output[session_id] = history
-        if normalized in history:
-            return True
-        history.append(normalized)
-        return False
-
-    def _remember_prompt(self, session_id: str, text: str) -> None:
-        """Record recent prompts to suppress echoed input.
-
-        Args:
-            session_id: Internal session identifier.
-            text: Prompt text provided by the user.
-        """
-        normalized = self._normalize_output(text)
-        if not normalized:
-            return
-        history = self._recent_prompts.get(session_id)
-        if history is None:
-            history = deque(maxlen=10)
-            self._recent_prompts[session_id] = history
-        history.append(normalized)
-
-    def _should_skip_prompt_echo(self, session_id: str, line: str) -> bool:
-        """Return True if the line matches a recent prompt.
-
-        Args:
-            session_id: Internal session identifier.
-            line: Normalized output line.
-        """
-        history = self._recent_prompts.get(session_id)
-        if not history:
-            return False
-        return line in history
 
     async def _post_json(self, path: str, payload: dict) -> None:
         """POST JSON to the sidecar and raise on non-2xx responses.
