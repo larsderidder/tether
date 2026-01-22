@@ -221,6 +221,18 @@
     </Card>
 
     <div class="fixed bottom-4 left-4 right-4 z-40 rounded-2xl bg-stone-900/80 p-3 shadow-xl backdrop-blur">
+      <div v-if="viewMode === 'chat' && (session?.state === 'RUNNING' || session?.state === 'AWAITING_INPUT')" class="flex gap-2 overflow-x-auto pb-2">
+        <Button
+          v-for="preset in presets"
+          :key="preset.label"
+          variant="secondary"
+          size="sm"
+          :disabled="sending"
+          @click="sendPreset(preset.text)"
+        >
+          {{ preset.label }}
+        </Button>
+      </div>
       <form v-if="viewMode === 'chat'" class="flex items-center gap-2" @submit.prevent="handlePrimaryAction">
         <Textarea
           v-model="prompt"
@@ -348,6 +360,18 @@ const error = ref("");
 const prompt = ref("");
 const sending = ref(false);
 const lastSeq = ref(0);
+
+const presets = [
+  { label: "Approve", text: "I approve this change." },
+  { label: "Deny", text: "I reject this change." },
+  { label: "Summarize", text: "Please summarize what you've done." },
+  { label: "Retry", text: "Please try again." },
+];
+
+const sendPreset = (text: string) => {
+  prompt.value = text;
+  start();
+};
 const viewMode = ref<"chat" | "diff">("chat");
 const infoOpen = ref(false);
 const renameOpen = ref(false);
@@ -357,12 +381,19 @@ const renameMessage = ref("");
 let closeStream: (() => void) | null = null;
 let assistantIndex = -1;
 let reconnectTimer: number | null = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30000;
 
-const canStop = computed(() => session.value?.state === "RUNNING");
-const canSend = computed(
-  () => session.value?.state === "CREATED" || session.value?.state === "RUNNING"
+const canStop = computed(() =>
+  session.value?.state === "RUNNING" || session.value?.state === "AWAITING_INPUT"
+);
+const canSend = computed(() =>
+  session.value?.state !== "STOPPING" && session.value?.state !== "STOPPED" && session.value?.state !== "ERROR"
 );
 const isSessionRunning = computed(() => session.value?.state === "RUNNING");
+const isAwaitingInput = computed(() => session.value?.state === "AWAITING_INPUT");
 const primaryActionIsStop = computed(() => isSessionRunning.value && !sending.value);
 const primaryActionLabel = computed(() => {
   if (primaryActionIsStop.value) {
@@ -483,6 +514,7 @@ const openStream = async () => {
     closeStream();
     closeStream = null;
   }
+  reconnectAttempts = 0;
   try {
     closeStream = await openEventStream(activeSessionId.value, onEvent, onError);
   } catch (err) {
@@ -542,10 +574,19 @@ const start = async () => {
   assistantIndex = messages.value.length - 1;
   prompt.value = "";
   try {
-    if (session.value?.state === "RUNNING") {
+    if (session.value?.state === "RUNNING" || session.value?.state === "AWAITING_INPUT") {
       session.value = await sendInput(activeSessionId.value, value);
     } else {
-      session.value = await startSession(activeSessionId.value, value);
+      try {
+        session.value = await startSession(activeSessionId.value, value);
+      } catch (startErr) {
+        // If start fails with 409 (session already running/awaiting), retry with sendInput
+        if (String(startErr).includes("409")) {
+          session.value = await sendInput(activeSessionId.value, value);
+        } else {
+          throw startErr;
+        }
+      }
     }
   } catch (err) {
     reportError(err);
@@ -652,6 +693,16 @@ const scheduleReconnect = () => {
     closeStream();
     closeStream = null;
   }
+  reconnectAttempts++;
+  if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+    error.value = `Connection lost after ${MAX_RECONNECT_ATTEMPTS} attempts. Please refresh the page.`;
+    return;
+  }
+  // Exponential backoff with jitter: delay = min(base * 1.5^attempts + jitter, max)
+  const exponentialDelay = BASE_RECONNECT_DELAY_MS * Math.pow(1.5, reconnectAttempts - 1);
+  const jitter = Math.random() * 500;
+  const delay = Math.min(exponentialDelay + jitter, MAX_RECONNECT_DELAY_MS);
+  console.log(`Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
   reconnectTimer = window.setTimeout(async () => {
     reconnectTimer = null;
     if (!activeSessionId.value) {
@@ -659,17 +710,19 @@ const scheduleReconnect = () => {
     }
     try {
       closeStream = await openEventStream(activeSessionId.value, onEvent, onError);
+      // Reset attempts on successful connection
+      reconnectAttempts = 0;
     } catch (err) {
       onError(err);
     }
-  }, 1000);
+  }, delay);
 };
 
 const stopOnUnload = () => {
   if (!activeSessionId.value) {
     return;
   }
-  if (session.value?.state !== "RUNNING") {
+  if (session.value?.state !== "RUNNING" && session.value?.state !== "AWAITING_INPUT") {
     return;
   }
   stopSessionKeepalive(activeSessionId.value);
