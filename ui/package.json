@@ -4,8 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "tailwind:build": "tailwindcss -c tailwind.config.cjs -i src/index.css -o src/generated.css",
+    "tailwind:watch": "tailwindcss -c tailwind.config.cjs -i src/index.css -o src/generated.css --watch",
+    "dev": "npm run tailwind:build && vite",
+    "build": "npm run tailwind:build && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

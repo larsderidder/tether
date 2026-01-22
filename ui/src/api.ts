@@ -2,9 +2,6 @@ export type SessionState = "CREATED" | "RUNNING" | "STOPPING" | "STOPPED" | "ERR
 
 export type Session = {
   id: string;
-  repo_id: string;
-  repo_display: string;
-  repo_ref: { type: string; value: string };
   state: SessionState;
   name: string | null;
   created_at: string;
@@ -13,7 +10,8 @@ export type Session = {
   last_activity_at: string;
   exit_code: number | null;
   summary: string | null;
-  codex_header: string | null;
+  runner_header: string | null;
+  runner_type: string | null;
   directory: string | null;
   directory_has_git: boolean;
 };
@@ -45,11 +43,12 @@ export type DirectoryCheck = {
 
 const BASE_KEY = "tether_base_url";
 const TOKEN_KEY = "tether_token";
-const LEGACY_BASE_KEY = "codex_base_url";
-const LEGACY_TOKEN_KEY = "codex_token";
+const LEGACY_BASE_KEY_V1 = "codex_base_url";
+const LEGACY_TOKEN_KEY_V1 = "codex_token";
+export const AUTH_REQUIRED_EVENT = "tether:auth-required";
 
 export function getBaseUrl(): string {
-  return localStorage.getItem(BASE_KEY) || localStorage.getItem(LEGACY_BASE_KEY) || "";
+  return localStorage.getItem(BASE_KEY) || localStorage.getItem(LEGACY_BASE_KEY_V1) || "";
 }
 
 export function setBaseUrl(value: string): void {
@@ -57,7 +56,7 @@ export function setBaseUrl(value: string): void {
 }
 
 export function getToken(): string {
-  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || "";
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY_V1) || "";
 }
 
 export function setToken(value: string): void {
@@ -72,6 +71,13 @@ function buildUrl(path: string): string {
   return `${base.replace(/\/$/, "")}${path}`;
 }
 
+function notifyAuthRequired(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const headers: HeadersInit = {
@@ -83,6 +89,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const res = await fetch(buildUrl(path), { ...init, headers });
   if (!res.ok) {
+    if (res.status === 401) {
+      notifyAuthRequired();
+    }
     throw new Error(`Request failed: ${res.status}`);
   }
   return res.json() as Promise<T>;
@@ -163,6 +172,12 @@ export async function getDiff(id: string): Promise<DiffResponse> {
   return data;
 }
 
+export async function getDirectoryDiff(path: string): Promise<DiffResponse> {
+  const params = new URLSearchParams({ path });
+  const data = await fetchJson<DiffResponse>(`/api/directories/diff?${params.toString()}`);
+  return data;
+}
+
 export async function checkDirectory(path: string): Promise<DirectoryCheck> {
   const params = new URLSearchParams({ path });
   const data = await fetchJson<DirectoryCheck>(`/api/directories/check?${params.toString()}`);
@@ -172,6 +187,12 @@ export async function checkDirectory(path: string): Promise<DirectoryCheck> {
 export async function deleteSession(id: string): Promise<void> {
   await fetchJson<{ ok: boolean }>(`/api/sessions/${id}`, {
     method: "DELETE"
+  });
+}
+
+export async function clearAllData(): Promise<void> {
+  await fetchJson<{ ok: boolean }>(`/api/debug/clear_data`, {
+    method: "POST"
   });
 }
 
@@ -193,8 +214,11 @@ export async function openEventStream(
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
-  const res = await fetch(buildUrl(`/events/sessions/${id}`), { headers });
+  const res = await fetch(buildUrl(`/api/events/sessions/${id}`), { headers });
   if (!res.ok || !res.body) {
+    if (res.status === 401) {
+      notifyAuthRequired();
+    }
     throw new Error(`Stream error: ${res.status}`);
   }
   const reader = res.body.getReader();
