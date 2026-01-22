@@ -1,5 +1,5 @@
 {
-  "name": "codex-sidecar",
+  "name": "codex-sdk-sidecar",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,9 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.2"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import process from "node:process";
 import { Codex } from "../../codex-src/sdk/typescript/src/index.js";
 import type {
   ThreadEvent,
@@ -17,6 +18,7 @@ import type {
   ErrorItem,
   Usage,
 } from "../../codex-src/sdk/typescript/src/index.js";
+import { logger } from "./logger.js";
 
 const app = express();
 app.use(express.json());
@@ -26,12 +28,14 @@ type SessionState = {
   thread?: ReturnType<Codex["startThread"]>;
   threadId?: string;
   abortController?: AbortController;
+  abortReason?: "stop" | "timeout";
   running: boolean;
   pendingInputs: string[];
   workdir?: string;
   subscribers: Set<Response>;
   heartbeatTimer?: NodeJS.Timeout;
   heartbeatStartMs?: number;
+  timeoutTimer?: NodeJS.Timeout;
 };
 
 // In-memory session state; the agent owns persistence and lifecycle.
@@ -39,8 +43,36 @@ const sessions = new Map<string, SessionState>();
 const codex = new Codex({
   codexPathOverride: process.env.CODEX_BIN || undefined,
 });
-const LOG_EVENTS = process.env.SIDECAR_LOG_EVENTS === "1";
-const HEARTBEAT_SECONDS = Number(process.env.SIDECAR_HEARTBEAT_SECONDS || "5");
+const LOG_EVENTS =
+  process.env.CODEX_SDK_SIDECAR_LOG_EVENTS === "1" ||
+  process.env.SIDECAR_LOG_EVENTS === "1";
+const HEARTBEAT_SECONDS = Number(
+  process.env.CODEX_SDK_SIDECAR_HEARTBEAT_SECONDS ||
+  process.env.SIDECAR_HEARTBEAT_SECONDS ||
+  "5",
+);
+const TURN_TIMEOUT_SECONDS = Number(
+  process.env.CODEX_SDK_SIDECAR_TURN_TIMEOUT_SECONDS ||
+  process.env.SIDECAR_TURN_TIMEOUT_SECONDS ||
+  "0",
+);
+const SIDECAR_TOKEN = process.env.CODEX_SDK_SIDECAR_TOKEN || process.env.SIDECAR_TOKEN || "";
+let warnedMissingToken = false;
+
+app.use((req: Request, res: Response, next) => {
+  if (!SIDECAR_TOKEN) {
+    if (!warnedMissingToken) {
+      warnedMissingToken = true;
+      logger.warn("CODEX_SDK_SIDECAR_TOKEN not set; auth disabled");
+    }
+    return next();
+  }
+  const token = req.header("x-sidecar-token");
+  if (token !== SIDECAR_TOKEN) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  return next();
+});
 
 function getSession(sessionId: string): SessionState {
   // Lazily create the session state for a new agent session id.
@@ -85,8 +117,7 @@ function emitMetadata(session: SessionState, key: string, value: unknown, raw: s
 }
 
 function emitError(session: SessionState, code: string, message: string): void {
-  // Send an error event and log server-side for diagnosis.
-  console.error("[sidecar] error", session.id, code, message);
+  logger.error({ session_id: session.id, code, message }, "codex sdk sidecar error");
   emit(session, { type: "error", data: { code, message } });
 }
 
@@ -150,7 +181,7 @@ function buildThreadOptions(session: SessionState, approvalChoice: number): Thre
 
 function emitHeader(session: SessionState, options: ThreadOptions): void {
   const lines = [
-    "OpenAI Codex (SDK)",
+    "Codex SDK Sidecar",
     "--------",
     `thread id: ${session.threadId ?? "unknown"}`,
     `workdir: ${session.workdir ?? "unknown"}`,
@@ -234,8 +265,12 @@ function formatStep(item: ThreadItem): string {
 async function runTurn(session: SessionState, input: string, approvalChoice: number): Promise<void> {
   session.running = true;
   session.heartbeatStartMs = Date.now();
+  session.abortReason = undefined;
   if (session.heartbeatTimer) {
     clearInterval(session.heartbeatTimer);
+  }
+  if (session.timeoutTimer) {
+    clearTimeout(session.timeoutTimer);
   }
   session.heartbeatTimer = setInterval(() => {
     emitHeartbeat(session, false);
@@ -246,6 +281,13 @@ async function runTurn(session: SessionState, input: string, approvalChoice: num
     session.thread = codex.startThread(options);
   }
   session.abortController = new AbortController();
+  if (TURN_TIMEOUT_SECONDS > 0) {
+    session.timeoutTimer = setTimeout(() => {
+      emitError(session, "TIMEOUT", "Runner turn timed out");
+      session.abortReason = "timeout";
+      session.abortController?.abort();
+    }, TURN_TIMEOUT_SECONDS * 1000);
+  }
   const { events } = await session.thread.runStreamed(input, {
     signal: session.abortController.signal,
   });
@@ -254,15 +296,34 @@ async function runTurn(session: SessionState, input: string, approvalChoice: num
       handleEvent(session, event, options);
     }
   } catch (err) {
-    emitError(session, "INTERNAL_ERROR", String(err));
+    if (err instanceof Error && err.name === "AbortError") {
+      const reason = session.abortReason || "unknown";
+      logger.info({ session_id: session.id, reason }, "codex sdk sidecar aborted");
+    } else {
+      logger.error(
+        {
+          session_id: session.id,
+          error: err instanceof Error
+            ? { name: err.name, message: err.message, stack: err.stack, cause: err.cause }
+            : { message: String(err) },
+        },
+        "codex sdk sidecar run failed",
+      );
+      emitError(session, "INTERNAL_ERROR", String(err));
+    }
   } finally {
     session.running = false;
     if (session.heartbeatTimer) {
       clearInterval(session.heartbeatTimer);
       session.heartbeatTimer = undefined;
     }
+    if (session.timeoutTimer) {
+      clearTimeout(session.timeoutTimer);
+      session.timeoutTimer = undefined;
+    }
     emitHeartbeat(session, true);
     session.abortController = undefined;
+    session.abortReason = undefined;
     if (session.heartbeatStartMs) {
       const durationMs = Date.now() - session.heartbeatStartMs;
       emitMetadata(session, "duration_ms", durationMs, String(durationMs));
@@ -277,7 +338,7 @@ async function runTurn(session: SessionState, input: string, approvalChoice: num
 
 function handleEvent(session: SessionState, event: ThreadEvent, options: ThreadOptions): void {
   if (LOG_EVENTS) {
-    console.log("[sidecar] event", session.id, JSON.stringify(event));
+    logger.debug({ session_id: session.id, event }, "sdk event");
   }
   switch (event.type) {
     case "thread.started":
@@ -298,9 +359,11 @@ function handleEvent(session: SessionState, event: ThreadEvent, options: ThreadO
       emitUsage(session, event.usage);
       break;
     case "turn.failed":
+      logger.error({ session_id: session.id, error: event.error }, "sdk turn failed");
       emitError(session, "INTERNAL_ERROR", event.error.message);
       break;
     case "error":
+      logger.error({ session_id: session.id, error: event.message }, "sdk error event");
       emitError(session, "INTERNAL_ERROR", event.message);
       break;
     default:
@@ -315,7 +378,7 @@ app.post("/sessions/start", (req: Request, res: Response) => {
     return res.status(422).json({ error: "session_id is required" });
   }
   const session = getSession(session_id);
-  console.log("[sidecar] start request", session_id);
+  logger.info({ session_id }, "start request");
   session.pendingInputs = [];
   if (session.running) {
     session.pendingInputs.push(String(prompt || ""));
@@ -334,7 +397,7 @@ app.post("/sessions/input", (req: Request, res: Response) => {
     return res.status(422).json({ error: "session_id and text are required" });
   }
   const session = getSession(session_id);
-  console.log("[sidecar] input", session_id);
+  logger.info({ session_id }, "input");
   if (session.running) {
     session.pendingInputs.push(String(text));
     return res.json({ queued: true });
@@ -350,13 +413,18 @@ app.post("/sessions/stop", async (req: Request, res: Response) => {
     return res.status(422).json({ error: "session_id is required" });
   }
   const session = getSession(session_id);
-  console.log("[sidecar] stop request", session_id);
+  logger.info({ session_id }, "stop request");
   if (session.abortController) {
+    session.abortReason = "stop";
     session.abortController.abort();
   }
   if (session.heartbeatTimer) {
     clearInterval(session.heartbeatTimer);
     session.heartbeatTimer = undefined;
+  }
+  if (session.timeoutTimer) {
+    clearTimeout(session.timeoutTimer);
+    session.timeoutTimer = undefined;
   }
   session.thread = undefined;
   session.threadId = undefined;
@@ -374,15 +442,16 @@ app.get("/events/:sessionId", (req: Request, res: Response) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  console.log("[sidecar] sse connect", session.id);
+  logger.info({ session_id: session.id }, "codex sdk sidecar sse connect");
   session.subscribers.add(res);
   req.on("close", () => {
-    console.log("[sidecar] sse disconnect", session.id);
+    logger.info({ session_id: session.id }, "codex sdk sidecar sse disconnect");
     session.subscribers.delete(res);
   });
 });
 
-const port = Number(process.env.SIDECAR_PORT || 8788);
-app.listen(port, () => {
-  console.log(`Codex sidecar listening on http://localhost:${port}`);
+const port = Number(process.env.CODEX_SDK_SIDECAR_PORT || process.env.SIDECAR_PORT || 8788);
+const host = process.env.CODEX_SDK_SIDECAR_HOST || process.env.SIDECAR_HOST || "127.0.0.1";
+app.listen(port, host, () => {
+  logger.info({ url: `http://${host}:${port}` }, "codex sdk sidecar listening");
 });
