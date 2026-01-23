@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tether.runner.base import Runner, RunnerEvents
-from tether.runner.claude import ClaudeRunner
-from tether.runner.claude_local import ClaudeLocalRunner
-from tether.runner.codex_cli import CodexCliRunner
-from tether.runner.sidecar import SidecarRunner
 from tether.settings import settings
+
+# Lazy imports - these SDKs are heavy and slow down startup
+if TYPE_CHECKING:
+    from tether.runner.claude import ClaudeRunner
+    from tether.runner.claude_local import ClaudeLocalRunner
+    from tether.runner.codex_cli import CodexCliRunner
+    from tether.runner.sidecar import SidecarRunner
 
 # Cache the runner type after first initialization
 _active_runner_type: str | None = None
@@ -56,26 +60,36 @@ def get_runner(events: RunnerEvents) -> Runner:
         - claude: Claude via Anthropic SDK (requires ANTHROPIC_API_KEY)
         - claude_local: Claude via Agent SDK (uses CLI OAuth)
         - claude_auto: Auto-detect (prefer OAuth, fallback to API key)
+
+    Runners are imported lazily to speed up agent startup.
     """
     global _active_runner_type
     name = settings.adapter()
 
     if name == "codex_cli":
+        from tether.runner.codex_cli import CodexCliRunner
+
         runner = CodexCliRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 
     if name == "codex_sdk_sidecar":
+        from tether.runner.sidecar import SidecarRunner
+
         runner = SidecarRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 
     if name == "claude":
+        from tether.runner.claude import ClaudeRunner
+
         runner = ClaudeRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 
     if name == "claude_local":
+        from tether.runner.claude_local import ClaudeLocalRunner
+
         runner = ClaudeLocalRunner(events)
         _active_runner_type = runner.runner_type
         return runner
@@ -83,10 +97,14 @@ def get_runner(events: RunnerEvents) -> Runner:
     if name == "claude_auto":
         # Auto-detect: prefer OAuth (no cost to user), fallback to API key
         if _has_claude_oauth():
+            from tether.runner.claude_local import ClaudeLocalRunner
+
             runner = ClaudeLocalRunner(events)
             _active_runner_type = runner.runner_type
             return runner
         if _has_anthropic_api_key():
+            from tether.runner.claude import ClaudeRunner
+
             runner = ClaudeRunner(events)
             _active_runner_type = runner.runner_type
             return runner

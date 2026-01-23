@@ -10,9 +10,9 @@ from fastapi import APIRouter, Body, Depends
 
 from tether.api.deps import require_token
 from tether.api.diff import build_git_diff
-from tether.api.emit import emit_state
+from tether.api.emit import emit_state, emit_user_input
 from tether.api.errors import raise_http_error
-from tether.api.runner_events import runner
+from tether.api.runner_events import get_api_runner
 from tether.api.state import maybe_set_session_name, now, transition
 from tether.runner import get_runner_type
 from tether.diff import parse_git_diff
@@ -121,7 +121,8 @@ async def start_session(
         if not session.directory:
             raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
         prompt = payload.get("prompt", "")
-        approval_choice = payload.get("approval_choice", 1)
+        # Default to 2 (bypassPermissions) since there's no interactive approval in Tether
+        approval_choice = payload.get("approval_choice", 2)
         if approval_choice not in (1, 2):
             raise_http_error("VALIDATION_ERROR", "approval_choice must be 1 or 2", 422)
 
@@ -152,7 +153,9 @@ async def start_session(
         await emit_state(session)
 
         try:
-            await runner.start(session_id, prompt, approval_choice)
+            if prompt:
+                await emit_user_input(session, prompt)
+            await get_api_runner().start(session_id, prompt, approval_choice)
             logger.info("Session started")
         except Exception as exc:
             # Revert to ERROR state if runner fails to start
@@ -207,7 +210,8 @@ async def send_input(
             transition(session, SessionState.RUNNING)
             await emit_state(session)
         maybe_set_session_name(session, text)
-        await runner.send_input(session_id, text)
+        await emit_user_input(session, text)
+        await get_api_runner().send_input(session_id, text)
         session = store.get_session(session_id)
         if session:
             session.last_activity_at = now()
@@ -233,7 +237,7 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
         transition(session, SessionState.INTERRUPTING)
         await emit_state(session)
         logger.info("Interrupting session")
-        await runner.stop(session_id)
+        await get_api_runner().stop(session_id)
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)

@@ -14,9 +14,13 @@ import re
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 
+import structlog
+
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import Message, RepoRef, Session, SessionState
 from tether.settings import settings
+
+logger = structlog.get_logger("tether.store")
 
 
 class SessionStore:
@@ -285,6 +289,11 @@ class SessionStore:
         """
         queue: asyncio.Queue = asyncio.Queue()
         self._subscribers.setdefault(session_id, []).append(queue)
+        logger.debug(
+            "New SSE subscriber",
+            session_id=session_id,
+            total_subscribers=len(self._subscribers.get(session_id, [])),
+        )
         return queue
 
     def remove_subscriber(self, session_id: str, queue: asyncio.Queue) -> None:
@@ -300,7 +309,14 @@ class SessionStore:
             session_id: Internal session identifier.
             event: Event payload to broadcast.
         """
-        for queue in list(self._subscribers.get(session_id, [])):
+        queues = self._subscribers.get(session_id, [])
+        logger.debug(
+            "Broadcasting event",
+            session_id=session_id,
+            event_type=event.get("type"),
+            subscriber_count=len(queues),
+        )
+        for queue in list(queues):
             await queue.put(event)
         self._append_event_log(session_id, event)
 

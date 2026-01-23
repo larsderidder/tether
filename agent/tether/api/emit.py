@@ -11,6 +11,47 @@ from tether.store import store
 logger = structlog.get_logger("tether.runner")
 
 
+async def emit_header(
+    session: Session,
+    *,
+    title: str,
+    model: str | None = None,
+    provider: str | None = None,
+    sandbox: str | None = None,
+    approval: str | None = None,
+) -> None:
+    """Emit a structured header event with session configuration.
+
+    Args:
+        session: Session to report.
+        title: Runner title/version (e.g. "Claude Code 1.0.0").
+        model: Model identifier.
+        provider: Provider name (e.g. "Anthropic", "OpenAI").
+        sandbox: Sandbox mode.
+        approval: Approval policy.
+    """
+    data = {"title": title, "session_id": session.id}
+    if model:
+        data["model"] = model
+    if provider:
+        data["provider"] = provider
+    if sandbox:
+        data["sandbox"] = sandbox
+    if approval:
+        data["approval"] = approval
+
+    await store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "header",
+            "data": data,
+        },
+    )
+
+
 async def emit_state(session: Session) -> None:
     """Emit a session_state event to SSE listeners.
 
@@ -117,6 +158,25 @@ async def emit_heartbeat(session: Session, elapsed_s: float, done: bool) -> None
             "seq": store.next_seq(session.id),
             "type": "heartbeat",
             "data": {"elapsed_s": elapsed_s, "done": done},
+        },
+    )
+
+
+async def emit_user_input(session: Session, text: str) -> None:
+    """Emit a user_input event when the user sends a message.
+
+    Args:
+        session: Session receiving the input.
+        text: The user's input text.
+    """
+    await store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "user_input",
+            "data": {"text": text},
         },
     )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tether.api.emit import (
     emit_error,
+    emit_header,
     emit_heartbeat,
     emit_input_required,
     emit_metadata,
@@ -12,7 +13,7 @@ from tether.api.emit import (
 )
 from tether.api.state import now, transition
 from tether.models import SessionState
-from tether.runner import get_runner
+from tether.runner import Runner, get_runner
 from tether.store import store
 
 
@@ -47,6 +48,32 @@ class ApiRunnerEvents:
         session.last_activity_at = now()
         store.update_session(session)
         await emit_output(session, text, kind=kind, is_final=is_final)
+
+    async def on_header(
+        self,
+        session_id: str,
+        *,
+        title: str,
+        model: str | None = None,
+        provider: str | None = None,
+        sandbox: str | None = None,
+        approval: str | None = None,
+    ) -> None:
+        """Handle structured header from runners."""
+        session = store.get_session(session_id)
+        if not session:
+            return
+        # Store title as runner_header for basic display
+        session.runner_header = title
+        store.update_session(session)
+        await emit_header(
+            session,
+            title=title,
+            model=model,
+            provider=provider,
+            sandbox=sandbox,
+            approval=approval,
+        )
 
     async def on_error(self, session_id: str, code: str, message: str) -> None:
         """Handle runner errors by transitioning state and emitting SSE."""
@@ -110,4 +137,13 @@ class ApiRunnerEvents:
         await emit_heartbeat(session, elapsed_s, done)
 
 
-runner = get_runner(ApiRunnerEvents())
+# Lazy runner initialization to speed up startup
+_runner: Runner | None = None
+
+
+def get_api_runner() -> Runner:
+    """Get the runner instance, initializing lazily on first call."""
+    global _runner
+    if _runner is None:
+        _runner = get_runner(ApiRunnerEvents())
+    return _runner

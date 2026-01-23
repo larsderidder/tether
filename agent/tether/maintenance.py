@@ -8,7 +8,7 @@ import time
 import structlog
 
 from tether.api.emit import emit_state
-from tether.api.runner_events import runner
+from tether.api.runner_events import get_api_runner
 from tether.api.state import transition
 from tether.models import SessionState
 from tether.settings import settings
@@ -49,7 +49,7 @@ async def maintenance_loop() -> None:
                         logger.warning("Idle timeout reached; interrupting session", session_id=session.id)
                         transition(session, SessionState.INTERRUPTING)
                         await emit_state(session)
-                        await runner.stop(session.id)
+                        await get_api_runner().stop(session.id)
                         transition(session, SessionState.AWAITING_INPUT)
                         await emit_state(session)
         except Exception:

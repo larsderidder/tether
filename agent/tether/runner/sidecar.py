@@ -167,8 +167,10 @@ class SidecarRunner:
                 payload = line[len("data: ") :].strip()
                 try:
                     event = json.loads(payload)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    logger.warning("Failed to parse SSE event", session_id=session_id, payload=payload[:200], error=str(exc))
                     continue
+                logger.debug("Received sidecar event", session_id=session_id, event_type=event.get("type"))
                 self._handle_event(session_id, event)
         finally:
             conn.close()
@@ -184,13 +186,22 @@ class SidecarRunner:
         event_type = event.get("type")
         data = event.get("data", {})
         if event_type == "header":
-            text = data.get("text", "")
-            if text:
-                self._dispatch(
-                    self._events.on_output(
-                        session_id, "combined", text, kind="header", is_final=None
-                    )
+            # Structured header from sidecar
+            title = data.get("title", "Codex")
+            model = data.get("model")
+            provider = data.get("provider")
+            sandbox = data.get("sandbox")
+            approval = data.get("approval")
+            self._dispatch(
+                self._events.on_header(
+                    session_id,
+                    title=title,
+                    model=model,
+                    provider=provider,
+                    sandbox=sandbox,
+                    approval=approval,
                 )
+            )
             return
         if event_type == "output":
             text = data.get("text", "")
@@ -226,6 +237,8 @@ class SidecarRunner:
                 self._dispatch(self._events.on_exit(session_id, exit_code))
             else:
                 self._dispatch(self._events.on_awaiting_input(session_id))
+        else:
+            logger.debug("Unknown sidecar event type", session_id=session_id, event_type=event_type)
 
     def _dispatch(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Schedule an event callback on the agent's asyncio loop.
@@ -234,6 +247,7 @@ class SidecarRunner:
             coro: Coroutine to schedule on the main loop.
         """
         if not self._loop:
+            logger.warning("Cannot dispatch event: event loop not set")
             return
         asyncio.run_coroutine_threadsafe(coro, self._loop)
 

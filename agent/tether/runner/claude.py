@@ -51,8 +51,12 @@ class ClaudeRunner:
         store.clear_claude_task(session_id)
 
         # Emit header
-        header = f"Claude ({self._model})\n--------"
-        await self._events.on_output(session_id, "combined", header, kind="header")
+        await self._events.on_header(
+            session_id,
+            title="Claude API",
+            model=self._model,
+            provider="Anthropic",
+        )
 
         # Add user message to history
         store.add_message(session_id, "user", [{"type": "text", "text": prompt}])

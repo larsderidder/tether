@@ -6,9 +6,12 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
+import structlog
 from starlette.responses import StreamingResponse
 
 from tether.store import store
+
+logger = structlog.get_logger("tether.sse")
 
 SSE_KEEPALIVE_SECONDS = 15.0
 
@@ -23,6 +26,7 @@ async def sse_stream(
     session_id: str, *, since_seq: int = 0, limit: int | None = None
 ) -> AsyncIterator[bytes]:
     """Stream SSE events for a session as UTF-8 bytes."""
+    logger.debug("SSE stream started", session_id=session_id, since_seq=since_seq)
     queue = store.new_subscriber(session_id)
     heartbeat_s = SSE_KEEPALIVE_SECONDS
     last_seq = since_seq
@@ -33,6 +37,7 @@ async def sse_stream(
                 continue
             if seq:
                 last_seq = seq
+            logger.debug("Yielding replayed event", session_id=session_id, event_type=event.get("type"))
             yield sse_event(event).encode("utf-8")
         while True:
             try:
@@ -45,8 +50,10 @@ async def sse_stream(
                 continue
             if seq:
                 last_seq = seq
+            logger.debug("Yielding live event", session_id=session_id, event_type=event.get("type"))
             yield sse_event(event).encode("utf-8")
     finally:
+        logger.debug("SSE stream ended", session_id=session_id)
         store.remove_subscriber(session_id, queue)
 
 
