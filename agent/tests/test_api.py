@@ -144,7 +144,7 @@ class TestSessionsEndpoints:
 
 
 class TestSessionLifecycle:
-    """Test session start/stop/input endpoints."""
+    """Test session start/interrupt/input endpoints."""
 
     @pytest.mark.anyio
     async def test_start_session_without_directory_fails(
@@ -167,17 +167,17 @@ class TestSessionLifecycle:
         assert response.status_code == 422
 
     @pytest.mark.anyio
-    async def test_stop_created_session_fails(
+    async def test_interrupt_created_session_fails(
         self, api_client: httpx.AsyncClient
     ) -> None:
-        """Stopping a CREATED session returns error."""
+        """Interrupting a CREATED session returns error."""
         create_resp = await api_client.post(
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["session"]["id"]
 
-        response = await api_client.post(f"/api/sessions/{session_id}/stop")
+        response = await api_client.post(f"/api/sessions/{session_id}/interrupt")
 
         assert response.status_code == 409
 

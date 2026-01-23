@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import logging.config
-import os
 import sys
 
 import structlog
+
+from tether.settings import settings
 
 
 def _add_uvicorn_access_fields(
@@ -36,9 +37,9 @@ def _add_uvicorn_access_fields(
 
 def configure_logging() -> None:
     """Configure structlog + stdlib logging using env-driven settings."""
-    log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level_name = settings.log_level()
     log_level = getattr(logging, log_level_name, logging.INFO)
-    log_format = os.environ.get("LOG_FORMAT", "console").lower()
+    log_format = settings.log_format()
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import urllib.parse
 import http.client
 from typing import Any, Coroutine
@@ -12,6 +11,7 @@ from typing import Any, Coroutine
 import structlog
 
 from tether.runner.base import RunnerEvents
+from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger("tether.runner.sidecar")
@@ -22,10 +22,10 @@ class SidecarRunner:
 
     runner_type: str = "codex"
 
-    def __init__(self, events: RunnerEvents, base_url: str | None = None) -> None:
+    def __init__(self, events: RunnerEvents) -> None:
         self._events = events
-        self._base_url = base_url or "http://localhost:8788"
-        self._token = os.environ.get("CODEX_SDK_SIDECAR_TOKEN", "") or os.environ.get("SIDECAR_TOKEN", "")
+        self._base_url = settings.codex_sidecar_url()
+        self._token = settings.codex_sidecar_token()
         self._streams: dict[str, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -40,10 +40,12 @@ class SidecarRunner:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         store.clear_stop_requested(session_id)
+        workdir = store.get_workdir(session_id)
         payload = {
             "session_id": session_id,
             "prompt": prompt,
             "approval_choice": approval_choice,
+            "workdir": workdir,
         }
         await self._post_json("/sessions/start", payload)
         self._ensure_stream(session_id)
@@ -59,16 +61,18 @@ class SidecarRunner:
             self._loop = asyncio.get_running_loop()
         payload = {"session_id": session_id, "text": text}
         await self._post_json("/sessions/input", payload)
+        # Ensure the SSE stream is active in case the sidecar restarted.
+        self._ensure_stream(session_id)
 
     async def stop(self, session_id: str) -> int | None:
-        """Stop the sidecar session.
+        """Interrupt the sidecar session.
 
         Args:
             session_id: Internal session identifier.
         """
         store.request_stop(session_id)
         payload = {"session_id": session_id}
-        await self._post_json("/sessions/stop", payload)
+        await self._post_json("/sessions/interrupt", payload)
         task = self._streams.pop(session_id, None)
         if task:
             task.cancel()
@@ -76,8 +80,11 @@ class SidecarRunner:
 
     def _ensure_stream(self, session_id: str) -> None:
         """Start SSE consumption for a session if not already running."""
-        if session_id in self._streams:
+        existing = self._streams.get(session_id)
+        if existing and not existing.done():
             return
+        if existing and existing.done():
+            self._streams.pop(session_id, None)
         self._streams[session_id] = asyncio.create_task(self._consume_stream(session_id))
 
     async def _consume_stream(self, session_id: str) -> None:
@@ -86,15 +93,29 @@ class SidecarRunner:
         Args:
             session_id: Internal session identifier.
         """
-        try:
-            await asyncio.to_thread(self._stream_worker, session_id)
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            logger.exception("Sidecar stream failed", session_id=session_id)
-            await self._events.on_error(session_id, "STREAM_ERROR", f"Sidecar stream failed: {exc}")
+        backoff_s = 0.5
+        max_backoff_s = 5.0
+        while True:
+            if store.is_stop_requested(session_id):
+                return
+            try:
+                should_retry = await asyncio.to_thread(self._stream_worker, session_id)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.exception("Sidecar stream failed", session_id=session_id)
+                await self._events.on_error(
+                    session_id,
+                    "STREAM_ERROR",
+                    f"Sidecar stream failed: {exc}",
+                )
+                should_retry = True
+            if not should_retry:
+                return
+            await asyncio.sleep(backoff_s)
+            backoff_s = min(max_backoff_s, backoff_s * 2)
 
-    def _stream_worker(self, session_id: str) -> None:
+    def _stream_worker(self, session_id: str) -> bool:
         """Blocking SSE reader that forwards events to the asyncio loop.
 
         Args:
@@ -113,17 +134,21 @@ class SidecarRunner:
             resp = conn.getresponse()
         except (socket.timeout, OSError) as exc:
             logger.error("Sidecar connection failed", session_id=session_id, error=str(exc))
-            self._dispatch(self._events.on_error(session_id, "CONNECTION_ERROR", f"Sidecar connection failed: {exc}"))
+            self._dispatch(
+                self._events.on_error(
+                    session_id, "CONNECTION_ERROR", f"Sidecar connection failed: {exc}"
+                )
+            )
             conn.close()
-            return
+            return True
         if resp.status != 200:
             data = resp.read().decode("utf-8", errors="replace")
             logger.error("Sidecar SSE failed", session_id=session_id, status=resp.status, body=data)
             self._dispatch(self._events.on_error(session_id, "SIDECAR_ERROR", f"Sidecar returned {resp.status}"))
             conn.close()
-            return
+            return resp.status >= 500
         # Set per-read timeout on the socket (60s to allow for heartbeat intervals)
-        read_timeout = float(os.environ.get("SIDECAR_READ_TIMEOUT_SECONDS", "60"))
+        read_timeout = 60.0
         if conn.sock:
             conn.sock.settimeout(read_timeout)
         try:
@@ -133,11 +158,11 @@ class SidecarRunner:
                 except socket.timeout:
                     logger.warning("Sidecar read timeout", session_id=session_id, timeout_s=read_timeout)
                     self._dispatch(self._events.on_error(session_id, "READ_TIMEOUT", "Sidecar stream timed out"))
-                    break
+                    return True
                 if not line:
                     # Empty line means connection closed
                     logger.info("Sidecar stream closed", session_id=session_id)
-                    break
+                    return True
                 if not line.startswith("data: "):
                     continue
                 payload = line[len("data: ") :].strip()
@@ -148,6 +173,7 @@ class SidecarRunner:
                 self._handle_event(session_id, event)
         finally:
             conn.close()
+        return True
 
     def _handle_event(self, session_id: str, event: dict) -> None:
         """Route sidecar events to the event callbacks.

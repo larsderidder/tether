@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 
 import structlog
@@ -12,14 +11,11 @@ from anthropic import Anthropic
 
 from tether.models import SessionState
 from tether.runner.base import RunnerEvents
+from tether.settings import settings
 from tether.store import store
 from tether.tools import TOOLS, execute_tool
 
 logger = structlog.get_logger("tether.runner.claude")
-
-DEFAULT_MODEL = "claude-sonnet-4-20250514"
-DEFAULT_MAX_TOKENS = 4096
-HEARTBEAT_INTERVAL = 5.0
 
 SYSTEM_PROMPT = """You are a helpful coding assistant with access to tools for reading files, writing files, and running bash commands.
 
@@ -39,8 +35,8 @@ class ClaudeRunner:
     def __init__(self, events: RunnerEvents) -> None:
         self._events = events
         self._client = Anthropic()
-        self._model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
-        self._max_tokens = int(os.environ.get("CLAUDE_MAX_TOKENS", DEFAULT_MAX_TOKENS))
+        self._model = settings.claude_model()
+        self._max_tokens = settings.claude_max_tokens()
 
     async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
         """Start a Claude conversation session.
@@ -357,9 +353,10 @@ class ClaudeRunner:
             session_id: Internal session identifier.
             start_time: Monotonic timestamp when conversation started.
         """
+        interval_s = 5.0  # Heartbeat interval in seconds
         try:
             while True:
-                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                await asyncio.sleep(interval_s)
                 elapsed = time.monotonic() - start_time
                 await self._events.on_heartbeat(session_id, elapsed, done=False)
         except asyncio.CancelledError:

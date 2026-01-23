@@ -96,7 +96,7 @@ async def delete_session(session_id: str, _: None = Depends(require_token)) -> d
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state in (SessionState.RUNNING, SessionState.STOPPING):
+        if session.state in (SessionState.RUNNING, SessionState.INTERRUPTING):
             raise_http_error("INVALID_STATE", "Session is active", 409)
         store.delete_session(session_id)
         logger.info("Session deleted")
@@ -114,7 +114,7 @@ async def start_session(
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state not in (SessionState.CREATED, SessionState.STOPPED, SessionState.ERROR):
+        if session.state not in (SessionState.CREATED, SessionState.AWAITING_INPUT, SessionState.ERROR):
             raise_http_error("INVALID_STATE", "Session not ready to start", 409)
 
         # Validate inputs BEFORE state transition
@@ -126,7 +126,7 @@ async def start_session(
             raise_http_error("VALIDATION_ERROR", "approval_choice must be 1 or 2", 422)
 
         # Clear stale state from previous runs
-        if session.state in (SessionState.STOPPED, SessionState.ERROR):
+        if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
             session.ended_at = None
             session.exit_code = None
             session.summary = None
@@ -216,35 +216,32 @@ async def send_input(
         return {"session": _serialize_session(session)}
 
 
-@router.post("/sessions/{session_id}/stop", response_model=dict)
-async def stop_session(session_id: str, _: None = Depends(require_token)) -> dict:
-    """Stop a running or awaiting session (idempotent beyond terminal states)."""
+@router.post("/sessions/{session_id}/interrupt", response_model=dict)
+async def interrupt_session(session_id: str, _: None = Depends(require_token)) -> dict:
+    """Interrupt the current turn. Session remains active and can continue with new input."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state in (SessionState.STOPPED, SessionState.ERROR):
-            logger.info("Session stop requested for terminal session")
+        # Idempotent: already awaiting input or interrupting
+        if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING):
+            logger.info("Session interrupt requested but already idle/interrupting")
             return {"session": _serialize_session(session)}
-        if session.state == SessionState.CREATED:
+        if session.state in (SessionState.CREATED, SessionState.ERROR):
             raise_http_error("INVALID_STATE", "Session not running", 409)
-        if session.state in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
-            transition(session, SessionState.STOPPING)
-            await emit_state(session)
-        logger.info("Stopping session")
-        exit_code = await runner.stop(session_id)
+        # Transition to INTERRUPTING
+        transition(session, SessionState.INTERRUPTING)
+        await emit_state(session)
+        logger.info("Interrupting session")
+        await runner.stop(session_id)
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state not in (SessionState.STOPPED, SessionState.ERROR):
-            transition(
-                session,
-                SessionState.STOPPED,
-                ended_at=True,
-                exit_code=exit_code,
-            )
+        # Transition to AWAITING_INPUT after interrupt completes
+        if session.state == SessionState.INTERRUPTING:
+            transition(session, SessionState.AWAITING_INPUT)
             await emit_state(session)
-        logger.info("Session stopped", exit_code=exit_code)
+        logger.info("Session interrupted")
         return {"session": _serialize_session(session)}
 
 

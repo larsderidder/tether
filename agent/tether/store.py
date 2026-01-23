@@ -16,16 +16,14 @@ from threading import Lock
 
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import Message, RepoRef, Session, SessionState
+from tether.settings import settings
 
 
 class SessionStore:
     """Session registry with SQLite persistence and per-session process bookkeeping."""
 
     def __init__(self) -> None:
-        self._data_dir = os.environ.get("AGENT_DATA_DIR") or os.path.join(
-            os.path.dirname(__file__), "..", "data"
-        )
-        self._data_dir = os.path.abspath(self._data_dir)
+        self._data_dir = settings.data_dir()
         self._db_path = os.path.join(self._data_dir, "sessions.db")
         self._db_lock = Lock()
         os.makedirs(self._data_dir, exist_ok=True)
@@ -145,7 +143,7 @@ class SessionStore:
                 repo_ref=RepoRef(
                     type=row["repo_ref_type"], value=row["repo_ref_value"]
                 ),
-                state=SessionState(row["state"]),
+                state=SessionState(self._migrate_state(row["state"])),
                 name=row["name"],
                 created_at=row["created_at"],
                 started_at=row["started_at"],
@@ -160,6 +158,18 @@ class SessionStore:
             ),
             bool(row["workdir_managed"]),
         )
+
+    def _migrate_state(self, state: str) -> str:
+        """Migrate legacy state values to current ones.
+
+        STOPPED -> AWAITING_INPUT (sessions can always continue)
+        STOPPING -> INTERRUPTING (renamed for clarity)
+        """
+        if state == "STOPPED":
+            return "AWAITING_INPUT"
+        if state == "STOPPING":
+            return "INTERRUPTING"
+        return state
 
     def _now(self) -> str:
         """Return an ISO8601 UTC timestamp suitable for API payloads."""
@@ -350,7 +360,7 @@ class SessionStore:
     def _append_event_log(self, session_id: str, event: dict) -> None:
         path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        max_bytes = int(os.environ.get("AGENT_EVENT_LOG_MAX_BYTES", "5000000"))
+        max_bytes = 5_000_000  # 5MB
         if max_bytes > 0 and os.path.exists(path):
             try:
                 if os.path.getsize(path) > max_bytes:
@@ -370,7 +380,7 @@ class SessionStore:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         removed = 0
         for session in list(self._sessions.values()):
-            if session.state in (SessionState.RUNNING, SessionState.STOPPING):
+            if session.state in (SessionState.RUNNING, SessionState.INTERRUPTING):
                 continue
             ts = session.ended_at or session.last_activity_at or session.created_at
             if not ts:
@@ -631,6 +641,39 @@ class SessionStore:
 
     def clear_stop_requested(self, session_id: str) -> None:
         self._stop_requested.pop(session_id, None)
+
+    def read_event_log(
+        self, session_id: str, *, since_seq: int = 0, limit: int | None = None
+    ) -> list[dict]:
+        """Read persisted SSE events for a session.
+
+        Args:
+            session_id: Internal session identifier.
+            since_seq: Only return events with seq greater than this value.
+            limit: Optional maximum number of events to return.
+        """
+        path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
+        if not os.path.exists(path):
+            return []
+        events: list[dict] = []
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    seq = int(event.get("seq") or 0)
+                    if seq and seq <= since_seq:
+                        continue
+                    events.append(event)
+                    if limit and len(events) >= limit:
+                        break
+        except OSError:
+            return []
+        return events
 
 
 store = SessionStore()

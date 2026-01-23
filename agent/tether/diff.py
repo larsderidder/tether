@@ -26,8 +26,10 @@ def parse_git_diff(raw: str) -> list[dict[str, object]]:
             # Count hunk headers for summary metadata.
             current["hunks"] = int(current["hunks"]) + 1
         current["patch_lines"].append(line)
+
     if current:
         files.append(current)
+
     results: list[dict[str, object]] = []
     for entry in files:
         patch_lines = entry.get("patch_lines", [])

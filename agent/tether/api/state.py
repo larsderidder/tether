@@ -8,10 +8,9 @@ from tether.store import store
 
 _VALID_TRANSITIONS = {
     SessionState.CREATED: {SessionState.RUNNING},
-    SessionState.RUNNING: {SessionState.AWAITING_INPUT, SessionState.STOPPING, SessionState.STOPPED, SessionState.ERROR},
-    SessionState.AWAITING_INPUT: {SessionState.RUNNING, SessionState.STOPPING, SessionState.STOPPED, SessionState.ERROR},
-    SessionState.STOPPING: {SessionState.STOPPED, SessionState.ERROR},
-    SessionState.STOPPED: {SessionState.RUNNING},
+    SessionState.RUNNING: {SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR},
+    SessionState.AWAITING_INPUT: {SessionState.RUNNING, SessionState.ERROR},
+    SessionState.INTERRUPTING: {SessionState.AWAITING_INPUT, SessionState.ERROR},
     SessionState.ERROR: {SessionState.RUNNING},
 }
 

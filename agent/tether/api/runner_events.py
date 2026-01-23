@@ -53,35 +53,34 @@ class ApiRunnerEvents:
         session = store.get_session(session_id)
         if not session:
             return
-        if session.state not in (SessionState.STOPPED, SessionState.ERROR):
+        if session.state != SessionState.ERROR:
             transition(session, SessionState.ERROR, ended_at=True)
             await emit_state(session)
         await emit_error(session, code, message)
 
     async def on_exit(self, session_id: str, exit_code: int | None) -> None:
-        """Handle runner exit by marking error state if needed."""
+        """Handle runner exit. Non-zero exits go to ERROR; clean exits are no-op.
+
+        Note: Clean exits (exit_code 0 or None) are typically followed by
+        on_awaiting_input, or the /interrupt endpoint handles the transition.
+        """
         session = store.get_session(session_id)
         if not session:
             return
-        if session.state in (SessionState.STOPPED, SessionState.ERROR):
+        # Already in a terminal or idle state
+        if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR):
             return
+        # Non-zero exit code indicates an error
         if exit_code not in (0, None):
             transition(session, SessionState.ERROR, ended_at=True, exit_code=exit_code)
             await emit_state(session)
-            return
-        transition(session, SessionState.STOPPED, ended_at=True)
-        await emit_state(session)
 
     async def on_awaiting_input(self, session_id: str) -> None:
         """Handle runner signaling it's waiting for user input."""
         session = store.get_session(session_id)
         if not session:
             return
-        if session.state in (
-            SessionState.STOPPED,
-            SessionState.ERROR,
-            SessionState.STOPPING,
-        ):
+        if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
             return
         transition(session, SessionState.AWAITING_INPUT)
         await emit_state(session)

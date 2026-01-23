@@ -40,24 +40,24 @@ class TestValidTransitions:
 
         assert session.state == SessionState.RUNNING
 
-    def test_running_to_stopping(self, fresh_store: SessionStore) -> None:
-        """RUNNING -> STOPPING is valid."""
+    def test_running_to_interrupting(self, fresh_store: SessionStore) -> None:
+        """RUNNING -> INTERRUPTING is valid."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
 
-        transition(session, SessionState.STOPPING)
+        transition(session, SessionState.INTERRUPTING)
 
-        assert session.state == SessionState.STOPPING
+        assert session.state == SessionState.INTERRUPTING
 
-    def test_running_to_stopped(self, fresh_store: SessionStore) -> None:
-        """RUNNING -> STOPPED is valid (clean exit)."""
+    def test_interrupting_to_awaiting_input(self, fresh_store: SessionStore) -> None:
+        """INTERRUPTING -> AWAITING_INPUT is valid (interrupt completes)."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
+        transition(session, SessionState.INTERRUPTING)
 
-        transition(session, SessionState.STOPPED, ended_at=True)
+        transition(session, SessionState.AWAITING_INPUT)
 
-        assert session.state == SessionState.STOPPED
-        assert session.ended_at is not None
+        assert session.state == SessionState.AWAITING_INPUT
 
     def test_running_to_error(self, fresh_store: SessionStore) -> None:
         """RUNNING -> ERROR is valid (runner fails)."""
@@ -69,25 +69,25 @@ class TestValidTransitions:
         assert session.state == SessionState.ERROR
         assert session.exit_code == 1
 
-    def test_stopping_to_stopped(self, fresh_store: SessionStore) -> None:
-        """STOPPING -> STOPPED is valid."""
+    def test_interrupting_to_error(self, fresh_store: SessionStore) -> None:
+        """INTERRUPTING -> ERROR is valid (interrupt fails)."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
-        transition(session, SessionState.STOPPING)
+        transition(session, SessionState.INTERRUPTING)
 
-        transition(session, SessionState.STOPPED, ended_at=True)
+        transition(session, SessionState.ERROR, ended_at=True)
 
-        assert session.state == SessionState.STOPPED
+        assert session.state == SessionState.ERROR
 
-    def test_stopped_to_running(self, fresh_store: SessionStore) -> None:
-        """STOPPED -> RUNNING is valid (restart)."""
+    def test_awaiting_input_to_error(self, fresh_store: SessionStore) -> None:
+        """AWAITING_INPUT -> ERROR is valid."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
-        transition(session, SessionState.STOPPED, ended_at=True)
+        transition(session, SessionState.AWAITING_INPUT)
 
-        transition(session, SessionState.RUNNING)
+        transition(session, SessionState.ERROR, ended_at=True)
 
-        assert session.state == SessionState.RUNNING
+        assert session.state == SessionState.ERROR
 
     def test_error_to_running(self, fresh_store: SessionStore) -> None:
         """ERROR -> RUNNING is valid (retry after failure)."""
@@ -103,12 +103,12 @@ class TestValidTransitions:
 class TestInvalidTransitions:
     """Test that invalid state transitions raise errors."""
 
-    def test_created_to_stopped_invalid(self, fresh_store: SessionStore) -> None:
-        """CREATED -> STOPPED is invalid (must run first)."""
+    def test_created_to_awaiting_input_invalid(self, fresh_store: SessionStore) -> None:
+        """CREATED -> AWAITING_INPUT is invalid (must run first)."""
         session = fresh_store.create_session("repo_test", "main")
 
         with pytest.raises(HTTPException) as exc_info:
-            transition(session, SessionState.STOPPED)
+            transition(session, SessionState.AWAITING_INPUT)
 
         assert exc_info.value.status_code == 409
 
@@ -121,36 +121,36 @@ class TestInvalidTransitions:
 
         assert exc_info.value.status_code == 409
 
-    def test_stopped_to_stopped_invalid(self, fresh_store: SessionStore) -> None:
-        """STOPPED -> STOPPED is invalid (same state)."""
+    def test_awaiting_input_to_interrupting_invalid(self, fresh_store: SessionStore) -> None:
+        """AWAITING_INPUT -> INTERRUPTING is invalid (nothing to interrupt)."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
-        transition(session, SessionState.STOPPED, ended_at=True)
+        transition(session, SessionState.AWAITING_INPUT)
 
         with pytest.raises(HTTPException) as exc_info:
-            transition(session, SessionState.STOPPED)
+            transition(session, SessionState.INTERRUPTING)
 
         assert exc_info.value.status_code == 409
 
-    def test_stopped_to_created_invalid(self, fresh_store: SessionStore) -> None:
-        """STOPPED -> CREATED is invalid."""
+    def test_interrupting_to_running_invalid(self, fresh_store: SessionStore) -> None:
+        """INTERRUPTING -> RUNNING is invalid (can't resume during interrupt)."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
-        transition(session, SessionState.STOPPED, ended_at=True)
-
-        with pytest.raises(HTTPException) as exc_info:
-            transition(session, SessionState.CREATED)
-
-        assert exc_info.value.status_code == 409
-
-    def test_stopping_to_running_invalid(self, fresh_store: SessionStore) -> None:
-        """STOPPING -> RUNNING is invalid (can't resume during stop)."""
-        session = fresh_store.create_session("repo_test", "main")
-        transition(session, SessionState.RUNNING, started_at=True)
-        transition(session, SessionState.STOPPING)
+        transition(session, SessionState.INTERRUPTING)
 
         with pytest.raises(HTTPException) as exc_info:
             transition(session, SessionState.RUNNING)
+
+        assert exc_info.value.status_code == 409
+
+    def test_error_to_awaiting_input_invalid(self, fresh_store: SessionStore) -> None:
+        """ERROR -> AWAITING_INPUT is invalid (must restart first)."""
+        session = fresh_store.create_session("repo_test", "main")
+        transition(session, SessionState.RUNNING, started_at=True)
+        transition(session, SessionState.ERROR, ended_at=True)
+
+        with pytest.raises(HTTPException) as exc_info:
+            transition(session, SessionState.AWAITING_INPUT)
 
         assert exc_info.value.status_code == 409
 
@@ -240,12 +240,24 @@ class TestTransitionMatrix:
         # CREATED can only go to RUNNING
         assert _VALID_TRANSITIONS[SessionState.CREATED] == {SessionState.RUNNING}
 
-        # RUNNING can go to multiple states
-        assert SessionState.AWAITING_INPUT in _VALID_TRANSITIONS[SessionState.RUNNING]
-        assert SessionState.STOPPING in _VALID_TRANSITIONS[SessionState.RUNNING]
-        assert SessionState.STOPPED in _VALID_TRANSITIONS[SessionState.RUNNING]
-        assert SessionState.ERROR in _VALID_TRANSITIONS[SessionState.RUNNING]
+        # RUNNING can go to AWAITING_INPUT, INTERRUPTING, or ERROR
+        assert _VALID_TRANSITIONS[SessionState.RUNNING] == {
+            SessionState.AWAITING_INPUT,
+            SessionState.INTERRUPTING,
+            SessionState.ERROR,
+        }
 
-        # Terminal states can restart
-        assert SessionState.RUNNING in _VALID_TRANSITIONS[SessionState.STOPPED]
-        assert SessionState.RUNNING in _VALID_TRANSITIONS[SessionState.ERROR]
+        # AWAITING_INPUT can go to RUNNING or ERROR
+        assert _VALID_TRANSITIONS[SessionState.AWAITING_INPUT] == {
+            SessionState.RUNNING,
+            SessionState.ERROR,
+        }
+
+        # INTERRUPTING can go to AWAITING_INPUT or ERROR
+        assert _VALID_TRANSITIONS[SessionState.INTERRUPTING] == {
+            SessionState.AWAITING_INPUT,
+            SessionState.ERROR,
+        }
+
+        # ERROR can restart
+        assert _VALID_TRANSITIONS[SessionState.ERROR] == {SessionState.RUNNING}

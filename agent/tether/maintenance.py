@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 import structlog
@@ -12,6 +11,7 @@ from tether.api.emit import emit_state
 from tether.api.runner_events import runner
 from tether.api.state import transition
 from tether.models import SessionState
+from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger("tether.maintenance")
@@ -24,11 +24,14 @@ def _parse_ts(value: str) -> float | None:
         return None
 
 
+MAINTENANCE_INTERVAL_SECONDS = 60
+
+
 async def maintenance_loop() -> None:
     """Periodically prune sessions and stop idle runs."""
-    retention_days = int(os.environ.get("AGENT_SESSION_RETENTION_DAYS", "7"))
-    idle_timeout_s = int(os.environ.get("AGENT_SESSION_IDLE_SECONDS", "0"))
-    interval_s = int(os.environ.get("AGENT_MAINTENANCE_SECONDS", "60"))
+    retention_days = settings.session_retention_days()
+    idle_timeout_s = settings.session_idle_timeout_seconds()
+    interval_s = MAINTENANCE_INTERVAL_SECONDS
     while True:
         try:
             removed = store.prune_sessions(retention_days)
@@ -43,11 +46,11 @@ async def maintenance_loop() -> None:
                     if last is None:
                         continue
                     if now_ts - last > idle_timeout_s:
-                        logger.warning("Idle timeout reached; stopping session", session_id=session.id)
-                        transition(session, SessionState.STOPPING)
+                        logger.warning("Idle timeout reached; interrupting session", session_id=session.id)
+                        transition(session, SessionState.INTERRUPTING)
                         await emit_state(session)
                         await runner.stop(session.id)
-                        transition(session, SessionState.STOPPED, ended_at=True)
+                        transition(session, SessionState.AWAITING_INPUT)
                         await emit_state(session)
         except Exception:
             logger.exception("Maintenance loop failed")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +15,7 @@ from tether.http import (
 )
 from tether.logging import configure_logging
 from tether.maintenance import maintenance_loop
+from tether.settings import settings
 from tether.startup import log_ui_urls
 
 configure_logging()
@@ -27,26 +27,20 @@ app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 
-def _is_dev_mode() -> bool:
-    return os.environ.get("AGENT_DEV_MODE", "").strip().lower() in ("1", "true", "yes")
-
-
-def _load_agent_token() -> str:
-    return os.environ.get("AGENT_TOKEN", "")
-
-
 def _ensure_token() -> None:
-    if _load_agent_token() or _is_dev_mode():
+    if settings.token() or settings.dev_mode():
         return
-    raise RuntimeError("AGENT_TOKEN is required unless AGENT_DEV_MODE=1")
+    raise RuntimeError(
+        "TETHER_AGENT_TOKEN is required unless TETHER_AGENT_DEV_MODE=1"
+    )
 
 
 @app.on_event("startup")
 async def _start_maintenance() -> None:
     _ensure_token()
-    app.state.agent_token = _load_agent_token()
+    app.state.agent_token = settings.token()
     asyncio.create_task(maintenance_loop())
-    log_ui_urls(port=int(os.environ.get("AGENT_PORT", "8787")))
+    log_ui_urls(port=settings.port())
 
 
 app.include_router(api_router)
@@ -56,9 +50,12 @@ if __name__ == "__main__":
     import uvicorn
 
     _ensure_token()
-    app.state.agent_token = _load_agent_token()
-    host = os.environ.get("AGENT_HOST", "0.0.0.0")
-    port = int(os.environ.get("AGENT_PORT", "8787"))
-    uvicorn.run("tether.main:app", host=host, port=port, reload=False)
+    app.state.agent_token = settings.token()
+    uvicorn.run(
+        "tether.main:app",
+        host=settings.host(),
+        port=settings.port(),
+        reload=False,
+    )
 else:
-    app.state.agent_token = _load_agent_token()
+    app.state.agent_token = settings.token()

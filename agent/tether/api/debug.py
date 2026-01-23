@@ -20,11 +20,11 @@ logger = structlog.get_logger("tether.api.debug")
 async def clear_data(_: None = Depends(require_token)) -> dict:
     """Clear all persisted sessions and event logs (debug only)."""
     for session in store.list_sessions():
-        if session.state in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
-            transition(session, SessionState.STOPPING)
+        if session.state == SessionState.RUNNING:
+            transition(session, SessionState.INTERRUPTING)
             await emit_state(session)
             await runner.stop(session.id)
-        elif session.state == SessionState.STOPPING:
+        elif session.state == SessionState.INTERRUPTING:
             await runner.stop(session.id)
     store.clear_all_data()
     logger.warning("Cleared all session data")

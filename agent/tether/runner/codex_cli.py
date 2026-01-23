@@ -1,10 +1,10 @@
 """Runner adapter that shells out to the Codex CLI and normalizes output.
 
 .. deprecated::
-    This runner is deprecated in favor of the Codex SDK sidecar approach
-    (codex_sdk_sidecar). The sidecar provides structured events directly,
-    avoiding the brittle stdout/stderr parsing required by this runner.
-    Use AGENT_ADAPTER=codex_sdk_sidecar instead.
+    This runner is deprecated in favor of the Codex SDK sidecar approach.
+    The sidecar provides structured events directly, avoiding the brittle
+    stdout/stderr parsing required by this runner.
+    Use TETHER_AGENT_ADAPTER=sidecar instead.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import structlog
 
 from tether.models import SessionState
 from tether.runner.base import RunnerEvents
+from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger("tether.runner.codex_cli")
@@ -164,9 +165,9 @@ class CodexCliRunner:
         if not session:
             return
         try:
-            cmd = os.environ.get("CODEX_BIN", "").strip()
+            cmd = settings.codex_bin()
             if not cmd:
-                raise FileNotFoundError("CODEX_BIN is not set")
+                raise FileNotFoundError("TETHER_AGENT_CODEX_BIN is not set")
             if not os.path.isfile(cmd):
                 raise FileNotFoundError(f"CODEX_BIN not found: {cmd}")
             if not os.access(cmd, os.X_OK):
@@ -189,7 +190,7 @@ class CodexCliRunner:
                 asyncio.create_task(self._read_stream(session_id, stdout)),
                 asyncio.create_task(self._log_stderr(session_id, stderr)),
             ]
-            timeout_s = int(os.environ.get("RUNNER_TURN_TIMEOUT_SECONDS", "0"))
+            timeout_s = settings.turn_timeout_seconds()
             if timeout_s > 0:
                 try:
                     exit_code = await asyncio.wait_for(proc.wait(), timeout=timeout_s)
@@ -444,7 +445,7 @@ class CodexCliRunner:
         self._heartbeat_start.pop(session_id, None)
 
     def _start_heartbeat(self, session_id: str) -> None:
-        interval_s = float(os.environ.get("RUNNER_HEARTBEAT_SECONDS", "5"))
+        interval_s = 5.0  # Heartbeat interval in seconds
         self._heartbeat_start[session_id] = time.monotonic()
         task = self._heartbeat_tasks.get(session_id)
         if task:
