@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h2>Session {{ sessionId }}</h2>
-        <p v-if="session">State: {{ session.state }}</p>
+        <p v-if="session">State: {{ formatState(session.state) }}</p>
       </div>
       <div class="actions">
         <button @click="stop" :disabled="!session">Stop</button>
@@ -50,7 +50,20 @@ const output = ref("");
 const diff = ref("");
 const error = ref("");
 const inputText = ref("");
+const lastSeq = ref(0);
 let closeStream: (() => void) | null = null;
+
+const formatState = (state: string | undefined): string => {
+  if (!state) return "";
+  const labels: Record<string, string> = {
+    CREATED: "Ready",
+    RUNNING: "Running",
+    AWAITING_INPUT: "Awaiting input",
+    INTERRUPTING: "Interrupting",
+    ERROR: "Error"
+  };
+  return labels[state] || state.toLowerCase().replace(/_/g, " ");
+};
 
 const refresh = async () => {
   error.value = "";
@@ -98,9 +111,16 @@ const send = async () => {
 };
 
 const onEvent = (event: EventEnvelope) => {
+  const seq = Number((event as { seq?: number }).seq || 0);
+  if (seq && seq <= lastSeq.value) return;
+  if (seq) lastSeq.value = seq;
   if (event.type === "output") {
     const text = String((event.data as { text?: string }).text || "");
     output.value += text;
+  }
+  if (event.type === "user_input") {
+    const text = String((event.data as { text?: string }).text || "");
+    output.value += `\n> ${text}\n`;
   }
   if (event.type === "session_state") {
     if (session.value) {
@@ -117,7 +137,7 @@ onMounted(async () => {
   await refresh();
   await refreshDiff();
   try {
-    closeStream = await openEventStream(sessionId, onEvent, onError);
+    closeStream = await openEventStream(sessionId, onEvent, onError, { since: lastSeq.value });
   } catch (err) {
     error.value = String(err);
   }

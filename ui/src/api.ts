@@ -1,4 +1,4 @@
-export type SessionState = "CREATED" | "RUNNING" | "AWAITING_INPUT" | "STOPPING" | "STOPPED" | "ERROR";
+export type SessionState = "CREATED" | "RUNNING" | "AWAITING_INPUT" | "INTERRUPTING" | "ERROR";
 
 export type Session = {
   id: string;
@@ -20,7 +20,17 @@ export type EventEnvelope = {
   session_id: string;
   ts: string;
   seq: number;
-  type: "session_state" | "output" | "error" | "metadata" | "header" | "heartbeat";
+  type: "session_state" | "output" | "error" | "metadata" | "header" | "heartbeat" | "user_input" | "input_required";
+}
+
+export type HeaderData = {
+  title: string;
+  model?: string;
+  provider?: string;
+  sandbox?: string;
+  approval?: string;
+  session_id?: string;
+  thread_id?: string;
   data: Record<string, unknown>;
 };
 
@@ -135,21 +145,21 @@ export async function startSession(id: string, prompt: string): Promise<Session>
   return data.session;
 }
 
-export async function stopSession(id: string): Promise<Session> {
-  const data = await fetchJson<{ session: Session }>(`/api/sessions/${id}/stop`, {
+export async function interruptSession(id: string): Promise<Session> {
+  const data = await fetchJson<{ session: Session }>(`/api/sessions/${id}/interrupt`, {
     method: "POST"
   });
   return data.session;
 }
 
-export function stopSessionKeepalive(id: string): void {
+export function interruptSessionKeepalive(id: string): void {
   const token = getToken();
   const headers: HeadersInit = {};
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
   try {
-    fetch(buildUrl(`/api/sessions/${id}/stop`), {
+    fetch(buildUrl(`/api/sessions/${id}/interrupt`), {
       method: "POST",
       headers,
       keepalive: true
@@ -207,14 +217,21 @@ export async function renameSession(id: string, name: string): Promise<Session> 
 export async function openEventStream(
   id: string,
   onEvent: (event: EventEnvelope) => void,
-  onError: (error: unknown) => void
+  onError: (error: unknown) => void,
+  options?: { since?: number }
 ): Promise<() => void> {
   const token = getToken();
   const headers: HeadersInit = {};
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
-  const res = await fetch(buildUrl(`/api/events/sessions/${id}`), { headers });
+  const params = new URLSearchParams();
+  if (options?.since && options.since > 0) {
+    params.set("since", String(options.since));
+  }
+  const query = params.toString();
+  const url = `/api/events/sessions/${id}${query ? `?${query}` : ""}`;
+  const res = await fetch(buildUrl(url), { headers });
   if (!res.ok || !res.body) {
     if (res.status === 401) {
       notifyAuthRequired();
@@ -231,6 +248,10 @@ export async function openEventStream(
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
+          // Stream ended - trigger reconnect if not explicitly cancelled
+          if (!cancelled) {
+            onError(new Error("Stream closed unexpectedly"));
+          }
           break;
         }
         buffer += decoder.decode(value, { stream: true });

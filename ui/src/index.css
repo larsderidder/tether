@@ -5,10 +5,40 @@
 @layer base {
   :root {
     color-scheme: dark;
+    --spacing-touch: 44px;
+    --radius-default: 0.75rem;
+    --radius-full: 9999px;
+    --radius: 0.5rem;
+
+    /* Dark mode colors (always on) */
+    --background: 20 14.3% 4.1%;
+    --foreground: 60 9.1% 97.8%;
+    --card: 20 14.3% 4.1%;
+    --card-foreground: 60 9.1% 97.8%;
+    --popover: 20 14.3% 4.1%;
+    --popover-foreground: 60 9.1% 97.8%;
+    --primary: 60 9.1% 97.8%;
+    --primary-foreground: 24 9.8% 10%;
+    --secondary: 12 6.5% 15.1%;
+    --secondary-foreground: 60 9.1% 97.8%;
+    --muted: 12 6.5% 15.1%;
+    --muted-foreground: 24 5.4% 63.9%;
+    --accent: 12 6.5% 15.1%;
+    --accent-foreground: 60 9.1% 97.8%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 60 9.1% 97.8%;
+    --border: 12 6.5% 15.1%;
+    --input: 12 6.5% 15.1%;
+    --ring: 24 5.7% 82.9%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
   }
 
   body {
-    @apply bg-stone-950 text-stone-50 antialiased;
+    @apply bg-background text-foreground antialiased;
     font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   }
 }
@@ -26,8 +56,25 @@
     @apply font-semibold text-stone-100;
   }
 
+  .message-thinking-markdown {
+    @apply text-stone-400;
+  }
+
+  .message-thinking-markdown strong {
+    @apply text-stone-500 font-medium;
+  }
+
+  /* diff2html dark theme */
+  .diff2html {
+    @apply text-stone-200;
+  }
+
+  .diff2html .d2h-wrapper {
+    @apply bg-transparent;
+  }
+
   .diff2html .d2h-file-wrapper {
-    @apply border-none;
+    @apply border-none bg-transparent;
   }
 
   .diff2html .d2h-file-list-wrapper,
@@ -35,7 +82,73 @@
     @apply hidden;
   }
 
+  .diff2html .d2h-diff-table {
+    @apply w-full border-collapse font-mono text-xs;
+  }
+
+  .diff2html .d2h-code-line,
+  .diff2html .d2h-code-line-ctn {
+    @apply bg-stone-900/40 text-stone-300;
+  }
+
   .diff2html .d2h-code-line {
-    @apply text-[11px];
+    @apply text-xs leading-5;
+  }
+
+  .diff2html .d2h-code-line-prefix {
+    @apply select-none text-stone-500;
+  }
+
+  .diff2html .d2h-del {
+    @apply bg-rose-950/50;
+  }
+
+  .diff2html .d2h-del .d2h-code-line-ctn {
+    @apply bg-rose-950/50 text-rose-200;
+  }
+
+  .diff2html .d2h-ins {
+    @apply bg-emerald-950/50;
+  }
+
+  .diff2html .d2h-ins .d2h-code-line-ctn {
+    @apply bg-emerald-950/50 text-emerald-200;
+  }
+
+  .diff2html .d2h-info {
+    @apply bg-stone-800/60 text-stone-400;
+  }
+
+  .diff2html .d2h-code-side-line {
+    @apply bg-stone-900/60;
+  }
+
+  .diff2html .d2h-code-linenumber {
+    @apply border-r border-stone-700/50 bg-stone-900/60 text-stone-500;
+    min-width: 2.5em;
+  }
+
+  .diff2html .d2h-del .d2h-code-linenumber {
+    @apply border-rose-900/50 bg-rose-950/40 text-rose-400;
+  }
+
+  .diff2html .d2h-ins .d2h-code-linenumber {
+    @apply border-emerald-900/50 bg-emerald-950/40 text-emerald-400;
+  }
+
+  .diff2html .d2h-diff-tbody tr {
+    @apply border-b border-stone-800/30;
+  }
+
+  .diff2html .d2h-diff-tbody tr:last-child {
+    @apply border-b-0;
+  }
+
+  .diff2html del {
+    @apply bg-rose-900/40 text-rose-200 no-underline;
+  }
+
+  .diff2html ins {
+    @apply bg-emerald-900/40 text-emerald-200 no-underline;
   }
 }
