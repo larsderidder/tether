@@ -1,9 +1,8 @@
 import pino from "pino";
+import { settings } from "./settings.js";
 
-const level = process.env.CODEX_SDK_SIDECAR_LOG_LEVEL || process.env.SIDECAR_LOG_LEVEL || "info";
-const pretty =
-  process.env.CODEX_SDK_SIDECAR_LOG_PRETTY === "1" ||
-  process.env.SIDECAR_LOG_PRETTY === "1";
+const level = settings.logLevel();
+const pretty = settings.logPretty();
 
 export const logger = pino(
   {
