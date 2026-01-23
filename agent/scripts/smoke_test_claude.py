@@ -10,6 +10,9 @@ Usage:
 
     # Custom prompt
     python scripts/smoke_test_claude.py --live --prompt "What is 2+2?"
+
+    # Multi-turn conversation test
+    python scripts/smoke_test_claude.py --live --multi-turn
 """
 
 import argparse
@@ -60,6 +63,18 @@ class MockEvents:
     async def on_awaiting_input(self, session_id):
         self.awaiting_input = True
         print("  [awaiting_input]")
+
+    def get_all_text(self):
+        """Get all output text concatenated."""
+        return "".join(o["text"] for o in self.outputs if o.get("text"))
+
+    def reset_for_turn(self):
+        """Reset state for next conversation turn."""
+        self.outputs = []
+        self.errors = []
+        self.metadata = []
+        self.awaiting_input = False
+        self.exit_code = None
 
 
 def test_instantiation():
@@ -149,9 +164,95 @@ async def test_live_call(runner, events, prompt):
             return False
 
 
+async def test_multi_turn(runner, events):
+    """Test multi-turn conversation memory."""
+    import random
+    secret_number = random.randint(100, 999)
+
+    print(f"\n4. Testing multi-turn conversation (secret number: {secret_number})")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ["TETHER_AGENT_DATA_DIR"] = tmpdir
+
+        from tether import store as store_module
+        import importlib
+        importlib.reload(store_module)
+        from tether.store import store
+
+        session = store.create_session("multi_turn_test", "main")
+        session.state = store_module.SessionState.RUNNING
+        store.update_session(session)
+        store.set_workdir(session.id, tmpdir, managed=False)
+
+        print(f"   Session: {session.id}")
+
+        # Turn 1: Ask Claude to remember a number
+        turn1_prompt = f"Remember this number: {secret_number}. Just reply with 'OK, I'll remember {secret_number}' and nothing else."
+        print(f"\n   Turn 1: '{turn1_prompt}'")
+
+        try:
+            await runner.start(session.id, turn1_prompt, approval_choice=0)
+
+            timeout = 60
+            elapsed = 0
+            while elapsed < timeout:
+                await asyncio.sleep(0.5)
+                elapsed += 0.5
+                if events.awaiting_input:
+                    break
+
+            if events.errors:
+                print(f"   FAIL: Turn 1 got errors: {events.errors}")
+                return False
+
+            turn1_response = events.get_all_text()
+            print(f"   Response: {turn1_response[:200]}...")
+            print(f"   OK: Turn 1 complete")
+
+            # Reset for turn 2
+            events.reset_for_turn()
+
+            # Turn 2: Ask what the number was
+            turn2_prompt = "What number did I ask you to remember? Reply with just the number."
+            print(f"\n   Turn 2: '{turn2_prompt}'")
+
+            await runner.send_input(session.id, turn2_prompt)
+
+            elapsed = 0
+            while elapsed < timeout:
+                await asyncio.sleep(0.5)
+                elapsed += 0.5
+                if events.awaiting_input:
+                    break
+
+            if events.errors:
+                print(f"   FAIL: Turn 2 got errors: {events.errors}")
+                return False
+
+            turn2_response = events.get_all_text()
+            print(f"   Response: {turn2_response[:200]}")
+
+            # Check if the number is in the response
+            if str(secret_number) in turn2_response:
+                print(f"   OK: Claude remembered the number {secret_number}!")
+                await runner.stop(session.id)
+                return True
+            else:
+                print(f"   FAIL: Response doesn't contain {secret_number}")
+                await runner.stop(session.id)
+                return False
+
+        except Exception as e:
+            print(f"   FAIL: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smoke test for Claude runner")
     parser.add_argument("--live", action="store_true", help="Make real API calls")
+    parser.add_argument("--multi-turn", action="store_true", help="Test multi-turn conversation")
     parser.add_argument("--prompt", default="Say 'Hello from smoke test!' and nothing else.",
                         help="Prompt to send (only with --live)")
     args = parser.parse_args()
@@ -169,15 +270,22 @@ def main():
     has_key = test_api_key()
 
     # Test 3: Live call (optional)
-    if args.live:
+    if args.live or args.multi_turn:
         if not has_key:
-            print("\n   ERROR: --live requires ANTHROPIC_API_KEY")
+            print("\n   ERROR: --live/--multi-turn requires ANTHROPIC_API_KEY")
             sys.exit(1)
-        success = asyncio.run(test_live_call(runner, events, args.prompt))
+
+        if args.multi_turn:
+            # Run multi-turn test instead of single prompt
+            success = asyncio.run(test_multi_turn(runner, events))
+        else:
+            success = asyncio.run(test_live_call(runner, events, args.prompt))
+
         if not success:
             sys.exit(1)
     else:
         print("\n3. Skipping live API call (use --live to enable)")
+        print("\n4. Skipping multi-turn test (use --multi-turn to enable)")
 
     print("\n" + "=" * 60)
     print("Smoke test passed!")
