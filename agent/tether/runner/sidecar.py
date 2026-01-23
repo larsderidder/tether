@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import urllib.parse
 import http.client
+import json
+import socket
+import urllib.parse
 from typing import Any, Coroutine
 
 import structlog
@@ -121,8 +122,6 @@ class SidecarRunner:
         Args:
             session_id: Internal session identifier.
         """
-        import socket
-
         url = urllib.parse.urlparse(self._base_url)
         conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=30)
         path = f"/events/{session_id}"

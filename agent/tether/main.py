@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 
@@ -47,8 +48,6 @@ app.include_router(api_router)
 app.include_router(root_router)
 
 if __name__ == "__main__":
-    import uvicorn
-
     _ensure_token()
     app.state.agent_token = settings.token()
     uvicorn.run(
