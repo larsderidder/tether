@@ -29,15 +29,17 @@
 
           <!-- Right: actions -->
           <div class="flex items-center gap-1">
+            <!-- Sync button -->
             <button
               v-if="activeSessionId"
-              class="flex h-10 w-10 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
+              class="flex h-10 w-10 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-800 hover:text-stone-200 disabled:opacity-50"
               :disabled="syncing"
               @click="handleSync"
               title="Sync messages from CLI"
             >
-              <RefreshCw class="h-4 w-4" :class="syncing ? 'animate-spin' : ''" />
+              <RefreshCw class="h-5 w-5" :class="{ 'animate-spin': syncing }" />
             </button>
+
             <div class="relative" ref="menuRef">
               <button
                 v-if="activeSessionId"
@@ -79,25 +81,52 @@
 
     <Sheet :open="drawerOpen" @update:open="drawerOpen = $event">
       <SheetContent side="left" class="flex w-full max-w-[280px] flex-col border-stone-800/50 bg-stone-900 p-0 text-stone-50 [&>button]:hidden">
-        <!-- Header with new session button -->
+        <!-- Header with new session and attach buttons -->
         <div class="flex items-center justify-between border-b border-stone-800/50 px-4 py-3">
           <span class="text-sm font-medium text-stone-200">Tether</span>
-          <button
-            class="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
-            @click="createPanelOpen = !createPanelOpen"
-            title="New session"
-          >
-            <Plus class="h-5 w-5" />
-          </button>
+          <div class="flex items-center gap-1">
+            <button
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
+              @click="openExternalBrowser"
+              title="Attach to session"
+            >
+              <Link class="h-4 w-4" />
+            </button>
+            <button
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
+              @click="createPanelOpen = !createPanelOpen"
+              title="New session"
+            >
+              <Plus class="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
-        <!-- Search -->
+        <!-- Search and expand/collapse -->
         <div class="px-3 py-2">
-          <Input
-            v-model="searchQuery"
-            placeholder="Search..."
-            class="h-9 rounded-lg border-stone-700 bg-stone-800/50 text-sm placeholder-stone-500"
-          />
+          <div class="flex items-center gap-2">
+            <Input
+              v-model="searchQuery"
+              placeholder="Search..."
+              class="h-9 flex-1 rounded-lg border-stone-700 bg-stone-800/50 text-sm placeholder-stone-500"
+            />
+            <div v-if="directoryGroups.length > 1" class="flex gap-1">
+              <button
+                class="flex h-9 w-9 items-center justify-center rounded-lg bg-stone-800/50 text-stone-400 transition hover:bg-stone-800 hover:text-stone-300"
+                @click="expandAllDirectories"
+                title="Expand all"
+              >
+                <ChevronsUpDown class="h-4 w-4" />
+              </button>
+              <button
+                class="flex h-9 w-9 items-center justify-center rounded-lg bg-stone-800/50 text-stone-400 transition hover:bg-stone-800 hover:text-stone-300"
+                @click="collapseAllDirectories"
+                title="Collapse all"
+              >
+                <ChevronsDownUp class="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- New session panel -->
@@ -140,57 +169,78 @@
 
         <!-- Sessions list -->
         <div class="flex-1 overflow-y-auto px-2 py-2">
-          <div v-for="group in filteredDirectoryGroups" :key="group.key" class="mb-4">
-            <!-- Directory header -->
-            <div class="mb-1 flex items-center justify-between px-2">
-              <div class="flex items-center gap-2">
-                <Folder class="h-3.5 w-3.5 text-stone-500" />
-                <span class="text-xs font-medium text-stone-400">{{ group.label }}</span>
-                <GitBranch v-if="group.hasGit" class="h-3 w-3 text-emerald-500" />
+          <div v-for="group in filteredDirectoryGroups" :key="group.key" class="mb-2">
+            <!-- Directory header (clickable to toggle) -->
+            <button
+              class="mb-0.5 flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition hover:bg-stone-800/50"
+              @click="toggleDirectory(group.key)"
+            >
+              <div class="flex min-w-0 flex-1 items-center gap-2">
+                <ChevronRight
+                  class="h-3.5 w-3.5 shrink-0 text-stone-500 transition-transform duration-200"
+                  :class="{ 'rotate-90': isDirectoryExpanded(group.key) }"
+                />
+                <Folder class="h-3.5 w-3.5 shrink-0 text-stone-500" />
+                <span class="truncate text-xs font-medium text-stone-400">{{ group.label }}</span>
+                <GitBranch v-if="group.hasGit" class="h-3 w-3 shrink-0 text-emerald-500" />
+                <span class="shrink-0 text-[10px] text-stone-600">{{ group.sessions.length }}</span>
               </div>
               <button
                 v-if="group.path"
-                class="flex h-6 w-6 items-center justify-center rounded text-stone-500 transition hover:bg-stone-800 hover:text-stone-300"
-                @click="addSessionToDirectory(group.path)"
+                class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-stone-500 transition hover:bg-stone-700 hover:text-stone-300"
+                @click.stop="addSessionToDirectory(group.path)"
                 :disabled="creating"
                 title="Add session"
               >
                 <Plus class="h-3.5 w-3.5" />
               </button>
-            </div>
+            </button>
 
-            <!-- Sessions in this directory -->
-            <div class="space-y-0.5">
+            <!-- Sessions in this directory (collapsible) -->
+            <div v-if="isDirectoryExpanded(group.key)" class="space-y-0.5 pl-5">
               <button
                 v-for="session in group.sessions"
                 :key="session.id"
-                class="group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition"
+                class="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition"
                 :class="session.id === activeSessionId
                   ? 'bg-stone-800 text-stone-100'
                   : 'text-stone-300 hover:bg-stone-800/50'"
                 @click="selectSession(session.id)"
               >
                 <div class="min-w-0 flex-1">
-                  <p class="truncate text-sm">{{ session.name || 'New session' }}</p>
-                  <div class="flex items-center gap-1.5">
+                  <p class="truncate text-sm text-stone-200">{{ session.name || 'New session' }}</p>
+                  <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
+                    <span class="font-mono text-stone-600" :title="session.runner_session_id || session.id">{{ formatSessionId(session.runner_session_id || session.id) }}</span>
+                    <span class="flex items-center gap-1">
+                      <Clock class="h-3 w-3" />
+                      {{ formatTime(session.last_activity_at) }}
+                    </span>
+                    <span class="flex items-center gap-1">
+                      <MessageSquare class="h-3 w-3" />
+                      {{ session.message_count }}
+                    </span>
                     <span
-                      class="h-1.5 w-1.5 rounded-full"
+                      v-if="session.state !== 'CREATED'"
+                      class="flex items-center gap-1"
                       :class="{
-                        'bg-blue-400': session.state === 'CREATED',
-                        'bg-emerald-500': session.state === 'RUNNING',
-                        'bg-amber-400': session.state === 'AWAITING_INPUT',
-                        'bg-orange-400': session.state === 'INTERRUPTING',
-                        'bg-rose-500': session.state === 'ERROR'
+                        'text-emerald-400': session.state === 'RUNNING',
+                        'text-amber-400': session.state === 'AWAITING_INPUT',
+                        'text-orange-400': session.state === 'INTERRUPTING',
+                        'text-rose-400': session.state === 'ERROR'
                       }"
-                      :title="{
-                        'CREATED': 'Ready to start',
-                        'RUNNING': 'Agent is running',
-                        'AWAITING_INPUT': 'Waiting for your input',
-                        'INTERRUPTING': 'Interrupting...',
-                        'ERROR': 'Session error'
-                      }[session.state] || session.state"
-                    ></span>
-                    <span class="text-xs text-stone-500">{{ formatState(session.state) }}</span>
+                    >
+                      <span
+                        class="h-1.5 w-1.5 rounded-full"
+                        :class="{
+                          'bg-emerald-400': session.state === 'RUNNING',
+                          'bg-amber-400': session.state === 'AWAITING_INPUT',
+                          'bg-orange-400': session.state === 'INTERRUPTING',
+                          'bg-rose-500': session.state === 'ERROR',
+                          'animate-pulse': session.state === 'RUNNING' || session.state === 'AWAITING_INPUT'
+                        }"
+                      ></span>
+                      {{ formatState(session.state) }}
+                    </span>
                   </div>
                 </div>
                 <button
@@ -214,14 +264,7 @@
         </div>
 
         <!-- Footer -->
-        <div class="border-t border-stone-800/50 px-3 py-3 space-y-1">
-          <button
-            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
-            @click="openExternalBrowser"
-          >
-            <Link class="h-4 w-4" />
-            Attach to session
-          </button>
+        <div class="border-t border-stone-800/50 px-3 py-3">
           <button
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
             @click="openSettings"
@@ -263,6 +306,7 @@
           </p>
           <Input
             v-model="tokenInput"
+            type="password"
             placeholder="AGENT_TOKEN"
             class="border-stone-700 bg-stone-800"
           />
@@ -362,7 +406,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
-import { Folder, Menu, GitBranch, MoreVertical, Plus, Settings as SettingsIcon, X, Link, RefreshCw } from "lucide-vue-next";
+import { Folder, Menu, GitBranch, MoreVertical, Plus, Settings as SettingsIcon, X, Link, RefreshCw, ChevronRight, Clock, MessageSquare, ChevronsDownUp, ChevronsUpDown } from "lucide-vue-next";
 import {
   createSession,
   deleteSession,
@@ -409,6 +453,7 @@ let directoryTimer: number | null = null;
 const settingsOpen = ref(false);
 const externalBrowserOpen = ref(false);
 const menuOpen = ref(false);
+const expandedDirectories = ref(new Set<string>());
 const menuRef = ref<HTMLElement | null>(null);
 const syncing = ref(false);
 const menuHandler = (event: MouseEvent | TouchEvent) => {
@@ -443,10 +488,6 @@ const activeSession = computed(() =>
   sessions.value.find((session) => session.id === activeSessionId.value)
 );
 
-const sessionTitle = computed(
-  () => activeSession.value?.name || activeSession.value?.directory || ""
-);
-
 const formatState = (state: string | undefined): string => {
   if (!state) return "";
   const labels: Record<string, string> = {
@@ -459,19 +500,24 @@ const formatState = (state: string | undefined): string => {
   return labels[state] || state.toLowerCase().replace(/_/g, " ");
 };
 
-const sessionDirectory = computed(() => {
-  const raw = activeSession.value?.directory || "";
-  if (!raw) {
-    return "";
-  }
-  const trimmed = raw.replace(/[\\/]+$/, "");
-  const segments = trimmed.split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) || trimmed;
-});
+const formatTime = (timestamp: string): string => {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
 
-const fullSessionDirectory = computed(
-  () => activeSession.value?.directory || ""
-);
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+};
+
+const formatSessionId = (id: string): string => {
+  return id.slice(0, 8);
+};
 
 const statusDot = computed(() => {
   switch (activeSession.value?.state) {
@@ -578,12 +624,60 @@ const filteredDirectoryGroups = computed(() => {
   if (!query) {
     return directoryGroups.value;
   }
-  return directoryGroups.value.filter((group) => {
-    const labelMatch = group.label.toLowerCase().includes(query);
-    const pathMatch = group.path?.toLowerCase().includes(query);
-    return labelMatch || pathMatch;
-  });
+  return directoryGroups.value
+    .map((group) => {
+      const labelMatch = group.label.toLowerCase().includes(query);
+      const pathMatch = group.path?.toLowerCase().includes(query);
+      // Also filter sessions within the group by session ID
+      const matchingSessions = group.sessions.filter((session) => {
+        const sessionIdMatch = (session.runner_session_id || session.id).toLowerCase().includes(query);
+        const nameMatch = session.name?.toLowerCase().includes(query);
+        return sessionIdMatch || nameMatch;
+      });
+      // Include group if label/path matches (show all sessions) or if any session matches
+      if (labelMatch || pathMatch) {
+        return group;
+      }
+      if (matchingSessions.length > 0) {
+        return { ...group, sessions: matchingSessions };
+      }
+      return null;
+    })
+    .filter((group): group is NonNullable<typeof group> => group !== null);
 });
+
+// Get the directory key for the active session
+const activeSessionDirectoryKey = computed(() => {
+  const session = activeSession.value;
+  if (!session) return null;
+  return session.directory ?? session.id;
+});
+
+// Check if a directory is expanded
+const isDirectoryExpanded = (key: string) => {
+  return expandedDirectories.value.has(key);
+};
+
+// Toggle directory expansion
+const toggleDirectory = (key: string) => {
+  if (expandedDirectories.value.has(key)) {
+    expandedDirectories.value.delete(key);
+  } else {
+    expandedDirectories.value.add(key);
+  }
+};
+
+// Expand all directories
+const expandAllDirectories = () => {
+  directoryGroups.value.forEach((group) => {
+    expandedDirectories.value.add(group.key);
+  });
+};
+
+// Collapse all directories
+const collapseAllDirectories = () => {
+  expandedDirectories.value.clear();
+};
 
 const refreshSessions = async () => {
   error.value = "";
@@ -592,6 +686,15 @@ const refreshSessions = async () => {
     sessions.value = fetched;
     maybeSelectDefaultSession(fetched);
     authRequired.value = false;
+    // Auto-expand the active session's directory
+    const activeId = activeSessionId.value;
+    if (activeId) {
+      const session = fetched.find((s) => s.id === activeId);
+      if (session) {
+        const dirKey = session.directory ?? session.id;
+        expandedDirectories.value.add(dirKey);
+      }
+    }
   } catch (err) {
     error.value = String(err);
   } finally {
@@ -690,9 +793,10 @@ const handleSync = async () => {
       console.log(`Synced ${result.synced} new messages`);
     }
   } catch (err) {
-    // 400 means not an attached session - just ignore silently
-    if (!String(err).includes("400")) {
-      error.value = String(err);
+    // 400 means not an attached session, 404 means external session not found
+    const msg = String(err);
+    if (!msg.includes("400") && !msg.includes("404")) {
+      error.value = msg;
     }
   } finally {
     syncing.value = false;
@@ -768,6 +872,16 @@ watch(activeSessionId, (newId, oldId) => {
     return;
   }
   refreshSessions().catch(() => undefined);
+  // Auto-sync messages from CLI when opening a session
+  if (newId) {
+    handleSync();
+  }
+  // Auto-expand the directory containing the active session
+  const session = sessions.value.find((s) => s.id === newId);
+  if (session) {
+    const dirKey = session.directory ?? session.id;
+    expandedDirectories.value.add(dirKey);
+  }
   // Sync URL when session changes
   const routeId = route.params.id as string | undefined;
   if (newId && newId !== routeId) {

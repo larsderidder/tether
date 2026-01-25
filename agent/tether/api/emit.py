@@ -121,6 +121,26 @@ async def emit_error(session: Session, code: str, message: str) -> None:
     )
 
 
+async def emit_warning(session: Session, code: str, message: str) -> None:
+    """Emit a warning event to SSE listeners.
+
+    Args:
+        session: Session that encountered the warning condition.
+        code: Warning code string.
+        message: Human-readable warning message.
+    """
+    await store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "warning",
+            "data": {"code": code, "message": message},
+        },
+    )
+
+
 async def emit_metadata(session: Session, key: str, value: object, raw: str) -> None:
     """Emit a metadata event to SSE listeners.
 
@@ -207,3 +227,79 @@ async def emit_input_required(session: Session, last_output: str | None = None) 
             },
         },
     )
+
+
+async def emit_history_message(
+    session: Session,
+    role: str,
+    content: str,
+    thinking: str | None = None,
+    timestamp: str | None = None,
+    is_final: bool = False,
+) -> None:
+    """Emit a history message event for displaying past conversation.
+
+    Used when attaching to an external session to show its history.
+
+    Args:
+        session: Session to emit the history for.
+        role: Message role ("user" or "assistant").
+        content: Message content text.
+        thinking: Thinking content for assistant messages.
+        timestamp: Original timestamp of the message.
+        is_final: Whether this is the final message (shown as final, not step).
+    """
+    ts = timestamp or now()
+
+    # Emit as either user_input or output depending on role
+    if role == "user":
+        await store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": ts,
+                "seq": store.next_seq(session.id),
+                "type": "user_input",
+                "data": {"text": content, "is_history": True},
+            },
+        )
+    else:
+        # For assistant messages, emit thinking first (as step), then content
+        if thinking:
+            await store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": ts,
+                    "seq": store.next_seq(session.id),
+                    "type": "output",
+                    "data": {
+                        "stream": "combined",
+                        "text": thinking,
+                        "kind": "step",
+                        "final": False,
+                        "is_history": True,
+                    },
+                },
+            )
+
+        if content:
+            # Non-final messages are shown as thinking/step
+            # Only the final message is shown as final output
+            kind = "final" if is_final else "step"
+            await store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": ts,
+                    "seq": store.next_seq(session.id),
+                    "type": "output",
+                    "data": {
+                        "stream": "combined",
+                        "text": content,
+                        "kind": kind,
+                        "final": is_final,
+                        "is_history": True,
+                    },
+                },
+            )

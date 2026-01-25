@@ -37,7 +37,7 @@ async def sse_stream(
                 continue
             if seq:
                 last_seq = seq
-            logger.debug("Yielding replayed event", session_id=session_id, event_type=event.get("type"))
+            # logger.debug("Yielding replayed event", session_id=session_id, event_type=event.get("type"))
             yield sse_event(event).encode("utf-8")
         while True:
             try:

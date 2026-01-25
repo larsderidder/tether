@@ -82,6 +82,7 @@ class SessionStore:
             self._ensure_column("sessions", "directory_has_git", "INTEGER DEFAULT 0")
             self._ensure_column("sessions", "workdir_managed", "INTEGER DEFAULT 0")
             self._ensure_column("sessions", "runner_type", "TEXT")
+            self._ensure_column("sessions", "runner_session_id", "TEXT UNIQUE")
             self._db.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -130,6 +131,10 @@ class SessionStore:
             if session.directory:
                 self._workdirs[session.id] = session.directory
                 self._workdir_managed[session.id] = workdir_managed
+            # Restore runner_session_id mapping from database
+            keys = set(row.keys())
+            if "runner_session_id" in keys and row["runner_session_id"]:
+                self._runner_session_ids[session.id] = row["runner_session_id"]
 
     def _session_from_row(self, row: sqlite3.Row) -> tuple[Session, bool]:
         keys = set(row.keys())
@@ -328,9 +333,9 @@ class SessionStore:
                     id, repo_id, repo_display, repo_ref_type, repo_ref_value, state,
                     name, created_at, started_at, ended_at, last_activity_at,
                     exit_code, summary, runner_header, runner_type,
-                    directory, directory_has_git, workdir_managed
+                    directory, directory_has_git, workdir_managed, runner_session_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     repo_id=excluded.repo_id,
                     repo_display=excluded.repo_display,
@@ -348,7 +353,8 @@ class SessionStore:
                     runner_type=excluded.runner_type,
                     directory=excluded.directory,
                     directory_has_git=excluded.directory_has_git,
-                    workdir_managed=excluded.workdir_managed
+                    workdir_managed=excluded.workdir_managed,
+                    runner_session_id=excluded.runner_session_id
                 """,
                 (
                     session.id,
@@ -369,6 +375,7 @@ class SessionStore:
                     session.directory,
                     int(session.directory_has_git),
                     int(self._workdir_managed.get(session.id, False)),
+                    self._runner_session_ids.get(session.id),
                 ),
             )
             self._db.commit()
@@ -488,8 +495,12 @@ class SessionStore:
         return bool(self._pending_inputs.get(session_id))
 
     def set_runner_session_id(self, session_id: str, runner_session_id: str) -> None:
-        """Store the runner-specific session id."""
+        """Store the runner-specific session id and persist to database."""
         self._runner_session_ids[session_id] = runner_session_id
+        # Persist to database
+        session = self._sessions.get(session_id)
+        if session:
+            self._persist_session(session)
 
     def get_runner_session_id(self, session_id: str) -> str | None:
         """Fetch the runner-specific session id."""
@@ -497,6 +508,38 @@ class SessionStore:
 
     def clear_runner_session_id(self, session_id: str) -> None:
         self._runner_session_ids.pop(session_id, None)
+        # Persist the change to database
+        session = self._sessions.get(session_id)
+        if session:
+            self._persist_session(session)
+
+    def find_session_by_runner_session_id(self, runner_session_id: str) -> str | None:
+        """Find a Tether session ID that is attached to the given runner session ID.
+
+        Args:
+            runner_session_id: The external/runner session ID to look up.
+
+        Returns:
+            The Tether session ID if found, None otherwise.
+        """
+        for session_id, rsid in self._runner_session_ids.items():
+            if rsid == runner_session_id:
+                # Verify the session still exists
+                if session_id in self._sessions:
+                    return session_id
+        return None
+
+    def set_synced_message_count(self, session_id: str, count: int) -> None:
+        """Store the number of messages synced from external session."""
+        if not hasattr(self, "_synced_message_counts"):
+            self._synced_message_counts: dict[str, int] = {}
+        self._synced_message_counts[session_id] = count
+
+    def get_synced_message_count(self, session_id: str) -> int:
+        """Get the number of messages previously synced from external session."""
+        if not hasattr(self, "_synced_message_counts"):
+            self._synced_message_counts = {}
+        return self._synced_message_counts.get(session_id, 0)
 
     def should_emit_output(self, session_id: str, text: str) -> bool:
         """Return True if output is non-empty and not recently emitted.
@@ -635,6 +678,22 @@ class SessionStore:
         with self._db_lock:
             self._db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             self._db.commit()
+
+    def get_message_count(self, session_id: str) -> int:
+        """Get the number of messages for a session.
+
+        Args:
+            session_id: Internal session identifier.
+
+        Returns:
+            Number of messages in the session.
+        """
+        with self._db_lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return row[0] if row else 0
 
     def set_claude_task(self, session_id: str, task: asyncio.Task) -> None:
         """Track the Claude conversation loop task for a session."""

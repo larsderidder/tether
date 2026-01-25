@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 )
 
 from tether.models import SessionState
+from tether.prompts import SYSTEM_PROMPT
 from tether.runner.base import RunnerEvents
 from tether.store import store
 
@@ -45,6 +46,8 @@ class ClaudeLocalRunner:
         self._sdk_sessions: dict[str, str] = {}
         # Active query tasks per session
         self._tasks: dict[str, asyncio.Task] = {}
+        # Store permission mode per session for follow-up inputs
+        self._permission_modes: dict[str, str] = {}
 
     async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
         """Start a Claude conversation session.
@@ -61,12 +64,24 @@ class ClaudeLocalRunner:
         session = store.get_session(session_id)
         cwd = session.directory if session and session.directory else None
 
-        # Map approval_choice to permission_mode
+        # Map approval_choice to permission_mode and store for follow-up inputs
         permission_mode = self._map_permission_mode(approval_choice)
+        self._permission_modes[session_id] = permission_mode
+
+        # Check for pre-attached external session ID (from attach flow)
+        resume = store.get_runner_session_id(session_id)
+        if resume:
+            # Pre-populate internal cache for subsequent send_input calls
+            self._sdk_sessions[session_id] = resume
+            logger.info(
+                "Starting with attached session",
+                session_id=session_id,
+                external_session_id=resume,
+            )
 
         # Start the query task
         task = asyncio.create_task(
-            self._run_query(session_id, prompt, cwd, permission_mode, resume=None)
+            self._run_query(session_id, prompt, cwd, permission_mode, resume=resume)
         )
         self._tasks[session_id] = task
 
@@ -80,8 +95,19 @@ class ClaudeLocalRunner:
         if not text.strip():
             return
 
-        # Get SDK session_id for resume
+        # Get SDK session_id for resume - check internal cache first, then store
+        # (store may have pre-attached external session ID from attach flow)
         sdk_session_id = self._sdk_sessions.get(session_id)
+        if not sdk_session_id:
+            sdk_session_id = store.get_runner_session_id(session_id)
+            if sdk_session_id:
+                # Cache it for subsequent calls
+                self._sdk_sessions[session_id] = sdk_session_id
+                logger.info(
+                    "Using attached session for send_input",
+                    session_id=session_id,
+                    external_session_id=sdk_session_id,
+                )
 
         # Get session to determine working directory
         session = store.get_session(session_id)
@@ -98,13 +124,16 @@ class ClaudeLocalRunner:
 
         store.clear_stop_requested(session_id)
 
+        # Use stored permission mode from start(), fallback to bypassPermissions
+        permission_mode = self._permission_modes.get(session_id, "bypassPermissions")
+
         # Start new query with resume
         task = asyncio.create_task(
             self._run_query(
                 session_id,
                 text,
                 cwd,
-                permission_mode="default",
+                permission_mode=permission_mode,
                 resume=sdk_session_id,
             )
         )
@@ -175,9 +204,18 @@ class ClaudeLocalRunner:
                 continue_conversation=resume is not None,
                 # Don't load external settings that might override permission_mode
                 setting_sources=[],
+                # Custom system prompt for application-wide instructions
+                system_prompt=SYSTEM_PROMPT,
             )
 
-            logger.info("Starting query", session_id=session_id, cwd=cwd, permission_mode=permission_mode, resume=resume)
+            logger.info(
+                "Starting query",
+                session_id=session_id,
+                cwd=cwd,
+                permission_mode=permission_mode,
+                resume=resume,
+                continue_conversation=options.continue_conversation,
+            )
             async for message in query(prompt=prompt, options=options):
                 # Check for stop request
                 if store.is_stop_requested(session_id):
@@ -231,8 +269,28 @@ class ClaudeLocalRunner:
             data = message.data
             # Store SDK session ID for resume
             sdk_session_id = data.get("session_id")
+
+            # Check if we expected a specific session (from attach flow)
+            expected_session_id = self._sdk_sessions.get(session_id)
+            if expected_session_id and sdk_session_id:
+                if expected_session_id != sdk_session_id:
+                    logger.warning(
+                        "SDK returned different session ID than expected",
+                        session_id=session_id,
+                        expected=expected_session_id,
+                        actual=sdk_session_id,
+                    )
+                else:
+                    logger.info(
+                        "SDK resumed expected session",
+                        session_id=session_id,
+                        sdk_session_id=sdk_session_id,
+                    )
+
             if sdk_session_id:
                 self._sdk_sessions[session_id] = sdk_session_id
+                # Persist to store so sync can find it
+                store.set_runner_session_id(session_id, sdk_session_id)
 
             # Emit header
             model = data.get("model", "claude")
@@ -255,15 +313,26 @@ class ClaudeLocalRunner:
             )
             return
 
+        # Analyze content to determine which text blocks are intermediate vs final
+        # If there are tool uses, all text is intermediate reasoning
+        # If no tool uses, only the last text block is final
+        text_blocks = [b for b in message.content if isinstance(b, TextBlock)]
+        has_tool_use = any(isinstance(b, ToolUseBlock) for b in message.content)
+        last_text_index = len(text_blocks) - 1
+
+        text_index = 0
         for block in message.content:
             if isinstance(block, TextBlock):
+                # Text is final only if: no tool uses AND this is the last text block
+                is_final_text = not has_tool_use and text_index == last_text_index
                 await self._events.on_output(
                     session_id,
                     "combined",
                     block.text,
-                    kind="final",
-                    is_final=True,
+                    kind="final" if is_final_text else "step",
+                    is_final=is_final_text,
                 )
+                text_index += 1
             elif isinstance(block, ToolUseBlock):
                 # Emit tool invocation as step
                 tool_info = f"[tool: {block.name}]"

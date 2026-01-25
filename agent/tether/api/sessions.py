@@ -10,7 +10,8 @@ from fastapi import APIRouter, Body, Depends
 
 from tether.api.deps import require_token
 from tether.api.diff import build_git_diff
-from tether.api.emit import emit_state, emit_user_input
+from tether.api.emit import emit_state, emit_user_input, emit_warning
+from tether.discovery.running import is_claude_session_running
 from tether.api.errors import raise_http_error
 from tether.api.runner_events import get_api_runner
 from tether.api.state import maybe_set_session_name, now, transition
@@ -127,6 +128,8 @@ async def start_session(
             raise_http_error("VALIDATION_ERROR", "approval_choice must be 1 or 2", 422)
 
         # Clear stale state from previous runs
+        # NOTE: Do NOT clear runner_session_id here - it may contain an attached
+        # external session ID that we need to preserve for resume
         if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
             session.ended_at = None
             session.exit_code = None
@@ -138,12 +141,26 @@ async def start_session(
             store.clear_stdin(session_id)
             store.clear_prompt_sent(session_id)
             store.clear_pending_inputs(session_id)
-            store.clear_runner_session_id(session_id)
             store.clear_last_output(session_id)
 
         logger.info("Session start requested")
+
+        # Warn if the attached external session is currently busy in another CLI
+        external_session_id = store.get_runner_session_id(session_id)
+        if external_session_id and is_claude_session_running(external_session_id):
+            logger.warning(
+                "External session is busy at start",
+                session_id=session_id,
+                external_session_id=external_session_id,
+            )
+            await emit_warning(
+                session,
+                "EXTERNAL_SESSION_BUSY",
+                "The attached Claude session is currently running in another CLI. "
+                "Your message will be sent, but may not appear in the other CLI until it's restarted.",
+            )
+
         session.runner_type = get_runner_type()
-        store.clear_runner_session_id(session_id)
         if not store.get_workdir(session_id):
             store.set_workdir(session_id, session.directory, managed=False)
         maybe_set_session_name(session, prompt)
@@ -205,6 +222,22 @@ async def send_input(
         if session.state not in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
             raise_http_error("INVALID_STATE", "Session not running or awaiting input", 409)
         logger.info("Session input received", text_length=len(text))
+
+        # Warn if the attached external session is currently busy in another CLI
+        external_session_id = store.get_runner_session_id(session_id)
+        if external_session_id and is_claude_session_running(external_session_id):
+            logger.warning(
+                "External session is busy",
+                session_id=session_id,
+                external_session_id=external_session_id,
+            )
+            await emit_warning(
+                session,
+                "EXTERNAL_SESSION_BUSY",
+                "The attached Claude session is currently running in another CLI. "
+                "Your message will be sent, but may not appear in the other CLI until it's restarted.",
+            )
+
         # Transition from AWAITING_INPUT to RUNNING when user provides input
         if session.state == SessionState.AWAITING_INPUT:
             transition(session, SessionState.RUNNING)
@@ -279,6 +312,8 @@ def _serialize_session(session) -> dict:
         "summary": session.summary,
         "runner_header": getattr(session, "runner_header", None),
         "runner_type": getattr(session, "runner_type", None),
+        "runner_session_id": store.get_runner_session_id(session.id),
         "directory": session.directory,
         "directory_has_git": session.directory_has_git,
+        "message_count": store.get_message_count(session.id),
     }

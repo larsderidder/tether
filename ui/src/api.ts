@@ -12,8 +12,10 @@ export type Session = {
   summary: string | null;
   runner_header: string | null;
   runner_type: string | null;
+  runner_session_id: string | null;
   directory: string | null;
   directory_has_git: boolean;
+  message_count: number;
 };
 
 export type EventEnvelope = {
@@ -49,6 +51,28 @@ export type DirectoryCheck = {
   path: string;
   exists: boolean;
   is_git: boolean;
+};
+
+export type ExternalRunnerType = "claude_code" | "codex_cli";
+
+export type ExternalSessionSummary = {
+  id: string;
+  runner_type: ExternalRunnerType;
+  directory: string;
+  first_prompt: string | null;
+  last_activity: string;
+  message_count: number;
+  is_running: boolean;
+};
+
+export type ExternalSessionMessage = {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string | null;
+};
+
+export type ExternalSessionDetail = ExternalSessionSummary & {
+  messages: ExternalSessionMessage[];
 };
 
 const BASE_KEY = "tether_base_url";
@@ -212,6 +236,75 @@ export async function renameSession(id: string, name: string): Promise<Session> 
     body: JSON.stringify({ name }),
   });
   return data.session;
+}
+
+export type ListExternalSessionsOptions = {
+  directory?: string;
+  runner_type?: ExternalRunnerType;
+  limit?: number;
+};
+
+export async function listExternalSessions(
+  options: ListExternalSessionsOptions = {}
+): Promise<ExternalSessionSummary[]> {
+  const params = new URLSearchParams();
+  if (options.directory) {
+    params.set("directory", options.directory);
+  }
+  if (options.runner_type) {
+    params.set("runner_type", options.runner_type);
+  }
+  if (options.limit) {
+    params.set("limit", String(options.limit));
+  }
+  const query = params.toString();
+  const data = await fetchJson<{ sessions: ExternalSessionSummary[] }>(
+    `/api/external-sessions${query ? `?${query}` : ""}`
+  );
+  return data.sessions;
+}
+
+export async function getExternalSessionHistory(
+  id: string,
+  runnerType: ExternalRunnerType,
+  limit?: number
+): Promise<ExternalSessionDetail> {
+  const params = new URLSearchParams({ runner_type: runnerType });
+  if (limit) {
+    params.set("limit", String(limit));
+  }
+  const data = await fetchJson<{ session: ExternalSessionDetail }>(
+    `/api/external-sessions/${id}/history?${params.toString()}`
+  );
+  return data.session;
+}
+
+export async function attachToExternalSession(
+  externalId: string,
+  runnerType: ExternalRunnerType,
+  directory: string
+): Promise<Session> {
+  const data = await fetchJson<{ session: Session }>("/api/sessions/attach", {
+    method: "POST",
+    body: JSON.stringify({
+      external_id: externalId,
+      runner_type: runnerType,
+      directory,
+    }),
+  });
+  return data.session;
+}
+
+export type SyncResult = {
+  synced: number;
+  total: number;
+};
+
+export async function syncSession(id: string): Promise<SyncResult> {
+  const data = await fetchJson<SyncResult>(`/api/sessions/${id}/sync`, {
+    method: "POST",
+  });
+  return data;
 }
 
 export async function openEventStream(

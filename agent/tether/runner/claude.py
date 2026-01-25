@@ -10,21 +10,13 @@ import structlog
 from anthropic import Anthropic
 
 from tether.models import SessionState
+from tether.prompts import SYSTEM_PROMPT
 from tether.runner.base import RunnerEvents
 from tether.settings import settings
 from tether.store import store
 from tether.tools import TOOLS, execute_tool
 
 logger = structlog.get_logger("tether.runner.claude")
-
-SYSTEM_PROMPT = """You are a helpful coding assistant with access to tools for reading files, writing files, and running bash commands.
-
-When asked to perform tasks:
-1. Use file_read to examine existing files
-2. Use file_write to create or modify files
-3. Use bash to run commands like build, test, git, etc.
-
-Always explain what you're doing before executing tools."""
 
 
 class ClaudeRunner:
@@ -297,10 +289,6 @@ class ClaudeRunner:
                                 kind="final",
                                 is_final=True,
                             )
-                        elif hasattr(delta, "partial_json"):
-                            # Accumulate tool input JSON
-                            if content_blocks and content_blocks[-1].get("type") == "tool_use":
-                                pass  # JSON will be parsed at end
 
                     elif event.type == "content_block_stop":
                         if current_text:

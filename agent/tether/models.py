@@ -15,6 +15,36 @@ class SessionState(str, Enum):
     ERROR = "ERROR"
 
 
+class ExternalRunnerType(str, Enum):
+    """Types of external session sources."""
+    CLAUDE_CODE = "claude_code"
+    CODEX_CLI = "codex_cli"
+
+
+class ExternalSessionMessage(BaseModel):
+    """Normalized message from external session history."""
+    role: str  # "user" or "assistant"
+    content: str
+    thinking: str | None = None  # Thinking content for assistant messages
+    timestamp: str | None = None
+
+
+class ExternalSessionSummary(BaseModel):
+    """Summary info for an external session (for list view)."""
+    id: str  # External session ID (UUID)
+    runner_type: ExternalRunnerType
+    directory: str
+    first_prompt: str | None = None
+    last_activity: str
+    message_count: int
+    is_running: bool
+
+
+class ExternalSessionDetail(ExternalSessionSummary):
+    """Full external session with message history."""
+    messages: list[ExternalSessionMessage] = []
+
+
 class RepoRef(BaseModel):
     """Reference to a repository target (path or URL)."""
     type: str
@@ -37,6 +67,7 @@ class Session(BaseModel):
     summary: str | None
     runner_header: str | None = None
     runner_type: str | None = None
+    runner_session_id: str | None = None  # External Claude/Codex session ID
     directory: str | None = None
     directory_has_git: bool = False
 
