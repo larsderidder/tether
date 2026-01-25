@@ -28,7 +28,7 @@ except ImportError:
 
 if SDK_AVAILABLE:
     from tether import store as store_module
-    from tether.runner.claude_local import ClaudeLocalRunner
+    # Note: Runner import delayed until after store reload in run_test()
 
 
 class Events:
@@ -59,6 +59,9 @@ class Events:
     async def on_awaiting_input(self, session_id):
         self.awaiting_input = True
 
+    async def on_header(self, session_id, title, model, provider):
+        print(f"[HEADER] {title} | {model} | {provider}")
+
     def get_text(self):
         return "".join(self.outputs)
 
@@ -81,11 +84,16 @@ async def wait_for_turn(events, timeout=60):
 
 async def run_test(tmpdir):
     events = Events()
-    runner = ClaudeLocalRunner(events)
     secret = random.randint(100, 999)
 
+    # Set data dir BEFORE reloading store
     os.environ["TETHER_AGENT_DATA_DIR"] = tmpdir
     importlib.reload(store_module)
+
+    # Import runner AFTER reloading store so they share the same store instance
+    from tether.runner import claude_local as runner_module
+    importlib.reload(runner_module)
+    runner = runner_module.ClaudeLocalRunner(events)
 
     session = store_module.store.create_session("test", "main")
     session.state = store_module.SessionState.RUNNING

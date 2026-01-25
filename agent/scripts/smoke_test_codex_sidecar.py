@@ -23,8 +23,8 @@ os.environ.setdefault("TETHER_AGENT_DEV_MODE", "1")
 os.environ.setdefault("TETHER_AGENT_ADAPTER", "codex_sdk_sidecar")
 
 from tether import store as store_module
-from tether.runner.sidecar import SidecarRunner
 from tether.settings import settings
+# Note: Runner import delayed until after store reload in run_test()
 
 
 class Events:
@@ -55,6 +55,9 @@ class Events:
 
     async def on_awaiting_input(self, session_id):
         self.awaiting_input = True
+
+    async def on_header(self, session_id, title, model, provider, sandbox=None, approval=None):
+        print(f"[HEADER] {title} | {model} | {provider} | sandbox={sandbox} | approval={approval}")
 
     def get_text(self):
         return "".join(self.outputs)
@@ -97,11 +100,16 @@ def check_sidecar_health(url):
 
 async def run_test(tmpdir):
     events = Events()
-    runner = SidecarRunner(events)
     secret = random.randint(100, 999)
 
+    # Set data dir BEFORE reloading store
     os.environ["TETHER_AGENT_DATA_DIR"] = tmpdir
     importlib.reload(store_module)
+
+    # Import runner AFTER reloading store so they share the same store instance
+    from tether.runner import sidecar as runner_module
+    importlib.reload(runner_module)
+    runner = runner_module.SidecarRunner(events)
 
     session = store_module.store.create_session("test", "main")
     session.state = store_module.SessionState.RUNNING
