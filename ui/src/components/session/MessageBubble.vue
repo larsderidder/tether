@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref, onMounted, onUnmounted } from "vue"
 import { Bot, ChevronDown, ChevronUp, Copy, User } from "lucide-vue-next"
+import { renderMarkdown } from "@/lib/markdown"
 
 export type ChatMessage = {
   role: "user" | "assistant"
@@ -26,42 +27,100 @@ const emit = defineEmits<{
   toggleDetails: []
 }>()
 
-const renderMarkdown = (source: string): string => {
-  const escaped = source
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-  const lines = escaped.split("\n").map((line) => {
-    const trimmed = line.trim()
-    if (trimmed.toLowerCase() === "thinking") {
-      return "<em>thinking</em>"
-    }
-    let out = line.replace(/`([^`]+)`/g, "<code>$1</code>")
-    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    out = out.replace(/(^|\s)\*([^*]+)\*/g, "$1<em>$2</em>")
-    return out
-  })
-  return lines.join("<br />")
-}
-
 const hasThinking = computed(() => Boolean(props.message.thinking?.trim()))
 const hasFinal = computed(() => Boolean(props.message.final?.trim()))
 const hasContent = computed(() => hasThinking.value || hasFinal.value)
+
+// Selection copy functionality
+const bubbleRef = ref<HTMLElement | null>(null)
+const showSelectionCopy = ref(false)
+const selectionCopyPos = ref({ x: 0, y: 0 })
+const selectedText = ref("")
+
+function handleSelectionChange() {
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed || !bubbleRef.value) {
+    showSelectionCopy.value = false
+    return
+  }
+
+  const text = selection.toString().trim()
+  if (!text) {
+    showSelectionCopy.value = false
+    return
+  }
+
+  // Check if selection is within this bubble
+  const range = selection.getRangeAt(0)
+  const container = range.commonAncestorContainer
+  if (!bubbleRef.value.contains(container)) {
+    showSelectionCopy.value = false
+    return
+  }
+
+  selectedText.value = text
+  const rect = range.getBoundingClientRect()
+  const bubbleRect = bubbleRef.value.getBoundingClientRect()
+
+  // Position above the selection, centered
+  selectionCopyPos.value = {
+    x: rect.left + rect.width / 2 - bubbleRect.left,
+    y: rect.top - bubbleRect.top - 8
+  }
+  showSelectionCopy.value = true
+}
+
+function copySelection() {
+  if (selectedText.value) {
+    navigator.clipboard.writeText(selectedText.value)
+    showSelectionCopy.value = false
+    window.getSelection()?.removeAllRanges()
+  }
+}
+
+function handleMouseDown(e: MouseEvent) {
+  // Hide if clicking outside the copy button
+  const target = e.target as HTMLElement
+  if (!target.closest(".selection-copy-btn")) {
+    showSelectionCopy.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("selectionchange", handleSelectionChange)
+  document.addEventListener("mousedown", handleMouseDown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener("selectionchange", handleSelectionChange)
+  document.removeEventListener("mousedown", handleMouseDown)
+})
 </script>
 
 <template>
   <!-- User message -->
-  <div v-if="message.role === 'user'" class="flex justify-end gap-2">
+  <div v-if="message.role === 'user'" ref="bubbleRef" class="relative flex justify-end gap-2">
     <div class="max-w-[80%] rounded-2xl rounded-br-md bg-emerald-600 px-4 py-2.5 text-sm text-white">
       {{ message.text }}
     </div>
     <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600">
       <User class="h-4 w-4 text-white" />
     </div>
+    <!-- Selection copy button -->
+    <button
+      v-if="showSelectionCopy"
+      class="selection-copy-btn absolute z-50 flex items-center gap-1 rounded-lg bg-stone-700 px-2 py-1 text-xs text-stone-200 shadow-lg transition hover:bg-stone-600"
+      :style="{ left: selectionCopyPos.x + 'px', top: selectionCopyPos.y + 'px', transform: 'translate(-50%, -100%)' }"
+      @mousedown.prevent
+      @click="copySelection"
+    >
+      <Copy class="h-3 w-3" />
+      <span>Copy</span>
+    </button>
   </div>
 
   <!-- Assistant message -->
-  <div v-else class="flex gap-2">
+  <div v-else ref="bubbleRef" class="relative flex gap-2">
     <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-700">
       <Bot class="h-4 w-4 text-stone-300" />
     </div>
@@ -121,5 +180,16 @@ const hasContent = computed(() => hasThinking.value || hasFinal.value)
         </div>
       </div>
     </div>
+    <!-- Selection copy button -->
+    <button
+      v-if="showSelectionCopy"
+      class="selection-copy-btn absolute z-50 flex items-center gap-1 rounded-lg bg-stone-700 px-2 py-1 text-xs text-stone-200 shadow-lg transition hover:bg-stone-600"
+      :style="{ left: selectionCopyPos.x + 'px', top: selectionCopyPos.y + 'px', transform: 'translate(-50%, -100%)' }"
+      @mousedown.prevent
+      @click="copySelection"
+    >
+      <Copy class="h-3 w-3" />
+      <span>Copy</span>
+    </button>
   </div>
 </template>

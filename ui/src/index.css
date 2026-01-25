@@ -64,7 +64,45 @@
     @apply text-stone-500 font-medium;
   }
 
-  /* diff2html dark theme */
+  /* Markdown tables */
+  .message-markdown .markdown-table,
+  .message-thinking-markdown .markdown-table {
+    @apply my-2 w-full border-collapse text-left;
+  }
+
+  .message-markdown .markdown-table th,
+  .message-markdown .markdown-table td {
+    @apply border border-stone-700 px-3 py-1.5 text-xs;
+  }
+
+  .message-markdown .markdown-table th {
+    @apply bg-stone-800 font-semibold text-stone-200;
+  }
+
+  .message-markdown .markdown-table td {
+    @apply bg-stone-900/50 text-stone-300;
+  }
+
+  .message-thinking-markdown .markdown-table th,
+  .message-thinking-markdown .markdown-table td {
+    @apply border border-stone-800 px-3 py-1.5 text-xs;
+  }
+
+  .message-thinking-markdown .markdown-table th {
+    @apply bg-stone-900 font-medium text-stone-400;
+  }
+
+  .message-thinking-markdown .markdown-table td {
+    @apply bg-stone-900/30 text-stone-500;
+  }
+
+  /* diff2html dark theme - mobile optimized */
+  .diff-content {
+    @apply -mx-3 sm:mx-0 px-0 sm:px-4 py-2 sm:py-3;
+    /* Smooth scrolling for horizontal overflow */
+    -webkit-overflow-scrolling: touch;
+  }
+
   .diff2html {
     @apply text-stone-200;
   }
@@ -83,16 +121,26 @@
   }
 
   .diff2html .d2h-diff-table {
-    @apply w-full border-collapse font-mono text-xs;
+    @apply w-full border-collapse font-mono;
+    font-size: 10px;
+  }
+
+  @screen sm {
+    .diff2html .d2h-diff-table {
+      @apply text-xs;
+    }
   }
 
   .diff2html .d2h-code-line,
   .diff2html .d2h-code-line-ctn {
     @apply bg-stone-900/40 text-stone-300;
+    /* Ensure code doesn't wrap on mobile for better readability */
+    white-space: pre;
   }
 
   .diff2html .d2h-code-line {
-    @apply text-xs leading-5;
+    font-size: inherit;
+    @apply leading-5;
   }
 
   .diff2html .d2h-code-line-prefix {
@@ -125,7 +173,14 @@
 
   .diff2html .d2h-code-linenumber {
     @apply border-r border-stone-700/50 bg-stone-900/60 text-stone-500;
-    min-width: 2.5em;
+    min-width: 2em;
+    @apply px-1 sm:px-2;
+  }
+
+  @screen sm {
+    .diff2html .d2h-code-linenumber {
+      min-width: 2.5em;
+    }
   }
 
   .diff2html .d2h-del .d2h-code-linenumber {

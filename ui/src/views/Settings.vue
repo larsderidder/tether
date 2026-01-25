@@ -9,7 +9,7 @@
         </label>
         <label class="space-y-2 text-sm font-medium text-stone-300">
           Token
-          <Input v-model="token" placeholder="" class="bg-stone-950/70 text-stone-100" />
+          <Input v-model="token" type="password" placeholder="" class="bg-stone-950/70 text-stone-100" />
         </label>
         <div class="flex items-center gap-3">
           <Button @click="save">Save</Button>
