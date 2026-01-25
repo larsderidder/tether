@@ -72,6 +72,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // Routes
 // =============================================================================
 
+// Health check endpoint
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({ status: "ok" });
+});
+
 // Mount the API routes
 app.use(router);
 

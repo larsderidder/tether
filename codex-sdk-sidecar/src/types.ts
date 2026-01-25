@@ -33,6 +33,9 @@ export type SessionState = {
   /** True while a turn is actively running. */
   running: boolean;
 
+  /** Approval choice for this session (1=acceptEdits, 2=bypassPermissions). */
+  approvalChoice?: number;
+
   /** Queue of user inputs received while a turn is in progress. */
   pendingInputs: string[];
 

@@ -33,6 +33,7 @@ import {
   emitMetadata,
   emitError,
   emitHeartbeat,
+  emitExit,
 } from "./session.js";
 import { ensureWorkdir } from "./workdir.js";
 
@@ -89,11 +90,19 @@ export function buildThreadOptions(session: SessionState, approvalChoice: number
     options.sandboxMode = sandboxMode as ThreadOptions["sandboxMode"];
   }
 
+  // Map approval_choice to Codex approvalPolicy
+  // Match Claude's interpretation: 2 = full auto (no approvals), 1 = partial, 0 = ask
   const approvalPolicy = settings.codexApprovalPolicy();
   if (approvalPolicy) {
     options.approvalPolicy = approvalPolicy as ThreadOptions["approvalPolicy"];
   } else if (approvalChoice === 2) {
-    // UI requested interactive approval
+    // Full auto - never ask for approval (matches Claude's bypassPermissions)
+    options.approvalPolicy = "never";
+  } else if (approvalChoice === 1) {
+    // Partial auto - ask on failure (matches Claude's acceptEdits)
+    options.approvalPolicy = "on-failure";
+  } else {
+    // Default/0 - ask for approval
     options.approvalPolicy = "on-request";
   }
 
@@ -441,6 +450,9 @@ export async function runTurn(
     const next = session.pendingInputs.shift();
     if (next) {
       void runTurn(session, next, approvalChoice);
+    } else {
+      // No more inputs - emit exit to signal turn completion
+      emitExit(session, 0);
     }
   }
 }

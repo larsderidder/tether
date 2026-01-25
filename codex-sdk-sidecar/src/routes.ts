@@ -27,7 +27,7 @@ export const router = Router();
  * Request body:
  * - session_id (required): Unique session identifier from the agent
  * - prompt (optional): Initial prompt to send
- * - approval_choice (optional): 1=auto-approve, 2=ask for approval
+ * - approval_choice (optional): 0=ask for approval, 1=partial auto, 2=full auto (no approvals)
  * - workdir (optional): Working directory for file operations
  *
  * If a turn is already running, the prompt is queued.
@@ -70,9 +70,12 @@ router.post("/sessions/start", async (req: Request, res: Response) => {
     await setWorkdir(session, String(workdir));
   }
 
+  // Store approval choice for follow-up inputs (default to 2 = full auto)
+  session.approvalChoice = Number(approval_choice) || 2;
+
   // Start the turn if a prompt was provided
   if (prompt) {
-    runTurn(session, String(prompt), Number(approval_choice) || 1).catch((err) => {
+    runTurn(session, String(prompt), session.approvalChoice).catch((err) => {
       logger.error({ session_id, error: String(err) }, "runTurn failed unexpectedly");
     });
   }
@@ -113,8 +116,11 @@ router.post("/sessions/input", (req: Request, res: Response) => {
     return res.json({ queued: true });
   }
 
+  // Use stored approval choice from start(), fallback to 2 (full auto)
+  const approvalChoice = session.approvalChoice ?? 2;
+
   // Start a new turn
-  runTurn(session, String(text), 1).catch((err) => {
+  runTurn(session, String(text), approvalChoice).catch((err) => {
     logger.error({ session_id, error: String(err) }, "runTurn failed unexpectedly");
   });
   return res.json({ ok: true });

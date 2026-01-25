@@ -156,6 +156,22 @@ export function emitHeartbeat(session: SessionState, done: boolean): void {
 }
 
 /**
+ * Emit an exit event to signal turn completion.
+ *
+ * The Python runner uses this to know when to transition the session
+ * to AWAITING_INPUT state.
+ *
+ * @param session - The session to emit to
+ * @param exitCode - Exit code (0 for success, non-zero for errors)
+ */
+export function emitExit(session: SessionState, exitCode: number = 0): void {
+  emit(session, {
+    type: "exit",
+    data: { exit_code: exitCode },
+  });
+}
+
+/**
  * Add an SSE subscriber to a session.
  *
  * Replays any buffered events that were emitted before any subscriber connected.
