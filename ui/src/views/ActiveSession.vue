@@ -197,13 +197,20 @@ const resetView = () => {
   renameMessage.value = ""
 }
 
-const ensureSession = async () => {
+const ensureSession = async (): Promise<boolean> => {
   error.value = ""
-  if (!activeSessionId.value) return
+  if (!activeSessionId.value) return false
   try {
     session.value = await getSession(activeSessionId.value)
+    return true
   } catch (err) {
+    // If session doesn't exist (404), clear the active session ID
+    if (String(err).includes("404")) {
+      activeSessionId.value = null
+      return false
+    }
     reportError(err)
+    return false
   }
 }
 
@@ -563,16 +570,19 @@ watch(activeSessionId, async (newId, oldId) => {
     closeStream = null
   }
   if (!newId) return
-  await ensureSession()
+  const exists = await ensureSession()
+  if (!exists) return
   await refreshDiff()
   await openStream()
 })
 
 onMounted(async () => {
   if (activeSessionId.value) {
-    await ensureSession()
-    await refreshDiff()
-    await openStream()
+    const exists = await ensureSession()
+    if (exists) {
+      await refreshDiff()
+      await openStream()
+    }
   }
   window.addEventListener("beforeunload", interruptOnUnload)
   window.addEventListener("pagehide", interruptOnUnload)

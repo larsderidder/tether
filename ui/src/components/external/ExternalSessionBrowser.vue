@@ -5,7 +5,7 @@
       <div class="flex items-center justify-between border-b border-stone-800/50 px-4 py-3">
         <div>
           <h2 class="text-sm font-medium text-stone-200">Attach to Session</h2>
-          <p class="text-xs text-stone-500">Continue an existing Claude Code session</p>
+          <p class="text-xs text-stone-500">Continue an existing session</p>
         </div>
         <button
           class="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-800 hover:text-stone-200"
@@ -33,22 +33,6 @@
             @click="runnerTypeFilter = rt.value"
           >
             {{ rt.label }}
-          </button>
-        </div>
-        <div v-if="directoryGroups.length > 1" class="flex justify-end gap-1">
-          <button
-            class="flex h-8 w-8 items-center justify-center rounded-lg bg-stone-800/50 text-stone-400 transition hover:bg-stone-800 hover:text-stone-300"
-            @click="expandAllDirectoryGroups"
-            title="Expand all"
-          >
-            <ChevronsUpDown class="h-4 w-4" />
-          </button>
-          <button
-            class="flex h-8 w-8 items-center justify-center rounded-lg bg-stone-800/50 text-stone-400 transition hover:bg-stone-800 hover:text-stone-300"
-            @click="collapseAllDirectoryGroups"
-            title="Collapse all"
-          >
-            <ChevronsDownUp class="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -244,8 +228,6 @@ import {
   ChevronDown,
   ChevronRight,
   AlertCircle,
-  ChevronsDownUp,
-  ChevronsUpDown,
 } from "lucide-vue-next";
 import {
   listExternalSessions,
@@ -346,16 +328,6 @@ const toggleDirectoryGroup = (key: string) => {
   } else {
     expandedDirectoryGroups.value.add(key);
   }
-};
-
-const expandAllDirectoryGroups = () => {
-  directoryGroups.value.forEach((group) => {
-    expandedDirectoryGroups.value.add(group.key);
-  });
-};
-
-const collapseAllDirectoryGroups = () => {
-  expandedDirectoryGroups.value.clear();
 };
 
 function formatDirectoryLabel(path: string): string {

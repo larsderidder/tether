@@ -332,6 +332,21 @@
             <p class="mt-1 text-sm text-stone-400">Enter a directory to get started</p>
           </div>
           <div class="space-y-3">
+            <button
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-500"
+              @click="openExternalBrowser"
+            >
+              <Link class="h-4 w-4" />
+              Attach to existing session
+            </button>
+            <div class="relative py-2">
+              <div class="absolute inset-0 flex items-center">
+                <div class="w-full border-t border-stone-700"></div>
+              </div>
+              <div class="relative flex justify-center text-xs">
+                <span class="bg-stone-900 px-2 text-stone-500">or start new</span>
+              </div>
+            </div>
             <div class="relative">
               <Input
                 v-model="directoryInput"
@@ -350,7 +365,7 @@
               </div>
             </div>
             <button
-              class="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
+              class="w-full rounded-lg border border-stone-700 bg-stone-800/50 py-2.5 text-sm font-medium text-stone-300 transition hover:bg-stone-800 disabled:opacity-50"
               @click="createDirectorySession"
               :disabled="!directoryProbe?.exists || checkingDirectory || creating"
             >
