@@ -72,17 +72,13 @@ class SessionStore:
                     exit_code INTEGER,
                     summary TEXT,
                     runner_header TEXT,
+                    runner_type TEXT,
+                    runner_session_id TEXT UNIQUE,
                     directory TEXT,
                     directory_has_git INTEGER DEFAULT 0,
                     workdir_managed INTEGER DEFAULT 0
                 )
                 """)
-            self._ensure_header_column()
-            self._ensure_column("sessions", "directory", "TEXT")
-            self._ensure_column("sessions", "directory_has_git", "INTEGER DEFAULT 0")
-            self._ensure_column("sessions", "workdir_managed", "INTEGER DEFAULT 0")
-            self._ensure_column("sessions", "runner_type", "TEXT")
-            self._ensure_column("sessions", "runner_session_id", "TEXT UNIQUE")
             self._db.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -96,30 +92,6 @@ class SessionStore:
                 """)
             self._db.commit()
 
-    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
-        existing = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
-        if column in existing:
-            return
-        self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
-
-    def _ensure_header_column(self) -> None:
-        existing = {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
-        if "runner_header" in existing:
-            return
-        if "codex_header" in existing:
-            try:
-                self._db.execute(
-                    "ALTER TABLE sessions RENAME COLUMN codex_header TO runner_header"
-                )
-                return
-            except sqlite3.OperationalError:
-                self._db.execute("ALTER TABLE sessions ADD COLUMN runner_header TEXT")
-                self._db.execute(
-                    "UPDATE sessions SET runner_header = codex_header WHERE runner_header IS NULL"
-                )
-                return
-        self._db.execute("ALTER TABLE sessions ADD COLUMN runner_header TEXT")
-
     def _load_sessions(self) -> None:
         with self._db_lock:
             rows = self._db.execute("SELECT * FROM sessions").fetchall()
@@ -131,19 +103,10 @@ class SessionStore:
             if session.directory:
                 self._workdirs[session.id] = session.directory
                 self._workdir_managed[session.id] = workdir_managed
-            # Restore runner_session_id mapping from database
-            keys = set(row.keys())
-            if "runner_session_id" in keys and row["runner_session_id"]:
+            if row["runner_session_id"]:
                 self._runner_session_ids[session.id] = row["runner_session_id"]
 
     def _session_from_row(self, row: sqlite3.Row) -> tuple[Session, bool]:
-        keys = set(row.keys())
-        runner_header = None
-        if "runner_header" in keys:
-            runner_header = row["runner_header"]
-        elif "codex_header" in keys:
-            runner_header = row["codex_header"]
-        runner_type = row["runner_type"] if "runner_type" in keys else None
         return (
             Session(
                 id=row["id"],
@@ -152,7 +115,7 @@ class SessionStore:
                 repo_ref=RepoRef(
                     type=row["repo_ref_type"], value=row["repo_ref_value"]
                 ),
-                state=SessionState(self._migrate_state(row["state"])),
+                state=SessionState(row["state"]),
                 name=row["name"],
                 created_at=row["created_at"],
                 started_at=row["started_at"],
@@ -160,25 +123,13 @@ class SessionStore:
                 last_activity_at=row["last_activity_at"],
                 exit_code=row["exit_code"],
                 summary=row["summary"],
-                runner_header=runner_header,
-                runner_type=runner_type,
+                runner_header=row["runner_header"],
+                runner_type=row["runner_type"],
                 directory=row["directory"],
                 directory_has_git=bool(row["directory_has_git"]),
             ),
             bool(row["workdir_managed"]),
         )
-
-    def _migrate_state(self, state: str) -> str:
-        """Migrate legacy state values to current ones.
-
-        STOPPED -> AWAITING_INPUT (sessions can always continue)
-        STOPPING -> INTERRUPTING (renamed for clarity)
-        """
-        if state == "STOPPED":
-            return "AWAITING_INPUT"
-        if state == "STOPPING":
-            return "INTERRUPTING"
-        return state
 
     def _now(self) -> str:
         """Return an ISO8601 UTC timestamp suitable for API payloads."""
