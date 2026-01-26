@@ -96,6 +96,117 @@
     @apply bg-stone-900/30 text-stone-500;
   }
 
+  /* Markdown headers */
+  .message-markdown .markdown-h1 {
+    @apply text-lg font-semibold text-stone-100 mt-3 mb-2;
+  }
+
+  .message-markdown .markdown-h2 {
+    @apply text-base font-semibold text-stone-100 mt-3 mb-1.5;
+  }
+
+  .message-markdown .markdown-h3 {
+    @apply text-sm font-semibold text-stone-200 mt-2 mb-1;
+  }
+
+  .message-markdown .markdown-h4,
+  .message-markdown .markdown-h5,
+  .message-markdown .markdown-h6 {
+    @apply text-sm font-medium text-stone-200 mt-2 mb-1;
+  }
+
+  .message-thinking-markdown .markdown-h1,
+  .message-thinking-markdown .markdown-h2,
+  .message-thinking-markdown .markdown-h3,
+  .message-thinking-markdown .markdown-h4,
+  .message-thinking-markdown .markdown-h5,
+  .message-thinking-markdown .markdown-h6 {
+    @apply font-medium text-stone-400 mt-2 mb-1;
+  }
+
+  /* Markdown lists */
+  .message-markdown .markdown-list {
+    @apply my-1.5 pl-5 text-stone-300;
+  }
+
+  .message-markdown .markdown-list li {
+    @apply my-0.5;
+  }
+
+  .message-markdown ul.markdown-list {
+    @apply list-disc;
+  }
+
+  .message-markdown ol.markdown-list {
+    @apply list-decimal;
+  }
+
+  .message-thinking-markdown .markdown-list {
+    @apply my-1.5 pl-5 text-stone-500;
+  }
+
+  .message-thinking-markdown .markdown-list li {
+    @apply my-0.5;
+  }
+
+  .message-thinking-markdown ul.markdown-list {
+    @apply list-disc;
+  }
+
+  .message-thinking-markdown ol.markdown-list {
+    @apply list-decimal;
+  }
+
+  /* Markdown code blocks */
+  .message-markdown .markdown-code {
+    @apply my-2 overflow-x-auto rounded-lg bg-stone-900 p-3 text-xs;
+  }
+
+  .message-markdown .markdown-code code {
+    @apply bg-transparent p-0 text-stone-200;
+  }
+
+  .message-thinking-markdown .markdown-code {
+    @apply my-2 overflow-x-auto rounded-lg bg-stone-900/50 p-3 text-xs;
+  }
+
+  .message-thinking-markdown .markdown-code code {
+    @apply bg-transparent p-0 text-stone-400;
+  }
+
+  /* Markdown blockquotes */
+  .message-markdown .markdown-blockquote {
+    @apply my-2 border-l-2 border-stone-600 pl-3 text-stone-300 italic;
+  }
+
+  .message-thinking-markdown .markdown-blockquote {
+    @apply my-2 border-l-2 border-stone-700 pl-3 text-stone-500 italic;
+  }
+
+  /* Markdown links */
+  .message-markdown a {
+    @apply text-emerald-400 underline hover:text-emerald-300;
+  }
+
+  .message-thinking-markdown a {
+    @apply text-stone-400 underline hover:text-stone-300;
+  }
+
+  /* Markdown paragraphs - reduce spacing */
+  .message-markdown p,
+  .message-thinking-markdown p {
+    @apply my-1;
+  }
+
+  /* Markdown horizontal rules */
+  .message-markdown hr {
+    @apply my-4 border-0 border-t border-stone-700/50;
+  }
+
+  .message-thinking-markdown hr {
+    @apply my-4 border-0 border-t border-stone-800/50;
+  }
+
   /* diff2html dark theme - mobile optimized */
   .diff-content {
     @apply -mx-3 sm:mx-0 px-0 sm:px-4 py-2 sm:py-3;

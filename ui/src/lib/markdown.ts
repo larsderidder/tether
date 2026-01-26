@@ -1,118 +1,85 @@
 /**
- * Shared markdown rendering utility
- * Supports: inline code, bold, italics, and tables
+ * Markdown rendering using marked library
  */
 
-/** Escape HTML entities for safe rendering */
-function escapeHtml(text: string): string {
-  return text
+import { marked, type Tokens } from "marked"
+
+// Configure marked
+marked.setOptions({
+  breaks: true, // Convert \n to <br>
+  gfm: true, // GitHub Flavored Markdown (tables, strikethrough, etc.)
+})
+
+// Custom renderer to add CSS classes
+const renderer = new marked.Renderer()
+
+// Add classes to headers
+renderer.heading = function({ tokens, depth }: Tokens.Heading): string {
+  const text = this.parser.parseInline(tokens)
+  return `<h${depth} class="markdown-h${depth}">${text}</h${depth}>\n`
+}
+
+// Add class to tables
+renderer.table = function(token: Tokens.Table): string {
+  let header = "<tr>"
+  for (const cell of token.header) {
+    const content = this.parser.parseInline(cell.tokens)
+    const align = cell.align ? ` style="text-align:${cell.align}"` : ""
+    header += `<th${align}>${content}</th>`
+  }
+  header += "</tr>"
+
+  let body = ""
+  for (const row of token.rows) {
+    body += "<tr>"
+    for (const cell of row) {
+      const content = this.parser.parseInline(cell.tokens)
+      const align = cell.align ? ` style="text-align:${cell.align}"` : ""
+      body += `<td${align}>${content}</td>`
+    }
+    body += "</tr>"
+  }
+
+  return `<table class="markdown-table"><thead>${header}</thead><tbody>${body}</tbody></table>\n`
+}
+
+// Add class to lists
+renderer.list = function(token: Tokens.List): string {
+  const tag = token.ordered ? "ol" : "ul"
+  let body = ""
+  for (const item of token.items) {
+    body += this.listitem(item)
+  }
+  return `<${tag} class="markdown-list">${body}</${tag}>\n`
+}
+
+// Add class to code blocks
+renderer.code = function({ text, lang }: Tokens.Code): string {
+  const escaped = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
+  const langClass = lang ? ` language-${lang}` : ""
+  return `<pre class="markdown-code${langClass}"><code>${escaped}</code></pre>\n`
 }
 
-/** Parse a table row into cells */
-function parseTableRow(row: string): string[] {
-  // Remove leading/trailing pipes and split by |
-  const trimmed = row.trim()
-  const withoutPipes = trimmed.startsWith("|") ? trimmed.slice(1) : trimmed
-  const withoutEnd = withoutPipes.endsWith("|") ? withoutPipes.slice(0, -1) : withoutPipes
-  return withoutEnd.split("|").map((cell) => cell.trim())
+// Add class to blockquotes
+renderer.blockquote = function({ tokens }: Tokens.Blockquote): string {
+  const inner = this.parser.parse(tokens)
+  return `<blockquote class="markdown-blockquote">${inner}</blockquote>\n`
 }
 
-/** Check if a line is a table separator row (e.g., |---|---|) */
-function isSeparatorRow(line: string): boolean {
-  const cells = parseTableRow(line)
-  return cells.every((cell) => /^:?-+:?$/.test(cell))
-}
-
-/** Check if a line looks like a table row */
-function isTableRow(line: string): boolean {
-  const trimmed = line.trim()
-  return trimmed.startsWith("|") && trimmed.includes("|", 1)
-}
-
-/** Render inline markdown (code, bold, italic) */
-function renderInline(text: string): string {
-  let out = text.replace(/`([^`]+)`/g, "<code>$1</code>")
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-  out = out.replace(/(^|\s)\*([^*]+)\*/g, "$1<em>$2</em>")
-  return out
-}
-
-/** Render a markdown table to HTML */
-function renderTable(lines: string[]): string {
-  if (lines.length < 2) return lines.map(renderInline).join("<br />")
-
-  // Check if second line is separator
-  if (!isSeparatorRow(lines[1])) {
-    return lines.map(renderInline).join("<br />")
-  }
-
-  const headerCells = parseTableRow(lines[0])
-  const bodyRows = lines.slice(2)
-
-  let html = '<table class="markdown-table">'
-
-  // Render header
-  html += "<thead><tr>"
-  for (const cell of headerCells) {
-    html += `<th>${renderInline(cell)}</th>`
-  }
-  html += "</tr></thead>"
-
-  // Render body
-  if (bodyRows.length > 0) {
-    html += "<tbody>"
-    for (const row of bodyRows) {
-      const cells = parseTableRow(row)
-      html += "<tr>"
-      for (const cell of cells) {
-        html += `<td>${renderInline(cell)}</td>`
-      }
-      html += "</tr>"
-    }
-    html += "</tbody>"
-  }
-
-  html += "</table>"
-  return html
-}
+marked.use({ renderer })
 
 /**
  * Render markdown source to HTML
- * Supports: inline code, bold, italics, and tables
  */
 export function renderMarkdown(source: string): string {
-  const escaped = escapeHtml(source)
-  const lines = escaped.split("\n")
+  // Escape < and > to prevent XSS, but keep markdown functional
+  const escaped = source
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
 
-  const result: string[] = []
-  let i = 0
-
-  while (i < lines.length) {
-    const line = lines[i]
-
-    // Check for table start
-    if (isTableRow(line)) {
-      // Collect consecutive table rows
-      const tableLines: string[] = []
-      while (i < lines.length && isTableRow(lines[i])) {
-        tableLines.push(lines[i])
-        i++
-      }
-      result.push(renderTable(tableLines))
-    } else {
-      // Regular line processing
-      const trimmed = line.trim()
-      if (trimmed.toLowerCase() === "thinking") {
-        result.push("<em>thinking</em>")
-      } else {
-        result.push(renderInline(line))
-      }
-      i++
-    }
-  }
-
-  return result.join("<br />")
+  const result = marked.parse(escaped, { async: false }) as string
+  return result
 }
