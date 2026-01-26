@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from tether.api.schemas import HealthResponse
+
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
-async def health() -> dict:
+@router.get("/health", response_model=HealthResponse)
+async def health() -> HealthResponse:
     """Health check endpoint."""
-    return {"ok": True, "version": "0.1.0", "protocol": 1}
+    return HealthResponse(ok=True, version="0.1.0", protocol=1)

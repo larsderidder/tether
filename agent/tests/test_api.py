@@ -31,7 +31,7 @@ class TestSessionsEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["sessions"] == []
+        assert data == []
 
     @pytest.mark.anyio
     async def test_create_session(self, api_client: httpx.AsyncClient) -> None:
@@ -42,8 +42,7 @@ class TestSessionsEndpoints:
         )
 
         assert response.status_code == 201
-        data = response.json()
-        session = data["session"]
+        session = response.json()
         assert session["id"].startswith("sess_")
         assert session["state"] == "CREATED"
         assert session["created_at"] is not None
@@ -62,8 +61,7 @@ class TestSessionsEndpoints:
         )
 
         assert response.status_code == 201
-        data = response.json()
-        session = data["session"]
+        session = response.json()
         assert session["directory"] == str(test_dir)
 
     @pytest.mark.anyio
@@ -86,14 +84,14 @@ class TestSessionsEndpoints:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         # Get the session
         response = await api_client.get(f"/api/sessions/{session_id}")
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["session"]["id"] == session_id
+        session = response.json()
+        assert session["id"] == session_id
 
     @pytest.mark.anyio
     async def test_get_nonexistent_session(self, api_client: httpx.AsyncClient) -> None:
@@ -110,7 +108,7 @@ class TestSessionsEndpoints:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         # Delete it
         response = await api_client.delete(f"/api/sessions/{session_id}")
@@ -130,8 +128,8 @@ class TestSessionsEndpoints:
         response = await api_client.get("/api/sessions")
 
         assert response.status_code == 200
-        data = response.json()
-        assert len(data["sessions"]) == 2
+        sessions = response.json()
+        assert len(sessions) == 2
 
 
 class TestSessionLifecycle:
@@ -147,7 +145,7 @@ class TestSessionLifecycle:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         # Try to start it
         response = await api_client.post(
@@ -166,7 +164,7 @@ class TestSessionLifecycle:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         response = await api_client.post(f"/api/sessions/{session_id}/interrupt")
 
@@ -181,7 +179,7 @@ class TestSessionLifecycle:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         response = await api_client.post(
             f"/api/sessions/{session_id}/input",
@@ -203,7 +201,7 @@ class TestSessionLifecycle:
             "/api/sessions",
             json={"directory": str(test_dir)}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         # Manually transition to RUNNING
         session = fresh_store.get_session(session_id)
@@ -228,7 +226,7 @@ class TestSessionRename:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         response = await api_client.patch(
             f"/api/sessions/{session_id}/rename",
@@ -236,8 +234,8 @@ class TestSessionRename:
         )
 
         assert response.status_code == 200
-        data = response.json()
-        assert data["session"]["name"] == "New Session Name"
+        session = response.json()
+        assert session["name"] == "New Session Name"
 
     @pytest.mark.anyio
     async def test_rename_nonexistent_session(self, api_client: httpx.AsyncClient) -> None:
@@ -256,7 +254,7 @@ class TestSessionRename:
             "/api/sessions",
             json={"repo_id": "test_repo"}
         )
-        session_id = create_resp.json()["session"]["id"]
+        session_id = create_resp.json()["id"]
 
         response = await api_client.patch(
             f"/api/sessions/{session_id}/rename",

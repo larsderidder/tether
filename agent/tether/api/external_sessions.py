@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Depends, Query, Body
+from fastapi import APIRouter, Depends, Query
 
 from tether.api.deps import require_token
-from tether.api.emit import emit_state, emit_history_message
+from tether.api.emit import emit_history_message, emit_state
 from tether.api.errors import raise_http_error
+from tether.api.schemas import (
+    AttachSessionRequest,
+    ExternalSessionDetailResponse,
+    ExternalSessionSummaryResponse,
+    SessionResponse,
+    SyncResult,
+)
 from tether.discovery import (
     discover_external_sessions,
     get_external_session_detail,
@@ -15,23 +22,21 @@ from tether.discovery import (
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import (
     ExternalRunnerType,
-    ExternalSessionSummary,
-    ExternalSessionDetail,
     SessionState,
 )
 from tether.store import store
 
 router = APIRouter(tags=["external-sessions"])
-logger = structlog.get_logger("tether.api.external_sessions")
+logger = structlog.get_logger(__name__)
 
 
-@router.get("/external-sessions", response_model=dict)
+@router.get("/external-sessions", response_model=list[ExternalSessionSummaryResponse])
 async def list_external_sessions(
     directory: str | None = Query(None, min_length=1),
     runner_type: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     _: None = Depends(require_token),
-) -> dict:
+) -> list[ExternalSessionSummaryResponse]:
     """List discoverable external sessions from Claude Code and Codex CLI.
 
     Args:
@@ -73,18 +78,27 @@ async def list_external_sessions(
     )
 
     logger.info("Found external sessions", count=len(sessions))
-    return {
-        "sessions": [_serialize_external_summary(s) for s in sessions],
-    }
+    return [
+        ExternalSessionSummaryResponse(
+            id=s.id,
+            runner_type=s.runner_type,
+            directory=s.directory,
+            first_prompt=s.first_prompt,
+            last_activity=s.last_activity,
+            message_count=s.message_count,
+            is_running=s.is_running,
+        )
+        for s in sessions
+    ]
 
 
-@router.get("/external-sessions/{external_id}/history", response_model=dict)
+@router.get("/external-sessions/{external_id}/history", response_model=ExternalSessionDetailResponse)
 async def get_external_session_history(
     external_id: str,
     runner_type: str = Query(...),
     limit: int = Query(100, ge=1, le=500),
     _: None = Depends(require_token),
-) -> dict:
+) -> ExternalSessionDetailResponse:
     """Get full message history for an external session.
 
     Args:
@@ -126,14 +140,23 @@ async def get_external_session_history(
         external_id=external_id,
         message_count=len(detail.messages),
     )
-    return {"session": _serialize_external_detail(detail)}
+    return ExternalSessionDetailResponse(
+        id=detail.id,
+        runner_type=detail.runner_type,
+        directory=detail.directory,
+        first_prompt=detail.first_prompt,
+        last_activity=detail.last_activity,
+        message_count=detail.message_count,
+        is_running=detail.is_running,
+        messages=detail.messages,
+    )
 
 
-@router.post("/sessions/attach", response_model=dict, status_code=201)
+@router.post("/sessions/attach", response_model=SessionResponse, status_code=201)
 async def attach_to_external_session(
-    payload: dict = Body(...),
+    payload: AttachSessionRequest,
     _: None = Depends(require_token),
-) -> dict:
+) -> SessionResponse:
     """Create a Tether session attached to an external session.
 
     This creates a new Tether session that, when started with input,
@@ -151,33 +174,16 @@ async def attach_to_external_session(
         Only Claude Code sessions support attachment (resume).
         Codex CLI sessions are view-only.
     """
-    external_id = payload.get("external_id")
-    runner_type = payload.get("runner_type")
-    directory = payload.get("directory")
-
-    if not external_id:
-        raise_http_error("VALIDATION_ERROR", "external_id is required", 422)
-    if not runner_type:
-        raise_http_error("VALIDATION_ERROR", "runner_type is required", 422)
-    if not directory:
-        raise_http_error("VALIDATION_ERROR", "directory is required", 422)
+    external_id = payload.external_id
+    parsed_runner_type = payload.runner_type
+    directory = payload.directory
 
     logger.info(
         "Attaching to external session",
         external_id=external_id,
-        runner_type=runner_type,
+        runner_type=parsed_runner_type.value,
         directory=directory,
     )
-
-    # Parse and validate runner_type
-    try:
-        parsed_runner_type = ExternalRunnerType(runner_type)
-    except ValueError:
-        raise_http_error(
-            "VALIDATION_ERROR",
-            f"Invalid runner_type: {runner_type}. Must be 'claude_code' or 'codex_cli'.",
-            422,
-        )
 
     # Only Claude Code supports attachment
     if parsed_runner_type != ExternalRunnerType.CLAUDE_CODE:
@@ -198,23 +204,7 @@ async def attach_to_external_session(
                 existing_session_id=existing_session_id,
             )
             # Return the existing session instead of creating a duplicate
-            return {
-                "session": {
-                    "id": existing_session.id,
-                    "state": existing_session.state.value,
-                    "name": existing_session.name,
-                    "created_at": existing_session.created_at,
-                    "started_at": existing_session.started_at,
-                    "ended_at": existing_session.ended_at,
-                    "last_activity_at": existing_session.last_activity_at,
-                    "exit_code": existing_session.exit_code,
-                    "summary": existing_session.summary,
-                    "runner_header": existing_session.runner_header,
-                    "runner_type": existing_session.runner_type,
-                    "directory": existing_session.directory,
-                    "directory_has_git": existing_session.directory_has_git,
-                },
-            }
+            return SessionResponse.from_session(existing_session, store)
 
     # Verify external session exists and get full history
     detail = get_external_session_detail(
@@ -224,14 +214,6 @@ async def attach_to_external_session(
     )
     if not detail:
         raise_http_error("NOT_FOUND", f"External session not found: {external_id}", 404)
-
-    # Cannot attach to currently running session
-    if detail.is_running:
-        raise_http_error(
-            "INVALID_STATE",
-            "Cannot attach to a currently running session. Wait for it to finish or close it first.",
-            409,
-        )
 
     # Normalize directory
     normalized_directory = normalize_directory_path(directory)
@@ -288,30 +270,14 @@ async def attach_to_external_session(
         history_messages=len(detail.messages),
     )
 
-    return {
-        "session": {
-            "id": session.id,
-            "state": session.state.value,
-            "name": session.name,
-            "created_at": session.created_at,
-            "started_at": session.started_at,
-            "ended_at": session.ended_at,
-            "last_activity_at": session.last_activity_at,
-            "exit_code": session.exit_code,
-            "summary": session.summary,
-            "runner_header": session.runner_header,
-            "runner_type": session.runner_type,
-            "directory": session.directory,
-            "directory_has_git": session.directory_has_git,
-        },
-    }
+    return SessionResponse.from_session(session, store)
 
 
-@router.post("/sessions/{session_id}/sync", response_model=dict)
+@router.post("/sessions/{session_id}/sync", response_model=SyncResult)
 async def sync_external_session(
     session_id: str,
     _: None = Depends(require_token),
-) -> dict:
+) -> SyncResult:
     """Sync new messages from the attached external session.
 
     This fetches the latest messages from the external Claude Code session
@@ -361,13 +327,13 @@ async def sync_external_session(
             session_id=session_id,
             total_messages=len(messages),
         )
-        return {"synced": 0, "total": len(messages)}
+        return SyncResult(synced=0, total=len(messages))
 
     new_messages = messages[synced_count:]
 
     if not new_messages:
         logger.info("No new messages to sync", session_id=session_id)
-        return {"synced": 0, "total": len(messages)}
+        return SyncResult(synced=0, total=len(messages))
 
     # Emit new messages
     for i, msg in enumerate(new_messages):
@@ -397,39 +363,4 @@ async def sync_external_session(
         total_messages=len(messages),
     )
 
-    return {"synced": len(new_messages), "total": len(messages)}
-
-
-def _serialize_external_summary(session: ExternalSessionSummary) -> dict:
-    """Serialize an external session summary for API response."""
-    return {
-        "id": session.id,
-        "runner_type": session.runner_type.value,
-        "directory": session.directory,
-        "first_prompt": session.first_prompt,
-        "last_activity": session.last_activity,
-        "message_count": session.message_count,
-        "is_running": session.is_running,
-    }
-
-
-def _serialize_external_detail(session: ExternalSessionDetail) -> dict:
-    """Serialize an external session detail for API response."""
-    return {
-        "id": session.id,
-        "runner_type": session.runner_type.value,
-        "directory": session.directory,
-        "first_prompt": session.first_prompt,
-        "last_activity": session.last_activity,
-        "message_count": session.message_count,
-        "is_running": session.is_running,
-        "messages": [
-            {
-                "role": m.role,
-                "content": m.content,
-                "thinking": m.thinking,
-                "timestamp": m.timestamp,
-            }
-            for m in session.messages
-        ],
-    }
+    return SyncResult(synced=len(new_messages), total=len(messages))

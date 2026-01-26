@@ -6,23 +6,32 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import structlog
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Depends
 
 from tether.api.deps import require_token
 from tether.api.diff import build_git_diff
 from tether.api.emit import emit_state, emit_user_input, emit_warning
-from tether.discovery.running import is_claude_session_running
 from tether.api.errors import raise_http_error
 from tether.api.runner_events import get_api_runner
+from tether.api.schemas import (
+    CreateSessionRequest,
+    DiffResponse,
+    InputRequest,
+    OkResponse,
+    RenameSessionRequest,
+    SessionResponse,
+    StartSessionRequest,
+)
 from tether.api.state import maybe_set_session_name, now, transition
-from tether.runner import get_runner_type
 from tether.diff import parse_git_diff
+from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import SessionState
+from tether.runner import get_runner_type
 from tether.store import store
 
 router = APIRouter(tags=["sessions"])
-logger = structlog.get_logger("tether.api.sessions")
+logger = structlog.get_logger(__name__)
 
 
 @contextmanager
@@ -34,37 +43,34 @@ def _session_logging_context(session_id: str):
         structlog.contextvars.unbind_contextvars("session_id")
 
 
-@router.get("/sessions", response_model=dict)
-async def list_sessions(_: None = Depends(require_token)) -> dict:
+@router.get("/sessions", response_model=list[SessionResponse])
+async def list_sessions(_: None = Depends(require_token)) -> list[SessionResponse]:
     """List all sessions in memory."""
     sessions = store.list_sessions()
     logger.info("Listed sessions", count=len(sessions))
-    return {"sessions": [_serialize_session(session) for session in sessions]}
+    return [SessionResponse.from_session(session, store) for session in sessions]
 
 
-@router.post("/sessions", response_model=dict, status_code=201)
+@router.post("/sessions", response_model=SessionResponse, status_code=201)
 async def create_session(
-    payload: dict = Body(...),
+    payload: CreateSessionRequest,
     _: None = Depends(require_token),
-) -> dict:
+) -> SessionResponse:
     """Create a new session in CREATED state."""
     logger.info(
         "Create session requested",
-        repo_id=payload.get("repo_id"),
-        directory=payload.get("directory"),
-        base_ref=payload.get("base_ref"),
+        repo_id=payload.repo_id,
+        directory=payload.directory,
+        base_ref=payload.base_ref,
     )
-    repo_id = payload.get("repo_id")
-    directory = payload.get("directory")
-    base_ref = payload.get("base_ref")
     normalized_directory: str | None = None
-    if directory:
-        candidate = Path(directory).expanduser()
+    if payload.directory:
+        candidate = Path(payload.directory).expanduser()
         if not candidate.is_dir():
             raise_http_error("VALIDATION_ERROR", "directory must be an existing folder", 422)
-        normalized_directory = normalize_directory_path(directory)
-    resolved_repo_id = repo_id or normalized_directory or "repo_local"
-    session = store.create_session(repo_id=resolved_repo_id, base_ref=base_ref)
+        normalized_directory = normalize_directory_path(payload.directory)
+    resolved_repo_id = payload.repo_id or normalized_directory or "repo_local"
+    session = store.create_session(repo_id=resolved_repo_id, base_ref=payload.base_ref)
     if normalized_directory:
         session.repo_display = normalized_directory
         store.update_session(session)
@@ -76,22 +82,22 @@ async def create_session(
             repo_id=session.repo_id,
             directory=normalized_directory,
         )
-        return {"session": _serialize_session(session)}
+        return SessionResponse.from_session(session, store)
 
 
-@router.get("/sessions/{session_id}", response_model=dict)
-async def get_session(session_id: str, _: None = Depends(require_token)) -> dict:
+@router.get("/sessions/{session_id}", response_model=SessionResponse)
+async def get_session(session_id: str, _: None = Depends(require_token)) -> SessionResponse:
     """Fetch a single session by id."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
         logger.info("Fetched session", state=session.state)
-        return {"session": _serialize_session(session)}
+        return SessionResponse.from_session(session, store)
 
 
-@router.delete("/sessions/{session_id}", response_model=dict)
-async def delete_session(session_id: str, _: None = Depends(require_token)) -> dict:
+@router.delete("/sessions/{session_id}", response_model=OkResponse)
+async def delete_session(session_id: str, _: None = Depends(require_token)) -> OkResponse:
     """Delete a session if it is not running."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
@@ -101,15 +107,15 @@ async def delete_session(session_id: str, _: None = Depends(require_token)) -> d
             raise_http_error("INVALID_STATE", "Session is active", 409)
         store.delete_session(session_id)
         logger.info("Session deleted")
-        return {"ok": True}
+        return OkResponse()
 
 
-@router.post("/sessions/{session_id}/start", response_model=dict)
+@router.post("/sessions/{session_id}/start", response_model=SessionResponse)
 async def start_session(
     session_id: str,
-    payload: dict = Body(...),
+    payload: StartSessionRequest,
     _: None = Depends(require_token),
-) -> dict:
+) -> SessionResponse:
     """Start a session and launch the configured runner."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
@@ -121,11 +127,8 @@ async def start_session(
         # Validate inputs BEFORE state transition
         if not session.directory:
             raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
-        prompt = payload.get("prompt", "")
-        # Default to 2 (bypassPermissions) since there's no interactive approval in Tether
-        approval_choice = payload.get("approval_choice", 2)
-        if approval_choice not in (1, 2):
-            raise_http_error("VALIDATION_ERROR", "approval_choice must be 1 or 2", 422)
+        prompt = payload.prompt
+        approval_choice = payload.approval_choice
 
         # Clear stale state from previous runs
         # NOTE: Do NOT clear runner_session_id here - it may contain an attached
@@ -178,41 +181,37 @@ async def start_session(
             await emit_state(session)
             raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
 
-        return {"session": _serialize_session(session)}
+        return SessionResponse.from_session(session, store)
 
 
-@router.patch("/sessions/{session_id}/rename", response_model=dict)
+@router.patch("/sessions/{session_id}/rename", response_model=SessionResponse)
 async def rename_session(
     session_id: str,
-    payload: dict = Body(...),
+    payload: RenameSessionRequest,
     _: None = Depends(require_token),
-) -> dict:
+) -> SessionResponse:
     """Rename an existing session."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
-        value = payload.get("name", "")
-        cleaned = " ".join(str(value).split())
-        if not cleaned:
-            raise_http_error("VALIDATION_ERROR", "name is required", 422)
-        session.name = cleaned[:80]
+        # Clean up whitespace (validation already ensures non-empty and max 80 chars)
+        cleaned = " ".join(payload.name.split())
+        session.name = cleaned
         store.update_session(session)
         logger.info("Session renamed", name=session.name)
-        return {"session": _serialize_session(session)}
+        return SessionResponse.from_session(session, store)
 
 
-@router.post("/sessions/{session_id}/input", response_model=dict)
+@router.post("/sessions/{session_id}/input", response_model=SessionResponse)
 async def send_input(
     session_id: str,
-    payload: dict = Body(...),
+    payload: InputRequest,
     _: None = Depends(require_token),
-) -> dict:
+) -> SessionResponse:
     """Send input to a running or awaiting session."""
     with _session_logging_context(session_id):
-        text = payload.get("text")
-        if not text:
-            raise_http_error("VALIDATION_ERROR", "text is required", 422)
+        text = payload.text
         session = store.get_session(session_id)
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
@@ -247,11 +246,11 @@ async def send_input(
             session.last_activity_at = now()
             store.update_session(session)
         logger.info("Session input forwarded")
-        return {"session": _serialize_session(session)}
+        return SessionResponse.from_session(session, store)
 
 
-@router.post("/sessions/{session_id}/interrupt", response_model=dict)
-async def interrupt_session(session_id: str, _: None = Depends(require_token)) -> dict:
+@router.post("/sessions/{session_id}/interrupt", response_model=SessionResponse)
+async def interrupt_session(session_id: str, _: None = Depends(require_token)) -> SessionResponse:
     """Interrupt the current turn. Session remains active and can continue with new input."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
@@ -260,7 +259,7 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
         # Idempotent: already awaiting input or interrupting
         if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING):
             logger.info("Session interrupt requested but already idle/interrupting")
-            return {"session": _serialize_session(session)}
+            return SessionResponse.from_session(session, store)
         if session.state in (SessionState.CREATED, SessionState.ERROR):
             raise_http_error("INVALID_STATE", "Session not running", 409)
         # Transition to INTERRUPTING
@@ -276,11 +275,11 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
             transition(session, SessionState.AWAITING_INPUT)
             await emit_state(session)
         logger.info("Session interrupted")
-        return {"session": _serialize_session(session)}
+        return SessionResponse.from_session(session, store)
 
 
-@router.get("/sessions/{session_id}/diff", response_model=dict)
-async def get_diff(session_id: str, _: None = Depends(require_token)) -> dict:
+@router.get("/sessions/{session_id}/diff", response_model=DiffResponse)
+async def get_diff(session_id: str, _: None = Depends(require_token)) -> DiffResponse:
     """Return the git diff for the session's working directory."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
@@ -291,26 +290,6 @@ async def get_diff(session_id: str, _: None = Depends(require_token)) -> dict:
         if target and Path(target).is_dir() and has_git_repository(target):
             diff_text = build_git_diff(target)
             files = parse_git_diff(diff_text)
-            return {"diff": diff_text, "files": files}
+            return DiffResponse(diff=diff_text, files=files)
         logger.info("Diff unavailable", path=target, reason="no repository")
-        return {"diff": "", "files": []}
-
-
-def _serialize_session(session) -> dict:
-    return {
-        "id": session.id,
-        "state": session.state.value,
-        "name": session.name,
-        "created_at": session.created_at,
-        "started_at": session.started_at,
-        "ended_at": session.ended_at,
-        "last_activity_at": session.last_activity_at,
-        "exit_code": session.exit_code,
-        "summary": session.summary,
-        "runner_header": getattr(session, "runner_header", None),
-        "runner_type": getattr(session, "runner_type", None),
-        "runner_session_id": store.get_runner_session_id(session.id),
-        "directory": session.directory,
-        "directory_has_git": session.directory_has_git,
-        "message_count": store.get_message_count(session.id),
-    }
+        return DiffResponse(diff="", files=[])
