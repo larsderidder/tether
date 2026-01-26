@@ -4,7 +4,7 @@
     This runner is deprecated in favor of the Codex SDK sidecar approach.
     The sidecar provides structured events directly, avoiding the brittle
     stdout/stderr parsing required by this runner.
-    Use TETHER_AGENT_ADAPTER=sidecar instead.
+    Use TETHER_AGENT_ADAPTER=codex_sdk_sidecar instead.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from tether.runner.base import RunnerEvents
 from tether.settings import settings
 from tether.store import store
 
-logger = structlog.get_logger("tether.runner.codex_cli")
+logger = structlog.get_logger(__name__)
 SESSION_ID_RE = re.compile(r"(?:session id|session_id)[:=]\s*(\S+)", re.IGNORECASE)
 
 

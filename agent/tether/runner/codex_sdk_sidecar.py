@@ -15,7 +15,7 @@ from tether.runner.base import RunnerEvents
 from tether.settings import settings
 from tether.store import store
 
-logger = structlog.get_logger("tether.runner.sidecar")
+logger = structlog.get_logger(__name__)
 
 
 class SidecarRunner:

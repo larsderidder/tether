@@ -12,10 +12,10 @@ from tether.settings import settings
 
 # Lazy imports - these SDKs are heavy and slow down startup
 if TYPE_CHECKING:
-    from tether.runner.claude import ClaudeRunner
+    from tether.runner.claude_api import ClaudeRunner
     from tether.runner.claude_local import ClaudeLocalRunner
     from tether.runner.codex_cli import CodexCliRunner
-    from tether.runner.sidecar import SidecarRunner
+    from tether.runner.codex_sdk_sidecar import SidecarRunner
 
 # Cache the runner type after first initialization
 _active_runner_type: str | None = None
@@ -57,7 +57,7 @@ def get_runner(events: RunnerEvents) -> Runner:
     Uses TETHER_AGENT_ADAPTER to select runner. Options:
         - codex_cli: Legacy Codex CLI runner
         - codex_sdk_sidecar: Codex SDK sidecar
-        - claude: Claude via Anthropic SDK (requires ANTHROPIC_API_KEY)
+        - claude_api: Claude via Anthropic SDK (requires ANTHROPIC_API_KEY)
         - claude_local: Claude via Agent SDK (uses CLI OAuth)
         - claude_auto: Auto-detect (prefer OAuth, fallback to API key)
 
@@ -74,14 +74,14 @@ def get_runner(events: RunnerEvents) -> Runner:
         return runner
 
     if name == "codex_sdk_sidecar":
-        from tether.runner.sidecar import SidecarRunner
+        from tether.runner.codex_sdk_sidecar import SidecarRunner
 
         runner = SidecarRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 
-    if name == "claude":
-        from tether.runner.claude import ClaudeRunner
+    if name == "claude_api":
+        from tether.runner.claude_api import ClaudeRunner
 
         runner = ClaudeRunner(events)
         _active_runner_type = runner.runner_type
@@ -112,7 +112,7 @@ def get_runner(events: RunnerEvents) -> Runner:
                 _active_runner_type = runner.runner_type
                 return runner
         if _has_anthropic_api_key():
-            from tether.runner.claude import ClaudeRunner
+            from tether.runner.claude_api import ClaudeRunner
 
             runner = ClaudeRunner(events)
             _active_runner_type = runner.runner_type

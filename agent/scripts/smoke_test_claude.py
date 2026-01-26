@@ -18,10 +18,10 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TETHER_AGENT_DEV_MODE", "1")
-os.environ.setdefault("TETHER_AGENT_ADAPTER", "claude")
+os.environ.setdefault("TETHER_AGENT_ADAPTER", "claude_api")
 
 from tether import store as store_module
-from tether.runner.claude import ClaudeRunner
+from tether.runner.claude_api import ClaudeRunner
 from tether.settings import settings
 from tether.store import store
 

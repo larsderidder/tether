@@ -102,7 +102,7 @@ class Settings:
         Options:
             - codex_cli: Legacy Codex CLI runner
             - codex_sdk_sidecar: Codex SDK sidecar
-            - claude: Claude via Anthropic SDK
+            - claude_api: Claude via Anthropic SDK (requires API key)
             - claude_local: Claude via Agent SDK (CLI OAuth)
             - claude_auto: Auto-detect (prefer OAuth, fallback to API key)
         """

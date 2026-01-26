@@ -16,13 +16,13 @@ from tether.settings import settings
 from tether.store import store
 from tether.tools import TOOLS, execute_tool
 
-logger = structlog.get_logger("tether.runner.claude")
+logger = structlog.get_logger(__name__)
 
 
 class ClaudeRunner:
     """Runner that uses the Anthropic Python SDK directly."""
 
-    runner_type: str = "claude"
+    runner_type: str = "claude_api"
 
     def __init__(self, events: RunnerEvents) -> None:
         self._events = events

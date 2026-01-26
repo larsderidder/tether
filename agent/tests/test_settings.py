@@ -104,8 +104,8 @@ class TestStringSettings:
 
     def test_adapter_custom(self, clean_env) -> None:
         """Adapter can be customized."""
-        clean_env.setenv("TETHER_AGENT_ADAPTER", "CLAUDE")
-        assert Settings.adapter() == "claude"  # lowercased
+        clean_env.setenv("TETHER_AGENT_ADAPTER", "CLAUDE_API")
+        assert Settings.adapter() == "claude_api"  # lowercased
 
     def test_log_level_default(self, clean_env) -> None:
         """Log level defaults to INFO."""
