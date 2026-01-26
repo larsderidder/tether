@@ -71,18 +71,6 @@ class TestSessionCRUD:
 class TestSessionDirectory:
     """Test directory-related session operations."""
 
-    def test_set_session_directory(self, fresh_store: SessionStore, tmp_path) -> None:
-        """Setting workdir updates the session directory."""
-        test_dir = str(tmp_path / "test_repo")
-        import os
-        os.makedirs(test_dir, exist_ok=True)
-
-        session = fresh_store.create_session("repo_test", "main")
-        fresh_store.set_workdir(session.id, test_dir, managed=False)
-
-        workdir = fresh_store.get_workdir(session.id)
-        assert workdir == test_dir
-
     def test_set_workdir(self, fresh_store: SessionStore, tmp_path) -> None:
         """Setting workdir records the path."""
         session = fresh_store.create_session("repo_test", "main")

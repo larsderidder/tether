@@ -1,5 +1,6 @@
 """Tests for the claude_local runner message handling."""
 
+import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from dataclasses import dataclass
@@ -43,6 +44,19 @@ class MockAssistantMessage:
     error: str = None
 
 
+# Create mock SDK module before importing the runner
+_mock_sdk = MagicMock()
+_mock_sdk.TextBlock = MockTextBlock
+_mock_sdk.ToolUseBlock = MockToolUseBlock
+_mock_sdk.ToolResultBlock = MockToolResultBlock
+_mock_sdk.ThinkingBlock = MockThinkingBlock
+_mock_sdk.AssistantMessage = MockAssistantMessage
+_mock_sdk.SystemMessage = MagicMock
+_mock_sdk.ResultMessage = MagicMock
+_mock_sdk.ClaudeAgentOptions = MagicMock
+_mock_sdk.query = MagicMock()
+
+
 class TestTextBlockCategorization:
     """Test that text blocks are correctly categorized as step vs final."""
 
@@ -57,23 +71,11 @@ class TestTextBlockCategorization:
     @pytest.fixture
     def runner(self, mock_events, monkeypatch):
         """Create a ClaudeLocalRunner with mocked dependencies."""
-        # Mock the SDK imports
-        monkeypatch.setattr(
-            "tether.runner.claude_local.TextBlock",
-            MockTextBlock,
-        )
-        monkeypatch.setattr(
-            "tether.runner.claude_local.ToolUseBlock",
-            MockToolUseBlock,
-        )
-        monkeypatch.setattr(
-            "tether.runner.claude_local.ToolResultBlock",
-            MockToolResultBlock,
-        )
-        monkeypatch.setattr(
-            "tether.runner.claude_local.ThinkingBlock",
-            MockThinkingBlock,
-        )
+        # Inject mock SDK into sys.modules before importing the runner
+        monkeypatch.setitem(sys.modules, "claude_agent_sdk", _mock_sdk)
+
+        # Remove cached import if present so it reimports with mock
+        sys.modules.pop("tether.runner.claude_local", None)
 
         from tether.runner.claude_local import ClaudeLocalRunner
 

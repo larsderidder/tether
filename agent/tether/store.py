@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import uuid
 from collections import deque
+from dataclasses import dataclass, field
 import re
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -25,6 +26,20 @@ from tether.settings import settings
 logger = structlog.get_logger("tether.store")
 
 
+@dataclass
+class SessionRuntime:
+    """Per-session runtime state (not persisted to database)."""
+
+    seq: int = 0
+    subscribers: list[asyncio.Queue] = field(default_factory=list)
+    proc: asyncio.subprocess.Process | None = None
+    pending_inputs: list[str] = field(default_factory=list)
+    recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=10))
+    claude_task: asyncio.Task | None = None
+    stop_requested: bool = False
+    synced_message_count: int = 0
+
+
 class SessionStore:
     """Session registry with SQLModel persistence and per-session process bookkeeping."""
 
@@ -34,15 +49,14 @@ class SessionStore:
         os.makedirs(self._data_dir, exist_ok=True)
         os.makedirs(os.path.join(self._data_dir, "sessions"), exist_ok=True)
         self._sessions: dict[str, Session] = {}
-        self._seq: dict[str, int] = {}
-        self._subscribers: dict[str, list[asyncio.Queue]] = {}
-        self._procs: dict[str, asyncio.subprocess.Process] = {}
-        self._pending_inputs: dict[str, list[str]] = {}
-        self._recent_output: dict[str, deque[str]] = {}
-        self._claude_tasks: dict[str, asyncio.Task] = {}
-        self._stop_requested: dict[str, bool] = {}
-        self._synced_message_counts: dict[str, int] = {}
+        self._runtime: dict[str, SessionRuntime] = {}
         self._load_sessions()
+
+    def _get_runtime(self, session_id: str) -> SessionRuntime:
+        """Get or create runtime state for a session."""
+        if session_id not in self._runtime:
+            self._runtime[session_id] = SessionRuntime()
+        return self._runtime[session_id]
 
     def _load_sessions(self) -> None:
         with self._db_lock:
@@ -50,8 +64,7 @@ class SessionStore:
                 rows = db.exec(select(Session)).all()
                 for row in rows:
                     self._sessions[row.id] = row
-                    self._seq[row.id] = 0
-                    self._subscribers.setdefault(row.id, [])
+                    self._runtime[row.id] = SessionRuntime()
 
     def _now(self) -> str:
         """Return an ISO8601 UTC timestamp suitable for API payloads."""
@@ -88,8 +101,7 @@ class SessionStore:
             runner_header=None,
         )
         self._sessions[session_id] = session
-        self._seq[session_id] = 0
-        self._subscribers.setdefault(session_id, [])
+        self._runtime[session_id] = SessionRuntime()
         self._persist_session(session)
         return session
 
@@ -122,14 +134,8 @@ class SessionStore:
                 if db_session:
                     db.delete(db_session)
                 db.commit()
-        self._seq.pop(session_id, None)
-        self._subscribers.pop(session_id, None)
-        self.clear_process(session_id)
-        self.clear_pending_inputs(session_id)
-        self.clear_last_output(session_id)
         self.clear_workdir(session_id)
-        self.clear_claude_task(session_id)
-        self.clear_stop_requested(session_id)
+        self._runtime.pop(session_id, None)
         return True
 
     def clear_all_data(self) -> None:
@@ -146,22 +152,16 @@ class SessionStore:
                     db.delete(sess)
                 db.commit()
         self._sessions.clear()
-        self._seq.clear()
-        self._subscribers.clear()
-        self._procs.clear()
-        self._pending_inputs.clear()
-        self._recent_output.clear()
-        self._claude_tasks.clear()
-        self._stop_requested.clear()
+        self._runtime.clear()
         logs_root = os.path.join(self._data_dir, "sessions")
         shutil.rmtree(logs_root, ignore_errors=True)
         os.makedirs(logs_root, exist_ok=True)
 
     def next_seq(self, session_id: str) -> int:
         """Advance and return the per-session event sequence counter."""
-        current = self._seq.get(session_id, 0) + 1
-        self._seq[session_id] = current
-        return current
+        runtime = self._get_runtime(session_id)
+        runtime.seq += 1
+        return runtime.seq
 
     def new_subscriber(self, session_id: str) -> asyncio.Queue:
         """Register a new SSE subscriber queue for a session.
@@ -170,19 +170,20 @@ class SessionStore:
             session_id: Internal session identifier.
         """
         queue: asyncio.Queue = asyncio.Queue()
-        self._subscribers.setdefault(session_id, []).append(queue)
+        runtime = self._get_runtime(session_id)
+        runtime.subscribers.append(queue)
         logger.debug(
             "New SSE subscriber",
             session_id=session_id,
-            total_subscribers=len(self._subscribers.get(session_id, [])),
+            total_subscribers=len(runtime.subscribers),
         )
         return queue
 
     def remove_subscriber(self, session_id: str, queue: asyncio.Queue) -> None:
         """Unregister an SSE subscriber queue."""
-        queues = self._subscribers.get(session_id, [])
-        if queue in queues:
-            queues.remove(queue)
+        runtime = self._runtime.get(session_id)
+        if runtime and queue in runtime.subscribers:
+            runtime.subscribers.remove(queue)
 
     async def emit(self, session_id: str, event: dict) -> None:
         """Broadcast an event payload to all session subscribers.
@@ -191,14 +192,15 @@ class SessionStore:
             session_id: Internal session identifier.
             event: Event payload to broadcast.
         """
-        queues = self._subscribers.get(session_id, [])
+        runtime = self._runtime.get(session_id)
+        subscribers = runtime.subscribers if runtime else []
         logger.debug(
             "Broadcasting event",
             session_id=session_id,
             event_type=event.get("type"),
-            subscriber_count=len(queues),
+            subscriber_count=len(subscribers),
         )
-        for queue in list(queues):
+        for queue in list(subscribers):
             await queue.put(event)
         self._append_event_log(session_id, event)
 
@@ -247,39 +249,47 @@ class SessionStore:
 
     def set_process(self, session_id: str, proc: asyncio.subprocess.Process) -> None:
         """Track the subprocess running for a session."""
-        self._procs[session_id] = proc
+        self._get_runtime(session_id).proc = proc
 
     def get_process(self, session_id: str) -> asyncio.subprocess.Process | None:
         """Return the tracked subprocess, if any."""
-        return self._procs.get(session_id)
+        runtime = self._runtime.get(session_id)
+        return runtime.proc if runtime else None
 
     def clear_process(self, session_id: str) -> None:
-        self._procs.pop(session_id, None)
+        runtime = self._runtime.get(session_id)
+        if runtime:
+            runtime.proc = None
 
     def add_pending_input(self, session_id: str, text: str) -> None:
         """Queue input to send once the runner is ready."""
-        self._pending_inputs.setdefault(session_id, []).append(text)
+        self._get_runtime(session_id).pending_inputs.append(text)
 
     def pop_pending_inputs(self, session_id: str) -> list[str]:
         """Drain and return all pending inputs."""
-        return self._pending_inputs.pop(session_id, [])
+        runtime = self._runtime.get(session_id)
+        if not runtime:
+            return []
+        inputs = runtime.pending_inputs[:]
+        runtime.pending_inputs.clear()
+        return inputs
 
     def clear_pending_inputs(self, session_id: str) -> None:
-        self._pending_inputs.pop(session_id, None)
+        runtime = self._runtime.get(session_id)
+        if runtime:
+            runtime.pending_inputs.clear()
 
     def pop_next_pending_input(self, session_id: str) -> str | None:
         """Pop the next queued input, if any."""
-        queue = self._pending_inputs.get(session_id)
-        if not queue:
+        runtime = self._runtime.get(session_id)
+        if not runtime or not runtime.pending_inputs:
             return None
-        item = queue.pop(0)
-        if not queue:
-            self._pending_inputs.pop(session_id, None)
-        return item
+        return runtime.pending_inputs.pop(0)
 
     def has_pending_inputs(self, session_id: str) -> bool:
         """Return True if there is queued input."""
-        return bool(self._pending_inputs.get(session_id))
+        runtime = self._runtime.get(session_id)
+        return bool(runtime and runtime.pending_inputs)
 
     def set_runner_session_id(self, session_id: str, runner_session_id: str) -> None:
         """Store the runner-specific session id and persist to database."""
@@ -316,11 +326,12 @@ class SessionStore:
 
     def set_synced_message_count(self, session_id: str, count: int) -> None:
         """Store the number of messages synced from external session."""
-        self._synced_message_counts[session_id] = count
+        self._get_runtime(session_id).synced_message_count = count
 
     def get_synced_message_count(self, session_id: str) -> int:
         """Get the number of messages previously synced from external session."""
-        return self._synced_message_counts.get(session_id, 0)
+        runtime = self._runtime.get(session_id)
+        return runtime.synced_message_count if runtime else 0
 
     def should_emit_output(self, session_id: str, text: str) -> bool:
         """Return True if output is non-empty and not recently emitted.
@@ -332,13 +343,10 @@ class SessionStore:
         normalized = self._normalize_output(text)
         if not normalized:
             return False
-        history = self._recent_output.get(session_id)
-        if history is None:
-            history = deque(maxlen=10)
-            self._recent_output[session_id] = history
-        if normalized in history:
+        runtime = self._get_runtime(session_id)
+        if normalized in runtime.recent_output:
             return False
-        history.append(normalized)
+        runtime.recent_output.append(normalized)
         return True
 
     def _normalize_output(self, text: str) -> str:
@@ -353,7 +361,9 @@ class SessionStore:
         return compact
 
     def clear_last_output(self, session_id: str) -> None:
-        self._recent_output.pop(session_id, None)
+        runtime = self._runtime.get(session_id)
+        if runtime:
+            runtime.recent_output.clear()
 
     def get_recent_output(self, session_id: str) -> list[str]:
         """Get recent output chunks for a session.
@@ -364,7 +374,8 @@ class SessionStore:
         Returns:
             List of recent output strings (up to 10).
         """
-        return list(self._recent_output.get(session_id, []))
+        runtime = self._runtime.get(session_id)
+        return list(runtime.recent_output) if runtime else []
 
     def set_workdir(self, session_id: str, path: str, *, managed: bool) -> str:
         """Record a working directory and update the session metadata."""
@@ -489,25 +500,31 @@ class SessionStore:
 
     def set_claude_task(self, session_id: str, task: asyncio.Task) -> None:
         """Track the Claude conversation loop task for a session."""
-        self._claude_tasks[session_id] = task
+        self._get_runtime(session_id).claude_task = task
 
     def get_claude_task(self, session_id: str) -> asyncio.Task | None:
         """Return the Claude conversation loop task, if any."""
-        return self._claude_tasks.get(session_id)
+        runtime = self._runtime.get(session_id)
+        return runtime.claude_task if runtime else None
 
     def clear_claude_task(self, session_id: str) -> None:
-        self._claude_tasks.pop(session_id, None)
+        runtime = self._runtime.get(session_id)
+        if runtime:
+            runtime.claude_task = None
 
     def request_stop(self, session_id: str) -> None:
         """Signal the Claude conversation loop to stop."""
-        self._stop_requested[session_id] = True
+        self._get_runtime(session_id).stop_requested = True
 
     def is_stop_requested(self, session_id: str) -> bool:
         """Check if stop was requested for a session."""
-        return self._stop_requested.get(session_id, False)
+        runtime = self._runtime.get(session_id)
+        return runtime.stop_requested if runtime else False
 
     def clear_stop_requested(self, session_id: str) -> None:
-        self._stop_requested.pop(session_id, None)
+        runtime = self._runtime.get(session_id)
+        if runtime:
+            runtime.stop_requested = False
 
     def read_event_log(
         self, session_id: str, *, since_seq: int = 0, limit: int | None = None

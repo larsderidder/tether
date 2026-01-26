@@ -3,17 +3,8 @@
 import pytest
 import httpx
 
-from tether.main import app
 from tether.models import SessionState
 from tether.store import SessionStore
-
-
-@pytest.fixture
-async def api_client(fresh_store) -> httpx.AsyncClient:
-    """Create an async HTTP client that uses the patched store."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 class TestHealthEndpoint:
