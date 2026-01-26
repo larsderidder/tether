@@ -99,7 +99,6 @@
   /* diff2html dark theme - mobile optimized */
   .diff-content {
     @apply -mx-3 sm:mx-0 px-0 sm:px-4 py-2 sm:py-3;
-    /* Smooth scrolling for horizontal overflow */
     -webkit-overflow-scrolling: touch;
   }
 
@@ -112,7 +111,7 @@
   }
 
   .diff2html .d2h-file-wrapper {
-    @apply border-none bg-transparent;
+    @apply border-none bg-transparent mb-0;
   }
 
   .diff2html .d2h-file-list-wrapper,
@@ -121,30 +120,34 @@
   }
 
   .diff2html .d2h-diff-table {
-    @apply w-full border-collapse font-mono;
-    font-size: 10px;
+    @apply w-full border-collapse font-mono text-xs;
   }
 
-  @screen sm {
-    .diff2html .d2h-diff-table {
-      @apply text-xs;
-    }
+  /* Hide the old line number, show only new */
+  .diff2html .d2h-code-linenumber .line-num1 {
+    @apply hidden;
+  }
+
+  .diff2html .d2h-code-linenumber .line-num2 {
+    @apply float-none w-auto;
   }
 
   .diff2html .d2h-code-line,
-  .diff2html .d2h-code-line-ctn {
-    @apply bg-stone-900/40 text-stone-300;
-    /* Ensure code doesn't wrap on mobile for better readability */
-    white-space: pre;
+  .diff2html .d2h-code-side-line {
+    @apply bg-stone-900/40;
+    padding: 0 0 0 4em;
+    width: calc(100% - 4em);
   }
 
-  .diff2html .d2h-code-line {
-    font-size: inherit;
-    @apply leading-5;
+  .diff2html .d2h-code-line-ctn {
+    @apply bg-transparent text-stone-300;
+    white-space: pre;
+    padding: 0;
   }
 
   .diff2html .d2h-code-line-prefix {
-    @apply select-none text-stone-500;
+    @apply select-none text-stone-500 bg-transparent;
+    padding: 0;
   }
 
   .diff2html .d2h-del {
@@ -152,7 +155,7 @@
   }
 
   .diff2html .d2h-del .d2h-code-line-ctn {
-    @apply bg-rose-950/50 text-rose-200;
+    @apply text-rose-200;
   }
 
   .diff2html .d2h-ins {
@@ -160,27 +163,21 @@
   }
 
   .diff2html .d2h-ins .d2h-code-line-ctn {
-    @apply bg-emerald-950/50 text-emerald-200;
+    @apply text-emerald-200;
   }
 
   .diff2html .d2h-info {
-    @apply bg-stone-800/60 text-stone-400;
+    @apply bg-stone-800/60;
   }
 
-  .diff2html .d2h-code-side-line {
-    @apply bg-stone-900/60;
+  .diff2html .d2h-info .d2h-code-line-ctn {
+    @apply text-stone-400;
   }
 
   .diff2html .d2h-code-linenumber {
     @apply border-r border-stone-700/50 bg-stone-900/60 text-stone-500;
-    min-width: 2em;
-    @apply px-1 sm:px-2;
-  }
-
-  @screen sm {
-    .diff2html .d2h-code-linenumber {
-      min-width: 2.5em;
-    }
+    width: 4em;
+    padding: 0 0.5em;
   }
 
   .diff2html .d2h-del .d2h-code-linenumber {

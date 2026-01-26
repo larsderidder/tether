@@ -27,10 +27,7 @@ const emit = defineEmits<{
 <template>
   <Card class="border-0 bg-transparent shadow-none">
     <CardHeader class="flex flex-row items-center justify-between space-y-0 p-2 sm:p-4">
-      <CardTitle class="text-xs sm:text-sm uppercase tracking-[0.2em] sm:tracking-[0.3em] text-stone-400">Changes</CardTitle>
-      <Button variant="outline" size="sm" class="h-9 sm:h-10 text-xs sm:text-sm" @click="emit('copyAll')" :disabled="!diff">
-        Copy all
-      </Button>
+      <CardTitle class="text-xs sm:text-sm uppercase tracking-[0.2em] sm:tracking-[0.3em] text-stone-400">Git diff</CardTitle>
     </CardHeader>
     <CardContent class="space-y-2 sm:space-y-3 p-2 sm:p-4">
       <p v-if="!files.length" class="text-sm text-stone-500">No changes yet.</p>

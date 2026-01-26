@@ -753,7 +753,6 @@ body {
 }
 
 .diff-content {
-  /* Smooth scrolling for horizontal overflow */
   -webkit-overflow-scrolling: touch;
 }
 
@@ -767,6 +766,7 @@ body {
 }
 
 .diff2html .d2h-file-wrapper {
+  margin-bottom: 0px;
   border-style: none;
   background-color: transparent;
 }
@@ -780,36 +780,44 @@ body {
   width: 100%;
   border-collapse: collapse;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 10px;
+  font-size: 0.75rem;
+  line-height: 1rem;
 }
 
-@media (min-width: 640px) {
-  .diff2html .d2h-diff-table {
-    font-size: 0.75rem;
-    line-height: 1rem;
-  }
+/* Hide the old line number, show only new */
+
+.diff2html .d2h-code-linenumber .line-num1 {
+  display: none;
+}
+
+.diff2html .d2h-code-linenumber .line-num2 {
+  float: none;
+  width: auto;
 }
 
 .diff2html .d2h-code-line,
-  .diff2html .d2h-code-line-ctn {
+  .diff2html .d2h-code-side-line {
   background-color: rgb(28 25 23 / 0.4);
-  --tw-text-opacity: 1;
-  color: rgb(214 211 209 / var(--tw-text-opacity, 1));
-  /* Ensure code doesn't wrap on mobile for better readability */
-  white-space: pre;
+  padding: 0 0 0 4em;
+  width: calc(100% - 4em);
 }
 
-.diff2html .d2h-code-line {
-  font-size: inherit;
-  line-height: 1.25rem;
+.diff2html .d2h-code-line-ctn {
+  background-color: transparent;
+  --tw-text-opacity: 1;
+  color: rgb(214 211 209 / var(--tw-text-opacity, 1));
+  white-space: pre;
+  padding: 0;
 }
 
 .diff2html .d2h-code-line-prefix {
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
+  background-color: transparent;
   --tw-text-opacity: 1;
   color: rgb(120 113 108 / var(--tw-text-opacity, 1));
+  padding: 0;
 }
 
 .diff2html .d2h-del {
@@ -817,7 +825,6 @@ body {
 }
 
 .diff2html .d2h-del .d2h-code-line-ctn {
-  background-color: rgb(76 5 25 / 0.5);
   --tw-text-opacity: 1;
   color: rgb(254 205 211 / var(--tw-text-opacity, 1));
 }
@@ -827,19 +834,17 @@ body {
 }
 
 .diff2html .d2h-ins .d2h-code-line-ctn {
-  background-color: rgb(2 44 34 / 0.5);
   --tw-text-opacity: 1;
   color: rgb(167 243 208 / var(--tw-text-opacity, 1));
 }
 
 .diff2html .d2h-info {
   background-color: rgb(41 37 36 / 0.6);
-  --tw-text-opacity: 1;
-  color: rgb(168 162 158 / var(--tw-text-opacity, 1));
 }
 
-.diff2html .d2h-code-side-line {
-  background-color: rgb(28 25 23 / 0.6);
+.diff2html .d2h-info .d2h-code-line-ctn {
+  --tw-text-opacity: 1;
+  color: rgb(168 162 158 / var(--tw-text-opacity, 1));
 }
 
 .diff2html .d2h-code-linenumber {
@@ -848,17 +853,8 @@ body {
   background-color: rgb(28 25 23 / 0.6);
   --tw-text-opacity: 1;
   color: rgb(120 113 108 / var(--tw-text-opacity, 1));
-  min-width: 2em;
-  padding-left: 0.25rem;
-  padding-right: 0.25rem;
-}
-
-@media (min-width: 640px) {
-  .diff2html .d2h-code-linenumber {
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
-    min-width: 2.5em;
-  }
+  width: 4em;
+  padding: 0 0.5em;
 }
 
 .diff2html .d2h-del .d2h-code-linenumber {
@@ -2071,11 +2067,6 @@ body {
 .text-blue-300 {
   --tw-text-opacity: 1;
   color: rgb(147 197 253 / var(--tw-text-opacity, 1));
-}
-
-.text-blue-400 {
-  --tw-text-opacity: 1;
-  color: rgb(96 165 250 / var(--tw-text-opacity, 1));
 }
 
 .text-card-foreground {
