@@ -1,4 +1,5 @@
-import { ref, watch, onUnmounted } from "vue";
+import { ref } from "vue";
+import { watchDebounced } from "@vueuse/core";
 import { checkDirectory, type DirectoryCheck } from "@/api";
 
 export function useDirectoryCheck(debounceMs = 400) {
@@ -7,17 +8,7 @@ export function useDirectoryCheck(debounceMs = 400) {
   const probe = ref<DirectoryCheck | null>(null);
   const error = ref("");
 
-  let timer: number | null = null;
-
-  const clear = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
-  };
-
   const check = async (path: string): Promise<DirectoryCheck | null> => {
-    clear();
     const trimmed = path.trim();
     if (!trimmed) {
       probe.value = null;
@@ -41,35 +32,28 @@ export function useDirectoryCheck(debounceMs = 400) {
     }
   };
 
-  const scheduleCheck = (value: string) => {
-    clear();
-    const trimmed = value.trim();
-    if (!trimmed) {
-      probe.value = null;
-      error.value = "";
-      checking.value = false;
-      return;
-    }
-    checking.value = true;
-    timer = setTimeout(async () => {
-      await check(trimmed);
-      timer = null;
-    }, debounceMs) as unknown as number;
-  };
-
-  // Auto-check when input changes
-  watch(input, (value) => {
-    scheduleCheck(value);
-  });
-
-  onUnmounted(clear);
+  // Auto-check when input changes (debounced)
+  watchDebounced(
+    input,
+    (value) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        probe.value = null;
+        error.value = "";
+        checking.value = false;
+        return;
+      }
+      checking.value = true;
+      check(trimmed);
+    },
+    { debounce: debounceMs }
+  );
 
   return {
     input,
     checking,
     probe,
     error,
-    check,
-    clear
+    check
   };
 }
