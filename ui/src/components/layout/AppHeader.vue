@@ -11,6 +11,7 @@
         </button>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
+            <img src="/logo.png" alt="Tether" class="h-5" />
             <span class="text-sm font-medium text-stone-100">Tether</span>
             <span
               v-if="statusDot"
