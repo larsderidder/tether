@@ -101,6 +101,9 @@ import DiffViewer from "@/components/session/DiffViewer.vue"
 import InputBar from "@/components/session/InputBar.vue"
 import type { ChatMessage } from "@/components/session/MessageBubble.vue"
 import * as Diff2Html from "diff2html"
+import { useClipboard } from "@/composables/useClipboard"
+
+const { copy } = useClipboard({ legacy: true })
 
 const session = ref<Session | null>(null)
 const messages = ref<ChatMessage[]>([])
@@ -499,32 +502,17 @@ const applyRename = async () => {
   }
 }
 
-const copyDiff = async () => {
-  if (!diff.value) return
-  try {
-    await navigator.clipboard.writeText(diff.value)
-  } catch (err) {
-    reportError(err)
-  }
+const copyDiff = () => {
+  if (diff.value) copy(diff.value)
 }
 
-const copyFile = async (patch: string) => {
-  if (!patch) return
-  try {
-    await navigator.clipboard.writeText(patch)
-  } catch (err) {
-    reportError(err)
-  }
+const copyFile = (patch: string) => {
+  if (patch) copy(patch)
 }
 
-const copyFinal = async (message: ChatMessage) => {
+const copyFinal = (message: ChatMessage) => {
   const text = message.final || ""
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch (err) {
-    reportError(err)
-  }
+  if (text) copy(text)
 }
 
 const parseRawDiff = (source: string): DiffFile[] => {

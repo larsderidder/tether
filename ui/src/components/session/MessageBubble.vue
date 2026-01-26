@@ -2,6 +2,9 @@
 import { computed, ref, onMounted, onUnmounted } from "vue"
 import { Bot, ChevronDown, ChevronUp, Copy, User } from "lucide-vue-next"
 import { renderMarkdown } from "@/lib/markdown"
+import { useClipboard } from "@/composables/useClipboard"
+
+const { copy } = useClipboard({ legacy: true })
 
 export type ChatMessage = {
   role: "user" | "assistant"
@@ -72,7 +75,7 @@ function handleSelectionChange() {
 
 function copySelection() {
   if (selectedText.value) {
-    navigator.clipboard.writeText(selectedText.value)
+    copy(selectedText.value)
     showSelectionCopy.value = false
     window.getSelection()?.removeAllRanges()
   }
