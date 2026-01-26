@@ -8,7 +8,7 @@ from tether.api.state import now
 from tether.models import Session
 from tether.store import store
 
-logger = structlog.get_logger("tether.runner")
+logger = structlog.get_logger(__name__)
 
 
 async def emit_header(

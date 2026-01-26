@@ -20,12 +20,11 @@ from claude_agent_sdk import (
     ThinkingBlock,
 )
 
-from tether.models import SessionState
 from tether.prompts import SYSTEM_PROMPT
 from tether.runner.base import RunnerEvents
 from tether.store import store
 
-logger = structlog.get_logger("tether.runner.claude_local")
+logger = structlog.get_logger(__name__)
 
 HEARTBEAT_INTERVAL = 5.0
 

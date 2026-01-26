@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from tether.models import ErrorDetail, ErrorResponse
 
-logger = structlog.get_logger("tether.http")
+logger = structlog.get_logger(__name__)
 
 
 async def request_logging_middleware(request: Request, call_next):

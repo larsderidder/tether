@@ -14,7 +14,7 @@ from tether.models import SessionState
 from tether.settings import settings
 from tether.store import store
 
-logger = structlog.get_logger("tether.maintenance")
+logger = structlog.get_logger(__name__)
 
 
 def _parse_ts(value: str) -> float | None:

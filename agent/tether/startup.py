@@ -6,7 +6,7 @@ import socket
 
 import structlog
 
-logger = structlog.get_logger("tether.startup")
+logger = structlog.get_logger(__name__)
 
 
 def _guess_lan_ip() -> str | None:

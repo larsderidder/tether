@@ -16,7 +16,7 @@ from tether.models import (
     ExternalSessionMessage,
 )
 
-logger = structlog.get_logger("tether.discovery.codex_cli")
+logger = structlog.get_logger(__name__)
 
 CODEX_HOME = Path.home() / ".codex"
 SESSIONS_DIR = CODEX_HOME / "sessions"

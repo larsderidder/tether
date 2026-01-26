@@ -23,7 +23,7 @@ from tether.git import has_git_repository, normalize_directory_path
 from tether.models import Message, RepoRef, Session, SessionState
 from tether.settings import settings
 
-logger = structlog.get_logger("tether.store")
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

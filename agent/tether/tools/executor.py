@@ -10,7 +10,7 @@ import structlog
 
 from tether.store import store
 
-logger = structlog.get_logger("tether.tools.executor")
+logger = structlog.get_logger(__name__)
 
 
 async def execute_tool(session_id: str, tool_name: str, tool_input: dict) -> dict:

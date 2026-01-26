@@ -15,7 +15,7 @@ from tether.models import (
     ExternalSessionMessage,
 )
 
-logger = structlog.get_logger("tether.discovery.claude_code")
+logger = structlog.get_logger(__name__)
 
 CLAUDE_HOME = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_HOME / "projects"

@@ -11,7 +11,7 @@ from starlette.responses import StreamingResponse
 
 from tether.store import store
 
-logger = structlog.get_logger("tether.sse")
+logger = structlog.get_logger(__name__)
 
 SSE_KEEPALIVE_SECONDS = 15.0
 
