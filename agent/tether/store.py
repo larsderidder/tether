@@ -37,6 +37,7 @@ class SessionRuntime:
     recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=10))
     stop_requested: bool = False
     synced_message_count: int = 0
+    synced_turn_count: int = 0  # Number of conversation turns (user messages)
 
 
 class SessionStore:
@@ -54,7 +55,9 @@ class SessionStore:
     def _get_runtime(self, session_id: str) -> SessionRuntime:
         """Get or create runtime state for a session."""
         if session_id not in self._runtime:
-            self._runtime[session_id] = SessionRuntime()
+            # Initialize seq from event log to avoid conflicts after restart
+            max_seq = self._get_max_seq_from_log(session_id)
+            self._runtime[session_id] = SessionRuntime(seq=max_seq)
         return self._runtime[session_id]
 
     def _load_sessions(self) -> None:
@@ -64,7 +67,35 @@ class SessionStore:
                 rows = db.exec(select(Session)).all()
                 for row in rows:
                     self._sessions[row.id] = row
-                    self._runtime[row.id] = SessionRuntime()
+                    # Initialize seq from event log to avoid conflicts after restart
+                    max_seq = self._get_max_seq_from_log(row.id)
+                    self._runtime[row.id] = SessionRuntime(seq=max_seq)
+
+    def _get_max_seq_from_log(self, session_id: str) -> int:
+        """Read the max seq from the event log file.
+
+        Used to initialize the seq counter after restart to avoid conflicts
+        where new events get seq numbers that collide with old events.
+        """
+        path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
+        if not os.path.exists(path):
+            return 0
+        max_seq = 0
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                        seq = int(event.get("seq") or 0)
+                        if seq > max_seq:
+                            max_seq = seq
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+        except OSError:
+            pass
+        return max_seq
 
     def _now(self) -> str:
         """Return an ISO8601 UTC timestamp suitable for API payloads."""
@@ -324,14 +355,30 @@ class SessionStore:
                 return session.id
         return None
 
-    def set_synced_message_count(self, session_id: str, count: int) -> None:
-        """Store the number of messages synced from external session."""
-        self._get_runtime(session_id).synced_message_count = count
+    def set_synced_message_count(
+        self, session_id: str, count: int, turn_count: int | None = None
+    ) -> None:
+        """Store the number of messages synced from external session.
+
+        Args:
+            session_id: Internal session identifier.
+            count: Total number of messages synced.
+            turn_count: Number of conversation turns (user messages). If None,
+                        uses count for backwards compatibility.
+        """
+        runtime = self._get_runtime(session_id)
+        runtime.synced_message_count = count
+        runtime.synced_turn_count = turn_count if turn_count is not None else count
 
     def get_synced_message_count(self, session_id: str) -> int:
         """Get the number of messages previously synced from external session."""
         runtime = self._runtime.get(session_id)
         return runtime.synced_message_count if runtime else 0
+
+    def get_synced_turn_count(self, session_id: str) -> int:
+        """Get the number of conversation turns synced from external session."""
+        runtime = self._runtime.get(session_id)
+        return runtime.synced_turn_count if runtime else 0
 
     def should_emit_output(self, session_id: str, text: str) -> bool:
         """Return True if output is non-empty and not recently emitted.
@@ -483,20 +530,35 @@ class SessionStore:
                 db.commit()
 
     def get_message_count(self, session_id: str) -> int:
-        """Get the number of messages for a session.
+        """Get the number of conversation turns for a session.
+
+        For attached external sessions, this returns the synced turn count
+        (number of user messages) since those messages are emitted as events
+        but not persisted to the DB.
 
         Args:
             session_id: Internal session identifier.
 
         Returns:
-            Number of messages in the session.
+            Number of conversation turns in the session.
         """
+        # Check synced turn count first (for attached external sessions)
+        synced_turns = self.get_synced_turn_count(session_id)
+
         with self._db_lock:
             with get_db_session() as db:
-                count = db.exec(
-                    select(sa_func.count(Message.id)).where(Message.session_id == session_id)
+                # Count only user messages for consistency with synced turn count
+                db_count = db.exec(
+                    select(sa_func.count(Message.id)).where(
+                        Message.session_id == session_id,
+                        Message.role == "user",
+                    )
                 ).one()
-                return count or 0
+                db_count = db_count or 0
+
+        # Return whichever is higher (synced turns for attached sessions,
+        # db count for sessions that were started fresh)
+        return max(synced_turns, db_count)
 
     def request_stop(self, session_id: str) -> None:
         """Signal the runner to stop."""
