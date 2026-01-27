@@ -260,14 +260,16 @@ async def attach_to_external_session(
             is_final=is_final,
         )
 
-    # Track how many messages have been synced
-    store.set_synced_message_count(session.id, len(detail.messages))
+    # Track how many messages have been synced (turn_count = user messages only)
+    turn_count = sum(1 for m in detail.messages if m.role == "user")
+    store.set_synced_message_count(session.id, len(detail.messages), turn_count)
 
     logger.info(
         "Attached to external session",
         session_id=session.id,
         external_id=external_id,
         history_messages=len(detail.messages),
+        turn_count=turn_count,
     )
 
     return SessionResponse.from_session(session, store)
@@ -321,11 +323,13 @@ async def sync_external_session(
     # it means this is a non-attached session that was used normally.
     # Don't emit duplicate messages - just set the count to current total.
     if synced_count == 0 and session.started_at is not None:
-        store.set_synced_message_count(session_id, len(messages))
+        turn_count = sum(1 for m in messages if m.role == "user")
+        store.set_synced_message_count(session_id, len(messages), turn_count)
         logger.info(
             "Initialized sync count for active session",
             session_id=session_id,
             total_messages=len(messages),
+            turn_count=turn_count,
         )
         return SyncResult(synced=0, total=len(messages))
 
@@ -354,12 +358,14 @@ async def sync_external_session(
         )
 
     # Update synced count
-    store.set_synced_message_count(session_id, len(messages))
+    turn_count = sum(1 for m in messages if m.role == "user")
+    store.set_synced_message_count(session_id, len(messages), turn_count)
 
     logger.info(
         "Synced external session",
         session_id=session_id,
         new_messages=len(new_messages),
+        turn_count=turn_count,
         total_messages=len(messages),
     )
 
