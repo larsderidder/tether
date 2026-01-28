@@ -1,6 +1,6 @@
 <template>
-  <div class="min-h-screen bg-stone-950 text-stone-50">
-    <div :class="settingsOpen ? 'pointer-events-none' : ''">
+  <div class="app-shell">
+    <div :class="['app-content', settingsOpen ? 'pointer-events-none' : '']">
       <AppHeader
         :active-session="activeSession"
         :has-active-session="!!activeSessionId"
@@ -12,9 +12,14 @@
         @info="openInfo"
       />
 
-      <main class="mx-auto w-full max-w-3xl px-4 pb-32 pt-4">
-        <RouterView />
+      <main class="app-main" ref="scrollContainer">
+        <div class="mx-auto w-full max-w-3xl px-4 pt-4">
+          <RouterView />
+        </div>
       </main>
+
+      <!-- InputBar teleports here, outside the scroll container -->
+      <div id="input-bar-slot"></div>
 
       <SessionDrawer
         v-model:open="drawerOpen"
@@ -99,7 +104,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { disableBodyScroll, enableBodyScroll } from "body-scroll-lock";
 import { RouterView } from "vue-router";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -155,10 +161,10 @@ const {
 } = useAuth();
 
 // Local UI state
-import { ref } from "vue";
 const drawerOpen = ref(false);
 const settingsOpen = ref(false);
 const externalBrowserOpen = ref(false);
+const scrollContainer = ref<HTMLElement | null>(null);
 
 // Computed
 const statusDot = computed(() => getStatusDotClass(activeSession.value?.state));
@@ -182,7 +188,7 @@ const openInfo = () => {
 };
 
 const saveToken = () => {
-  handleSaveToken(() => refreshSessions());
+  handleSaveToken();
 };
 
 const handleSessionSelect = (id: string) => {
@@ -223,6 +229,54 @@ watch(activeSessionId, (newId, oldId) => {
 // Lifecycle
 onMounted(() => {
   refreshSessions();
+  // Lock body scroll, allow only scrollContainer to scroll
+  if (scrollContainer.value) {
+    disableBodyScroll(scrollContainer.value, {
+      reserveScrollBarGap: true
+    });
+  }
+});
+
+onUnmounted(() => {
+  if (scrollContainer.value) {
+    enableBodyScroll(scrollContainer.value);
+  }
 });
 </script>
+
+<style>
+.app-shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: rgb(12 10 9);
+  color: rgb(250 250 249);
+  overflow: hidden;
+  /* iOS Safari fix */
+  height: 100vh;
+  height: -webkit-fill-available;
+}
+
+.app-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-main {
+  flex: 1;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+  /* Prevent iOS bounce */
+  position: relative;
+}
+</style>
 

@@ -14,15 +14,13 @@ export function useAuth() {
     modalOpen.value = true;
   };
 
-  const saveToken = (onSuccess?: () => void) => {
+  const saveToken = () => {
     setToken(tokenInput.value.trim());
     tokenSaved.value = true;
-    setTimeout(() => {
-      tokenSaved.value = false;
-    }, 1200);
     modalOpen.value = false;
     authRequired.value = false;
-    onSuccess?.();
+    // Reload the page to retry all requests with the new token
+    window.location.reload();
   };
 
   const openModal = () => {

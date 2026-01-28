@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from "vue"
 import { Bot, ChevronDown, ChevronUp, Copy, User } from "lucide-vue-next"
-import { renderMarkdown } from "@/lib/markdown"
+import { renderMarkdown, decodeHtmlEntities } from "@/lib/markdown"
 import { useClipboard } from "@/composables/useClipboard"
 
 const { copy } = useClipboard({ legacy: true })
@@ -103,8 +103,8 @@ onUnmounted(() => {
 <template>
   <!-- User message -->
   <div v-if="message.role === 'user'" ref="bubbleRef" class="relative flex justify-end gap-2">
-    <div class="max-w-[80%] rounded-2xl rounded-br-md bg-emerald-600 px-4 py-2.5 text-sm text-white">
-      {{ message.text }}
+    <div class="max-w-[80%] rounded-2xl rounded-br-md bg-emerald-600 px-4 py-2.5 text-sm text-white whitespace-pre-wrap">
+      {{ decodeHtmlEntities(message.text || '') }}
     </div>
     <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600">
       <User class="h-4 w-4 text-white" />

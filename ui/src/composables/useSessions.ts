@@ -115,6 +115,7 @@ export function useSessions() {
 
   const sync = async () => {
     if (!activeSessionId.value || syncing.value) return;
+    if (!activeSession.value?.runner_session_id) return null;
     syncing.value = true;
     error.value = "";
     try {
