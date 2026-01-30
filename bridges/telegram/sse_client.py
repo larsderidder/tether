@@ -121,3 +121,50 @@ class AgentClient:
                 body = await resp.text()
                 raise RuntimeError(f"Interrupt failed: {resp.status} {body}")
             return await resp.json()
+
+    async def list_external_sessions(
+        self,
+        directory: str | None = None,
+        runner_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Fetch external sessions (Claude Code, Codex) that can be attached."""
+        if not self._session:
+            raise RuntimeError("AgentClient not started")
+
+        params = {}
+        if directory:
+            params["directory"] = directory
+        if runner_type:
+            params["runner_type"] = runner_type
+        if limit:
+            params["limit"] = str(limit)
+
+        url = f"{self._base_url}/api/external-sessions"
+        async with self._session.get(url, params=params) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Failed to list external sessions: {resp.status} {text}")
+            return await resp.json()
+
+    async def attach_to_external_session(
+        self,
+        external_id: str,
+        runner_type: str,
+        directory: str,
+    ) -> dict:
+        """Attach to an external session (Claude Code or Codex)."""
+        if not self._session:
+            raise RuntimeError("AgentClient not started")
+
+        url = f"{self._base_url}/api/sessions/attach"
+        payload = {
+            "external_id": external_id,
+            "runner_type": runner_type,
+            "directory": directory,
+        }
+        async with self._session.post(url, json=payload) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RuntimeError(f"Attach failed: {resp.status} {body}")
+            return await resp.json()

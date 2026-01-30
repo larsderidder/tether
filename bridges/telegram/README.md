@@ -59,6 +59,8 @@ tether-telegram
 |---------|-------------|
 | `/status` | List all sessions with their states |
 | `/sessions` | Alias for /status |
+| `/external` | List external sessions (Claude Code, Codex) that can be attached |
+| `/attach <n>` | Attach to external session by number (from /external list) |
 | `/stop [id]` | Interrupt the active session or a specific session |
 | `/switch <id>` | Switch the active session |
 | `/help` | Show help message |

@@ -39,6 +39,7 @@ class TelegramBridge:
         self._app: Application | None = None
         self._active_session_id: str | None = None
         self._sessions: dict[str, dict] = {}
+        self._external_sessions: list[dict] = []
         self._subscriptions: dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
@@ -49,6 +50,8 @@ class TelegramBridge:
         self._app.add_handler(CommandHandler("sessions", self._handle_status))
         self._app.add_handler(CommandHandler("stop", self._handle_stop))
         self._app.add_handler(CommandHandler("switch", self._handle_switch))
+        self._app.add_handler(CommandHandler("external", self._handle_external))
+        self._app.add_handler(CommandHandler("attach", self._handle_attach))
         self._app.add_handler(CommandHandler("help", self._handle_help))
         self._app.add_handler(CommandHandler("start", self._handle_help))
         self._app.add_handler(
@@ -169,6 +172,8 @@ class TelegramBridge:
 
 Commands:
 /status - List all sessions
+/external - List external sessions (Claude Code, Codex)
+/attach <id> - Attach to an external session
 /stop [id] - Interrupt active or specified session
 /switch <id> - Switch active session
 /help - Show this help
@@ -242,6 +247,98 @@ Send any text message to forward as input to the active session.
         session = self._sessions.get(session_id)
         name = session.get("name") if session else session_id[:12]
         await update.message.reply_text(f"Switched to: {name}")
+
+    async def _handle_external(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle /external command - list external sessions."""
+        try:
+            self._external_sessions = await self._agent.list_external_sessions(limit=10)
+        except Exception as e:
+            await update.message.reply_text(f"Failed to list external sessions: {e}")
+            return
+
+        if not self._external_sessions:
+            await update.message.reply_text(
+                "No external sessions found.\n\n"
+                "Start a Claude Code or Codex session first, then use /external to see it."
+            )
+            return
+
+        lines = ["*External Sessions:*"]
+        for i, session in enumerate(self._external_sessions, 1):
+            runner = session.get("runner_type", "unknown")
+            directory = session.get("directory", "")
+            dir_short = directory.split("/")[-1] if directory else "unknown"
+            is_running = "🟢" if session.get("is_running") else "⚪"
+            prompt = session.get("first_prompt") or ""
+            prompt_short = (prompt[:30] + "...") if len(prompt) > 30 else prompt
+            lines.append(
+                f"{i}. {is_running} *{self._escape_md(runner)}* in `{self._escape_md(dir_short)}`"
+            )
+            if prompt_short:
+                lines.append(f"   _{self._escape_md(prompt_short)}_")
+
+        lines.append("\nUse /attach <number> to attach to a session.")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _handle_attach(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle /attach command - attach to an external session."""
+        args = context.args
+
+        if not args:
+            await update.message.reply_text(
+                "Usage: /attach <number>\n\nRun /external first to see available sessions."
+            )
+            return
+
+        # Resolve the external session
+        try:
+            index = int(args[0]) - 1
+            if not self._external_sessions:
+                await update.message.reply_text(
+                    "No external sessions cached. Run /external first."
+                )
+                return
+            if index < 0 or index >= len(self._external_sessions):
+                await update.message.reply_text(
+                    f"Invalid session number. Use 1-{len(self._external_sessions)}."
+                )
+                return
+            external = self._external_sessions[index]
+        except ValueError:
+            await update.message.reply_text("Please provide a session number.")
+            return
+
+        # Attach to the session
+        try:
+            external_id = external.get("id")
+            runner_type = external.get("runner_type")
+            directory = external.get("directory")
+
+            result = await self._agent.attach_to_external_session(
+                external_id=external_id,
+                runner_type=runner_type,
+                directory=directory,
+            )
+
+            session_id = result.get("id")
+            if session_id:
+                self._sessions[session_id] = result
+                self._active_session_id = session_id
+                self._ensure_subscription(session_id)
+
+            name = result.get("name") or session_id[:12] if session_id else "session"
+            await update.message.reply_text(
+                f"✅ Attached to {runner_type} session\n"
+                f"Directory: `{self._escape_md(directory)}`\n"
+                f"Session: {self._escape_md(name)}",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Failed to attach: {e}")
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
