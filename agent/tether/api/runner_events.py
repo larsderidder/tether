@@ -58,6 +58,7 @@ class ApiRunnerEvents:
         provider: str | None = None,
         sandbox: str | None = None,
         approval: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
         """Handle structured header from runners."""
         session = store.get_session(session_id)
@@ -66,6 +67,14 @@ class ApiRunnerEvents:
         # Store title as runner_header for basic display
         session.runner_header = title
         store.update_session(session)
+
+        # Capture thread_id from runner for session attachment/resume
+        if thread_id and thread_id != "unknown":
+            # Only set if not already set (don't overwrite on reconnect)
+            existing = store.get_runner_session_id(session_id)
+            if not existing:
+                store.set_runner_session_id(session_id, thread_id)
+
         await emit_header(
             session,
             title=title,

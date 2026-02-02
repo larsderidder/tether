@@ -341,6 +341,7 @@ export async function runTurn(
   session: SessionState,
   input: string,
   approvalChoice: number,
+  threadId?: string,
 ): Promise<void> {
   logger.debug(
     { session_id: session.id, input_length: input.length, approvalChoice },
@@ -373,10 +374,16 @@ export async function runTurn(
     const options = buildThreadOptions({ ...session, workdir }, approvalChoice);
     logger.debug({ session_id: session.id, options }, "Thread options built");
 
-    // Create thread if this is the first turn
+    // Create or resume thread if this is the first turn
     if (!session.thread) {
-      logger.debug({ session_id: session.id }, "Creating new thread");
-      session.thread = codex.startThread(options);
+      if (threadId) {
+        logger.info({ session_id: session.id, thread_id: threadId }, "Resuming existing thread");
+        session.thread = codex.resumeThread(threadId, options);
+        session.threadId = threadId; // Pre-populate so header shows correct ID
+      } else {
+        logger.debug({ session_id: session.id }, "Creating new thread");
+        session.thread = codex.startThread(options);
+      }
     }
 
     // Set up abort controller for stop/timeout

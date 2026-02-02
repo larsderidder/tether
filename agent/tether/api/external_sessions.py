@@ -164,15 +164,11 @@ async def attach_to_external_session(
 
     Body:
         external_id: The external session UUID to attach to.
-        runner_type: Which runner created the session ("claude_code").
+        runner_type: Which runner created the session ("claude_code" or "codex_cli").
         directory: Working directory for the session.
 
     Returns:
         New Tether session in AWAITING_INPUT state.
-
-    Note:
-        Only Claude Code sessions support attachment (resume).
-        Codex CLI sessions are view-only.
     """
     external_id = payload.external_id
     parsed_runner_type = payload.runner_type
@@ -184,14 +180,6 @@ async def attach_to_external_session(
         runner_type=parsed_runner_type.value,
         directory=directory,
     )
-
-    # Only Claude Code supports attachment
-    if parsed_runner_type != ExternalRunnerType.CLAUDE_CODE:
-        raise_http_error(
-            "RUNNER_NOT_SUPPORTED",
-            "Only Claude Code sessions support attachment. Codex CLI sessions are view-only.",
-            422,
-        )
 
     # Check if this external session is already attached to a Tether session
     existing_session_id = store.find_session_by_runner_session_id(external_id)
@@ -223,7 +211,14 @@ async def attach_to_external_session(
     session.repo_display = normalized_directory
     session.directory = normalized_directory
     session.directory_has_git = has_git_repository(normalized_directory)
-    session.runner_type = "claude-local"  # Force claude-local runner for attached sessions
+
+    # Set runner type based on external session source
+    if parsed_runner_type == ExternalRunnerType.CLAUDE_CODE:
+        session.runner_type = "claude-local"
+    elif parsed_runner_type == ExternalRunnerType.CODEX_CLI:
+        session.runner_type = "codex_sdk_sidecar"
+    else:
+        session.runner_type = "claude-local"  # Default fallback
 
     # Set session name from first prompt if available
     if detail.first_prompt:
@@ -303,8 +298,11 @@ async def sync_external_session(
             400,
         )
 
-    # Currently only Claude Code supports this
-    runner_type = ExternalRunnerType.CLAUDE_CODE
+    # Determine external runner type based on session's runner_type
+    if session.runner_type == "codex_sdk_sidecar":
+        runner_type = ExternalRunnerType.CODEX_CLI
+    else:
+        runner_type = ExternalRunnerType.CLAUDE_CODE
 
     # Fetch fresh history
     detail = get_external_session_detail(

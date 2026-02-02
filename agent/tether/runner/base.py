@@ -30,6 +30,18 @@ class RunnerEvents(Protocol):
 
     async def on_heartbeat(self, session_id: str, elapsed_s: float, done: bool) -> None: ...
 
+    async def on_header(
+        self,
+        session_id: str,
+        *,
+        title: str,
+        model: str | None = None,
+        provider: str | None = None,
+        sandbox: str | None = None,
+        approval: str | None = None,
+        thread_id: str | None = None,
+    ) -> None: ...
+
 
 class Runner(Protocol):
     """Adapter interface for agent backends (Codex CLI, SDK sidecar, etc.)."""

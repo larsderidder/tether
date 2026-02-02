@@ -42,12 +42,27 @@ class SidecarRunner:
             self._loop = asyncio.get_running_loop()
         store.clear_stop_requested(session_id)
         workdir = store.get_workdir(session_id)
-        payload = {
+
+        # Check if this is a resumed/attached session
+        thread_id = store.get_runner_session_id(session_id)
+        if thread_id:
+            logger.info(
+                "Starting with attached thread",
+                session_id=session_id,
+                thread_id=thread_id,
+            )
+
+        payload: dict[str, str | int | None] = {
             "session_id": session_id,
             "prompt": prompt,
             "approval_choice": approval_choice,
             "workdir": workdir,
         }
+
+        # Only include thread_id if resuming
+        if thread_id:
+            payload["thread_id"] = thread_id
+
         await self._post_json("/sessions/start", payload)
         self._ensure_stream(session_id)
 
@@ -192,6 +207,7 @@ class SidecarRunner:
             provider = data.get("provider")
             sandbox = data.get("sandbox")
             approval = data.get("approval")
+            thread_id = data.get("thread_id")
             self._dispatch(
                 self._events.on_header(
                     session_id,
@@ -200,6 +216,7 @@ class SidecarRunner:
                     provider=provider,
                     sandbox=sandbox,
                     approval=approval,
+                    thread_id=thread_id,
                 )
             )
             return

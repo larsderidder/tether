@@ -38,7 +38,7 @@ export const router = Router();
  * - { error: string } on validation failure
  */
 router.post("/sessions/start", async (req: Request, res: Response) => {
-  const { session_id, prompt, approval_choice, workdir } = req.body || {};
+  const { session_id, prompt, approval_choice, workdir, thread_id } = req.body || {};
 
   // Validate required fields
   if (!session_id) {
@@ -75,7 +75,7 @@ router.post("/sessions/start", async (req: Request, res: Response) => {
 
   // Start the turn if a prompt was provided
   if (prompt) {
-    runTurn(session, String(prompt), session.approvalChoice).catch((err) => {
+    runTurn(session, String(prompt), session.approvalChoice, thread_id ? String(thread_id) : undefined).catch((err) => {
       logger.error({ session_id, error: String(err) }, "runTurn failed unexpectedly");
     });
   }
