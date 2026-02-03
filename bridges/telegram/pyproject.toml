@@ -16,4 +16,14 @@ dev = [
 ]
 
 [project.scripts]
-tether-telegram = "bridges.telegram.main:run"
+tether-telegram = "tether.bridges.telegram.main:run"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

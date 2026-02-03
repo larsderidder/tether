@@ -48,7 +48,7 @@ class AgentClient:
         if not self._session:
             raise RuntimeError("AgentClient not started")
 
-        url = f"{self._base_url}/events/sessions/{session_id}"
+        url = f"{self._base_url}/api/events/sessions/{session_id}"
         try:
             async with self._session.get(url) as resp:
                 if resp.status != 200:
@@ -81,7 +81,12 @@ class AgentClient:
                 text = await resp.text()
                 raise RuntimeError(f"Failed to list sessions: {resp.status} {text}")
             data = await resp.json()
-            return data.get("sessions", [])
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("sessions", [])
+            logger.warning("Unexpected /api/sessions response type: %s", type(data).__name__)
+            return []
 
     async def get_session(self, session_id: str) -> dict | None:
         """Fetch a single session by ID."""
@@ -96,7 +101,13 @@ class AgentClient:
                 text = await resp.text()
                 raise RuntimeError(f"Failed to get session: {resp.status} {text}")
             data = await resp.json()
-            return data.get("session")
+            if isinstance(data, dict):
+                return data.get("session", data)
+            logger.warning(
+                "Unexpected /api/sessions/{id} response type: %s",
+                type(data).__name__,
+            )
+            return None
 
     async def send_input(self, session_id: str, text: str) -> dict:
         """Send input to a session."""
@@ -167,4 +178,29 @@ class AgentClient:
             if resp.status >= 400:
                 body = await resp.text()
                 raise RuntimeError(f"Attach failed: {resp.status} {body}")
+            return await resp.json()
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        request_id: str,
+        allow: bool,
+        message: str | None = None,
+        updated_input: dict | None = None,
+    ) -> dict:
+        """Respond to a pending permission request."""
+        if not self._session:
+            raise RuntimeError("AgentClient not started")
+
+        url = f"{self._base_url}/api/sessions/{session_id}/permission"
+        payload = {
+            "request_id": request_id,
+            "allow": allow,
+            "message": message,
+            "updated_input": updated_input,
+        }
+        async with self._session.post(url, json=payload) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RuntimeError(f"Permission response failed: {resp.status} {body}")
             return await resp.json()

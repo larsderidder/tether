@@ -1,6 +1,16 @@
 # Setup Instructions for AI Agents
 
-Help the user set up and run Tether.
+## First Step
+
+**Ask the user what they want to do:**
+- Set up and run Tether for personal use
+- Develop on the Tether repository
+
+If they want to **develop**, direct them to CONTRIBUTING.md for the development setup.
+
+If they want to **set up Tether**, continue with the instructions below.
+
+---
 
 ## Prerequisites
 

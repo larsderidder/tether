@@ -7,9 +7,10 @@ import logging
 import signal
 import sys
 
-from .config import load_config
-from .sse_client import AgentClient
-from .telegram_bot import TelegramBridge
+from tether.bridges.telegram.config import load_config
+from tether.bridges.telegram.sse_client import AgentClient
+from tether.bridges.telegram.state import StateManager
+from tether.bridges.telegram.telegram_bot import TelegramBridge
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,7 +28,9 @@ async def main() -> None:
         sys.exit(1)
 
     agent = AgentClient(config.agent_url, config.agent_token)
-    bridge = TelegramBridge(config, agent)
+    state = StateManager(config.state_file)
+    state.load()
+    bridge = TelegramBridge(config, agent, state)
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -41,7 +44,8 @@ async def main() -> None:
 
     logger.info("Starting Telegram bridge...")
     logger.info("Agent URL: %s", config.agent_url)
-    logger.info("Chat ID: %s", config.telegram_chat_id)
+    logger.info("Forum Group ID: %s", config.telegram_forum_group_id)
+    logger.info("State file: %s", config.state_file)
 
     await agent.start()
     try:

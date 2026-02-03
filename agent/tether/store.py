@@ -46,6 +46,7 @@ class SessionRuntime:
     proc: asyncio.subprocess.Process | None = None
     pending_inputs: list[str] = field(default_factory=list)
     recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=10))
+    output_buffer: list[str] = field(default_factory=list)
     stop_requested: bool = False
     synced_message_count: int = 0
     synced_turn_count: int = 0  # Number of conversation turns (user messages)
@@ -438,6 +439,20 @@ class SessionStore:
             return False
         runtime.recent_output.append(normalized)
         return True
+
+    def append_output(self, session_id: str, text: str) -> None:
+        """Append raw output text for final aggregation."""
+        runtime = self._get_runtime(session_id)
+        runtime.output_buffer.append(text)
+
+    def consume_output(self, session_id: str) -> str:
+        """Return and clear the aggregated output buffer."""
+        runtime = self._runtime.get(session_id)
+        if not runtime or not runtime.output_buffer:
+            return ""
+        combined = "".join(runtime.output_buffer)
+        runtime.output_buffer.clear()
+        return combined
 
     def _normalize_output(self, text: str) -> str:
         """Normalize output to de-duplicate noisy repeated lines.

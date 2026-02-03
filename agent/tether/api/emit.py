@@ -81,6 +81,7 @@ async def emit_output(
         kind: Output kind ("step", "final", or "header").
         is_final: Optional explicit finality flag.
     """
+    store.append_output(session.id, text)
     if not store.should_emit_output(session.id, text):
         return
     logger.info("Emitting output", session_id=session.id, text=text[:200])
@@ -99,6 +100,26 @@ async def emit_output(
             },
         },
     )
+
+    final_flag = is_final if is_final is not None else kind == "final"
+    if final_flag:
+        full_text = store.consume_output(session.id).strip()
+        if full_text:
+            await store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": now(),
+                    "seq": store.next_seq(session.id),
+                    "type": "output_final",
+                    "data": {
+                        "stream": "combined",
+                        "text": full_text,
+                        "kind": "final",
+                        "final": True,
+                    },
+                },
+            )
 
 
 async def emit_error(session: Session, code: str, message: str) -> None:

@@ -8,13 +8,15 @@ services:
       context: .
       dockerfile: codex-sdk-sidecar/Dockerfile
     network_mode: host
+    env_file:
+      - .env
     volumes:
       - ./codex-sdk-sidecar/src:/app/src:ro
     command: ["npx", "tsx", "watch", "src/index.ts"]
     environment:
       - SIDECAR_HOST=127.0.0.1
       - SIDECAR_PORT=8788
-      - SIDECAR_TOKEN=${SIDECAR_TOKEN:-}
+      - SIDECAR_TOKEN=${TETHER_CODEX_SIDECAR_TOKEN:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - CODEX_MODEL=${CODEX_MODEL:-}
 
@@ -23,11 +25,13 @@ services:
       context: .
       dockerfile: bridges/telegram/Dockerfile
     network_mode: host
+    env_file:
+      - .env
     volumes:
       - ./bridges/telegram:/app/bridges/telegram:ro
-    command: ["watchmedo", "auto-restart", "--directory=/app/bridges/telegram", "--pattern=*.py", "--recursive", "--", "python", "-m", "bridges.telegram.main"]
+    command: ["watchmedo", "auto-restart", "--directory=/app/bridges/telegram/src", "--pattern=*.py", "--recursive", "--", "python", "-m", "tether.bridges.telegram.main"]
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_FORUM_GROUP_ID=${TELEGRAM_FORUM_GROUP_ID}
       - AGENT_URL=http://127.0.0.1:8787
-      - AGENT_TOKEN=${AGENT_TOKEN:-}
+      - AGENT_TOKEN=${TETHER_AGENT_TOKEN:-}

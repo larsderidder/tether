@@ -44,7 +44,7 @@ Set the following environment variables:
 Start the bridge:
 
 ```bash
-python -m bridges.telegram.main
+python -m tether.bridges.telegram.main
 ```
 
 Or if installed:

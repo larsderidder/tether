@@ -43,7 +43,7 @@ services:
       dockerfile: bridges/telegram/Dockerfile
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_FORUM_GROUP_ID=${TELEGRAM_FORUM_GROUP_ID}
       - AGENT_URL=http://agent:8787
       - AGENT_TOKEN=${TETHER_AGENT_TOKEN:-}
     depends_on:

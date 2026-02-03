@@ -1,4 +1,4 @@
-"""Core Tether package."""
+"""Namespace package for tether extensions."""
 
 from pkgutil import extend_path
 
