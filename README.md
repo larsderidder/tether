@@ -4,172 +4,89 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early_Development-orange.svg)]()
 
-Control your AI agents from your phone when you're away from your desk.
+Your AI coding agents, in your pocket.
 
-![Tether Demo](docs/demo.webp)
+You start Claude Code or Codex on a task, walk away, and come back to find it stuck waiting for input for an hour. Tether fixes that.
 
-You start a coding agent, walk away for lunch, and come back to find it stuck waiting for input for an hour. Tether fixes that. Get notified when your agent needs you, respond from anywhere.
+Get notified in Telegram when your agent needs you. Respond from anywhere. Every agent session is a topic in a Telegram group - one place for all your agents.
+
+## How it works
+
+```
+1. Start Tether on your machine (or VM)
+2. Attach your Claude Code / Codex sessions
+3. Each session becomes a topic in your Telegram group
+4. Agent gets stuck → you get a notification
+5. Reply in Telegram → agent continues
+```
+
+No port forwarding. No SSH. No web UI to expose. Just Telegram.
 
 ## Features
 
-- **Local-first** — Runs on your machine, your data stays yours
-- **Multi-agent** — Supports Claude and Codex, more to come (let me know which ones!)
-- **Web UI** — Monitor sessions from your phone or desktop (mobile app on the way)
-- **No API keys required** — Uses Claude / Codex local OAuth by default
+- **Telegram-first** - Every agent session is a topic in a group. Reply from anywhere.
+- **Local-first** - Runs on your machine, your data stays yours
+- **Multi-agent** - Claude Code and Codex supported, more coming
+- **Web UI included** - Optional browser dashboard if you prefer it
+- **No API keys required** - Uses Claude / Codex local OAuth by default
 
 ## Quick Start
 
-**AI agent:**
-
-Paste this into Claude Code, Codex, or your preferred AI coding assistant:
-
-> Clone and set up Tether from github.com/XIThing/tether following AGENTS.md
-
-**Manual setup:**
-
 ```bash
-git clone https://github.com/XIThing/tether.git
+git clone https://github.com/xithing/tether.git
 cd tether
 make install
 make start
-open http://localhost:8787
 ```
 
-Requirements: Python 3.10+, Node.js 20+
+### Telegram setup
 
-## Access from Phone
+1. Create a bot via [@BotFather](https://t.me/BotFather)
+2. Create a Telegram group, add your bot, enable topics
+3. Set your bot token in `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=your_token_here
+   ```
+4. Start Tether and attach your first agent session
 
-1. Find your computer's IP address
-2. Open firewall port 8787 (see below)
-3. Open `http://<your-ip>:8787` on your phone
+Each session automatically creates a topic in your group.
 
-### Firewall Commands
+### Web UI (optional)
 
-**Linux (firewalld):**
-```bash
-sudo firewall-cmd --add-port=8787/tcp --permanent && sudo firewall-cmd --reload
-```
+Tether also includes a web dashboard at `http://localhost:8787`. Useful on desktop, but Telegram is the primary interface.
 
-**Linux (ufw):**
-```bash
-sudo ufw allow 8787/tcp
-```
+## Why Telegram?
 
-**macOS:**
-System Settings > Network > Firewall > Options > Allow incoming connections
+| | SSH | Web UI | Telegram |
+|---|---|---|---|
+| Works from phone | Barely | Yes (if exposed) | Yes |
+| Setup needed | Keys, terminal | Port forwarding / VPN | Bot token |
+| Notifications | No | No | Yes, native |
+| Reply inline | Awkward | Yes | Yes |
+| Already installed | No | N/A | Probably |
+| Multiple agents | Tabs/tmux | Dashboard | Topics |
 
-## Configuration
-
-Copy `.env.example` to `.env` to customize settings.
-
-### Adapters
+## Adapters
 
 Set `TETHER_AGENT_ADAPTER` in `.env`:
 
 | Adapter | Description |
 |---------|-------------|
-| `claude_local` | Claude via local OAuth (default, no API key) |
-| `claude_api` | Claude via API key (set `ANTHROPIC_API_KEY`) |
-| `claude_auto` | Auto-detect (prefer OAuth, fallback to API key) |
-| `codex_sdk_sidecar` | Codex via sidecar (use `make start-codex`) |
-| `codex_cli` | Legacy Codex CLI runner |
+| `claude_local` | Claude Code via local OAuth (default) |
+| `claude_api` | Claude Code via API key |
+| `codex_sdk_sidecar` | Codex via sidecar |
+| `codex_cli` | Legacy Codex CLI |
 
-### Authentication
+## Configuration
 
-By default, no auth is required. To require a token:
+Copy `.env.example` to `.env`. Key settings:
+
 ```bash
-TETHER_AGENT_TOKEN=your-secret-token make start
+TELEGRAM_BOT_TOKEN=       # Your Telegram bot token
+TETHER_AGENT_ADAPTER=     # Agent adapter (default: claude_local)
+TETHER_AUTH_TOKEN=         # Optional: protect the web UI
 ```
-
-## Commands
-
-### Native Mode (Recommended)
-```bash
-make install      # Install Python and Node dependencies (once)
-make start        # Start agent with UI (localhost:8787)
-make start-codex  # Start agent + Codex sidecar
-make stop         # Stop sidecar container
-make test         # Run tests
-```
-
-### Development
-```bash
-make dev-ui       # Run UI with hot reload (agent runs separately)
-make dev          # Run sidecar + telegram in Docker for dev
-make dev-stop     # Stop dev containers
-```
-
-### Docker Mode (Legacy)
-For users who prefer Docker. Note: requires volume mounts for file access.
-```bash
-make docker-start        # Start agent in Docker
-make docker-start-codex  # Start agent + sidecar in Docker
-make docker-stop         # Stop all containers
-make docker-logs         # View logs
-make docker-build        # Rebuild images
-```
-
-## FAQ
-
-**What does Tether add on top of Claude Code or Codex?**
-
-Claude Code and Codex require you to be at your PC. Tether provides a mobile UI and API to see progress and give instructions, even when you're away from your desk.
-
-**Is my code sent to the cloud?**
-
-Tether runs entirely on your machine. Your code stays local and is never sent to Tether servers (there are no Tether servers). The only external communication is between you and your chosen AI provider (Anthropic or OpenAI).
-
-**Do I need an API key to use Tether?**
-
-Not necessarily. Tether integrates with the Claude and Codex SDKs, which both support local authentication. By default, Tether uses Claude's local OAuth, so no API key is needed. You can optionally use API keys if you prefer.
-
-**Why not just SSH into my machine?**
-
-SSH is finnicky to set up for mobile access and awkward to use on a phone. When you're away from your desk, you don't need a full terminal. You need to quickly see what's happening and respond. Tether gives you just that: a clean mobile UI built for checking in and giving instructions.
-
-**Can I access Tether from outside my home network?**
-
-Yes! We recommend [Tailscale](https://tailscale.com) — it's free, takes 5 minutes to set up, and keeps your data off third-party servers. Install Tailscale on your computer and phone, then access Tether via your Tailscale IP. This aligns with Tether's local-first philosophy: your code never leaves your network.
-
-## Current Status
-
-**What works:**
-- PWA-ready mobile-first Web UI (works on Desktop too)
-- Attach to existing Claude and Codex sessions (and start new sessions)
-- Monitor live output from your phone or desktop
-- Send input and instructions to the agent
-- Integrated Git diff viewer in the web UI
-- Shortcuts in the web UI for common actions to reduce typing effort
-
-**Work in progress:**
-- Claude runner is more stable than Codex
-- No approvals handling yet (agents run with auto-approve)
-- Web UI only (no native mobile app)
-
-## Roadmap
-
-**Next up:**
-- Approvals integration
-- WebSockets (replacing SSE)
-- Quick actions management in the Web UI
-- Codex runner improvements - Try to phase out sidecar approach
-
-**Later:**
-- More agent integrations
-- Native mobile app
-
-See [gettether.dev](https://gettether.dev) for updates.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup.
-
-Questions or ideas? Start a conversation in [GitHub Discussions](https://github.com/XIThing/tether/discussions).
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE) for details.
-
----
-
-[Website](https://gettether.dev) · Built by [XIThing](https://xithing.io)
+Apache 2.0
