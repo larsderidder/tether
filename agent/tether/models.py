@@ -94,6 +94,17 @@ class Session(SQLModel, table=True):
     workdir_managed: bool = False
     approval_mode: Optional[int] = None  # None = use global default, 0/1/2 = override
 
+    # External agent fields
+    external_agent_id: Optional[str] = None
+    external_agent_name: Optional[str] = None
+    external_agent_type: Optional[str] = None
+    external_agent_icon: Optional[str] = None
+    external_agent_workspace: Optional[str] = None
+
+    # Platform binding fields
+    platform: Optional[str] = None  # e.g., "telegram", "slack", "discord"
+    platform_thread_id: Optional[str] = None  # Platform-specific thread ID
+
     @property
     def repo_ref(self) -> RepoRef:
         """Get repo_ref as a RepoRef object."""

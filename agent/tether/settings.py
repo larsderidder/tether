@@ -216,6 +216,78 @@ class Settings:
         """
         return _get("TETHER_CODEX_SIDECAR_TOKEN")
 
+    # -------------------------------------------------------------------------
+    # Bridge Settings (Messaging Platforms)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def telegram_bot_token() -> str:
+        """Telegram bot token for bridge integration.
+
+        Env: TELEGRAM_BOT_TOKEN (no prefix - external service credential)
+        """
+        return os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+    @staticmethod
+    def telegram_group_id() -> int:
+        """Telegram forum group ID for creating topics.
+
+        Env: TELEGRAM_GROUP_ID
+        """
+        value = os.environ.get("TELEGRAM_GROUP_ID", "").strip()
+        if not value:
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def slack_bot_token() -> str:
+        """Slack bot token for bridge integration.
+
+        Env: SLACK_BOT_TOKEN (no prefix - external service credential)
+        """
+        return os.environ.get("SLACK_BOT_TOKEN", "").strip()
+
+    @staticmethod
+    def slack_app_token() -> str:
+        """Slack app-level token for socket mode.
+
+        Env: SLACK_APP_TOKEN (no prefix - external service credential)
+        """
+        return os.environ.get("SLACK_APP_TOKEN", "").strip()
+
+    @staticmethod
+    def slack_channel_id() -> str:
+        """Slack channel ID for posting messages.
+
+        Env: SLACK_CHANNEL_ID
+        """
+        return os.environ.get("SLACK_CHANNEL_ID", "").strip()
+
+    @staticmethod
+    def discord_bot_token() -> str:
+        """Discord bot token for bridge integration.
+
+        Env: DISCORD_BOT_TOKEN (no prefix - external service credential)
+        """
+        return os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+
+    @staticmethod
+    def discord_channel_id() -> int:
+        """Discord channel ID for creating threads.
+
+        Env: DISCORD_CHANNEL_ID
+        """
+        value = os.environ.get("DISCORD_CHANNEL_ID", "").strip()
+        if not value:
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
 
 # Singleton instance for convenient imports
 settings = Settings()
