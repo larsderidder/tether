@@ -1,4 +1,4 @@
-"""Endpoints for discovering external Claude Code sessions."""
+"""Endpoints for discovering external Claude Code and Codex sessions."""
 
 from __future__ import annotations
 
@@ -37,11 +37,11 @@ async def list_external_sessions(
     limit: int = Query(50, ge=1, le=200),
     _: None = Depends(require_token),
 ) -> list[ExternalSessionSummaryResponse]:
-    """List discoverable external sessions from Claude Code.
+    """List discoverable external sessions from Claude Code or Codex.
 
     Args:
         directory: Filter to sessions for this project directory.
-        runner_type: Filter to specific runner type ("claude_code").
+        runner_type: Filter to specific runner type ("claude_code" or "codex").
         limit: Maximum sessions to return.
 
     Returns:
@@ -62,7 +62,7 @@ async def list_external_sessions(
         except ValueError:
             raise_http_error(
                 "VALIDATION_ERROR",
-                f"Invalid runner_type: {runner_type}. Must be 'claude_code'.",
+                f"Invalid runner_type: {runner_type}. Must be 'claude_code' or 'codex'.",
                 422,
             )
 
@@ -103,7 +103,7 @@ async def get_external_session_history(
 
     Args:
         external_id: The external session UUID.
-        runner_type: Which runner created the session ("claude_code").
+        runner_type: Which runner created the session ("claude_code" or "codex").
         limit: Maximum messages to return.
 
     Returns:
@@ -122,7 +122,7 @@ async def get_external_session_history(
     except ValueError:
         raise_http_error(
             "VALIDATION_ERROR",
-            f"Invalid runner_type: {runner_type}. Must be 'claude_code'.",
+            f"Invalid runner_type: {runner_type}. Must be 'claude_code' or 'codex'.",
             422,
         )
 
@@ -164,7 +164,7 @@ async def attach_to_external_session(
 
     Body:
         external_id: The external session UUID to attach to.
-        runner_type: Which runner created the session ("claude_code").
+        runner_type: Which runner created the session ("claude_code" or "codex").
         directory: Working directory for the session.
 
     Returns:
@@ -215,6 +215,9 @@ async def attach_to_external_session(
     # Set runner type based on external session source
     if parsed_runner_type == ExternalRunnerType.CLAUDE_CODE:
         session.runner_type = "claude-local"
+    elif parsed_runner_type == ExternalRunnerType.CODEX:
+        session.runner_type = "codex"
+        session.adapter = "codex_sdk_sidecar"
     else:
         session.runner_type = "claude-local"  # Default fallback
 
@@ -297,7 +300,10 @@ async def sync_external_session(
         )
 
     # Determine external runner type based on session's runner_type
-    runner_type = ExternalRunnerType.CLAUDE_CODE
+    if session.runner_type == "codex":
+        runner_type = ExternalRunnerType.CODEX
+    else:
+        runner_type = ExternalRunnerType.CLAUDE_CODE
 
     # Fetch fresh history
     detail = get_external_session_detail(
@@ -312,10 +318,10 @@ async def sync_external_session(
     synced_count = store.get_synced_message_count(session_id)
     messages = detail.messages
 
-    # If synced_count is 0 but session has been used (started_at is set),
-    # it means this is a non-attached session that was used normally.
-    # Don't emit duplicate messages - just set the count to current total.
-    if synced_count == 0 and session.started_at is not None:
+    # If synced_count is 0, the in-memory count was lost (e.g. agent restart).
+    # Since this endpoint requires an attached session, messages were already
+    # emitted during attach or normal usage. Re-initialize without re-emitting.
+    if synced_count == 0:
         turn_count = sum(1 for m in messages if m.role == "user")
         store.set_synced_message_count(session_id, len(messages), turn_count)
         logger.info(
