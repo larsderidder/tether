@@ -13,7 +13,12 @@ from tether.bridges.base import (
     _EXTERNAL_MAX_FETCH,
     _EXTERNAL_REPLAY_LIMIT,
 )
-from tether.bridges.telegram.formatting import chunk_message, escape_markdown, markdown_to_telegram_html, strip_tool_markers
+from tether.bridges.telegram.formatting import (
+    chunk_message,
+    escape_markdown,
+    markdown_to_telegram_html,
+    strip_tool_markers,
+)
 from tether.bridges.telegram.state import StateManager
 from tether.settings import settings
 
@@ -59,6 +64,8 @@ class TelegramBridge(BridgeInterface):
         self._state.load()
         # Cache full approval descriptions for "Show All" button: request_id → (tool, full_html)
         self._pending_descriptions: dict[str, tuple[str, str]] = {}
+        # Pending "Deny with reason" state: topic_id → (session_id, request_id, username)
+        self._pending_deny_reason: dict[int, tuple[str, str, str]] = {}
 
     async def start(self) -> None:
         """Start the Telegram bot."""
@@ -71,7 +78,9 @@ class TelegramBridge(BridgeInterface):
                 filters,
             )
         except ImportError:
-            logger.error("python-telegram-bot not installed. Install with: pip install python-telegram-bot")
+            logger.error(
+                "python-telegram-bot not installed. Install with: pip install python-telegram-bot"
+            )
             return
 
         self._app = Application.builder().token(self._bot_token).build()
@@ -109,7 +118,10 @@ class TelegramBridge(BridgeInterface):
         await self._app.start()
         await self._app.updater.start_polling()
         await self._ensure_control_topic()
-        logger.info("Telegram bridge initialized and started", forum_group_id=self._forum_group_id)
+        logger.info(
+            "Telegram bridge initialized and started",
+            forum_group_id=self._forum_group_id,
+        )
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""
@@ -127,7 +139,9 @@ class TelegramBridge(BridgeInterface):
     async def _ensure_control_topic(self) -> None:
         """Create the control topic if it doesn't exist yet."""
         if self._state.control_topic_id:
-            logger.debug("Control topic already exists", topic_id=self._state.control_topic_id)
+            logger.debug(
+                "Control topic already exists", topic_id=self._state.control_topic_id
+            )
             # Best-effort rename for existing installs.
             try:
                 await self._app.bot.edit_forum_topic(
@@ -179,7 +193,9 @@ class TelegramBridge(BridgeInterface):
         return name or "unknown"
 
     @staticmethod
-    def _format_tool_input_html(raw: str, *, truncate: int = _APPROVAL_TRUNCATE) -> tuple[str, bool]:
+    def _format_tool_input_html(
+        raw: str, *, truncate: int = _APPROVAL_TRUNCATE
+    ) -> tuple[str, bool]:
         """Pretty-format tool_input as Telegram HTML.
 
         Returns (html_text, was_truncated).
@@ -202,11 +218,17 @@ class TelegramBridge(BridgeInterface):
                     truncated = True
                 v_escaped = html_mod.escape(v)
                 if key in ("file_path", "path", "notebook_path"):
-                    lines.append(f"<b>{html_mod.escape(key)}</b>: <code>{v_escaped}</code>")
+                    lines.append(
+                        f"<b>{html_mod.escape(key)}</b>: <code>{v_escaped}</code>"
+                    )
                 elif key in ("command",):
-                    lines.append(f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>")
+                    lines.append(
+                        f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>"
+                    )
                 elif key in ("old_string", "new_string", "content", "new_source"):
-                    lines.append(f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>")
+                    lines.append(
+                        f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>"
+                    )
                 else:
                     lines.append(f"<b>{html_mod.escape(key)}</b>: {v_escaped}")
             return "\n".join(lines), truncated
@@ -232,9 +254,19 @@ class TelegramBridge(BridgeInterface):
             for key, value in obj.items():
                 v_escaped = html_mod.escape(str(value))
                 if key in ("file_path", "path", "notebook_path"):
-                    lines.append(f"<b>{html_mod.escape(key)}</b>: <code>{v_escaped}</code>")
-                elif key in ("command", "old_string", "new_string", "content", "new_source"):
-                    lines.append(f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>")
+                    lines.append(
+                        f"<b>{html_mod.escape(key)}</b>: <code>{v_escaped}</code>"
+                    )
+                elif key in (
+                    "command",
+                    "old_string",
+                    "new_string",
+                    "content",
+                    "new_source",
+                ):
+                    lines.append(
+                        f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>"
+                    )
                 else:
                     lines.append(f"<b>{html_mod.escape(key)}</b>: {v_escaped}")
             return "\n".join(lines)
@@ -247,7 +279,9 @@ class TelegramBridge(BridgeInterface):
         If a topic with the same name already exists, append a number.
         """
         dir_short = (directory or "").rstrip("/").rsplit("/", 1)[-1] or "Session"
-        base_name = (dir_short[:1].upper() + dir_short[1:])[:_TELEGRAM_TOPIC_NAME_MAX_LEN]
+        base_name = (dir_short[:1].upper() + dir_short[1:])[
+            :_TELEGRAM_TOPIC_NAME_MAX_LEN
+        ]
 
         # Check existing topic names for duplicates
         existing_names = {m.name for m in self._state._mappings.values()}
@@ -362,10 +396,14 @@ class TelegramBridge(BridgeInterface):
                         await self._app.bot.send_message(
                             chat_id=self._forum_group_id,
                             message_thread_id=topic_id,
-                            text=part.replace("<pre>", "").replace("</pre>", "")
-                                     .replace("<b>", "").replace("</b>", "")
-                                     .replace("<i>", "").replace("</i>", "")
-                                     .replace("<code>", "").replace("</code>", ""),
+                            text=part.replace("<pre>", "")
+                            .replace("</pre>", "")
+                            .replace("<b>", "")
+                            .replace("</b>", "")
+                            .replace("<i>", "")
+                            .replace("</i>", "")
+                            .replace("<code>", "")
+                            .replace("</code>", ""),
                         )
                     except Exception:
                         logger.exception(
@@ -400,10 +438,14 @@ class TelegramBridge(BridgeInterface):
 
         buttons = []
         if page > 1:
-            buttons.append(InlineKeyboardButton("Prev", callback_data=f"list:page:{page - 1}"))
+            buttons.append(
+                InlineKeyboardButton("Prev", callback_data=f"list:page:{page - 1}")
+            )
         buttons.append(InlineKeyboardButton("Refresh", callback_data="list:refresh"))
         if page < total_pages:
-            buttons.append(InlineKeyboardButton("Next", callback_data=f"list:page:{page + 1}"))
+            buttons.append(
+                InlineKeyboardButton("Next", callback_data=f"list:page:{page + 1}")
+            )
         return InlineKeyboardMarkup([buttons])
 
     # ------------------------------------------------------------------
@@ -481,7 +523,9 @@ class TelegramBridge(BridgeInterface):
             await update.message.reply_text("Failed to list external sessions.")
             return
 
-        text, page, total_pages = self._format_external_page(page, attach_cmd="/attach", list_cmd="/list")
+        text, page, total_pages = self._format_external_page(
+            page, attach_cmd="/attach", list_cmd="/list"
+        )
         reply_markup = self._external_pagination_markup(page, total_pages)
         await update.message.reply_text(text, reply_markup=reply_markup)
 
@@ -491,7 +535,9 @@ class TelegramBridge(BridgeInterface):
 
         args = context.args
         if not args:
-            await update.message.reply_text("Usage: /attach <number>\n\nRun /list first.")
+            await update.message.reply_text(
+                "Usage: /attach <number>\n\nRun /list first."
+            )
             return
 
         try:
@@ -501,13 +547,19 @@ class TelegramBridge(BridgeInterface):
             return
 
         if not self._cached_external:
-            await update.message.reply_text("No external sessions cached. Run /list first.")
+            await update.message.reply_text(
+                "No external sessions cached. Run /list first."
+            )
             return
         if not self._external_view:
-            await update.message.reply_text("No external sessions listed. Run /list first.")
+            await update.message.reply_text(
+                "No external sessions listed. Run /list first."
+            )
             return
         if index < 0 or index >= len(self._external_view):
-            await update.message.reply_text(f"Invalid number. Use 1–{len(self._external_view)}.")
+            await update.message.reply_text(
+                f"Invalid number. Use 1–{len(self._external_view)}."
+            )
             return
 
         external = self._external_view[index]
@@ -571,7 +623,9 @@ class TelegramBridge(BridgeInterface):
                     )
             except Exception:
                 # Replay is best-effort; it should never block attachment.
-                logger.exception("Failed to replay external session history into Telegram topic")
+                logger.exception(
+                    "Failed to replay external session history into Telegram topic"
+                )
 
             # Bind session to Telegram platform
             from tether.store import store
@@ -692,7 +746,9 @@ class TelegramBridge(BridgeInterface):
             return
 
         dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
-        session_name = self._make_external_topic_name(directory=directory, session_id="")  # best-effort uniqueness
+        session_name = self._make_external_topic_name(
+            directory=directory, session_id=""
+        )  # best-effort uniqueness
 
         try:
             session = await self._create_session_via_api(
@@ -703,7 +759,9 @@ class TelegramBridge(BridgeInterface):
             )
             new_topic_id = int(session.get("platform_thread_id") or 0)
         except httpx.HTTPStatusError as e:
-            await update.message.reply_text(f"Failed to create session: {e.response.text}")
+            await update.message.reply_text(
+                f"Failed to create session: {e.response.text}"
+            )
             return
         except Exception as e:
             logger.exception("Failed to create session via /new")
@@ -711,7 +769,7 @@ class TelegramBridge(BridgeInterface):
             return
 
         # Confirm in the issuing topic/control topic.
-        agent_label = (adapter or "default")
+        agent_label = adapter or "default"
         await update.message.reply_text(
             f"✅ New session created ({agent_label}) in {dir_short}.\n"
             "A new topic should appear in the forum list."
@@ -839,7 +897,9 @@ class TelegramBridge(BridgeInterface):
             except Exception:
                 logger.exception("Failed to refresh external sessions")
                 try:
-                    await query.edit_message_text("Failed to refresh external sessions.")
+                    await query.edit_message_text(
+                        "Failed to refresh external sessions."
+                    )
                 except Exception:
                     pass
                 return
@@ -862,13 +922,17 @@ class TelegramBridge(BridgeInterface):
             except Exception:
                 logger.exception("Failed to fetch external sessions for pagination")
                 try:
-                    await query.edit_message_text("Failed to list external sessions. Run /list again.")
+                    await query.edit_message_text(
+                        "Failed to list external sessions. Run /list again."
+                    )
                 except Exception:
                     pass
                 return
             self._set_external_view(self._external_query)
 
-        text, page, total_pages = self._format_external_page(page, attach_cmd="/attach", list_cmd="/list")
+        text, page, total_pages = self._format_external_page(
+            page, attach_cmd="/attach", list_cmd="/list"
+        )
         reply_markup = self._external_pagination_markup(page, total_pages)
         try:
             await query.edit_message_text(text=text, reply_markup=reply_markup)
@@ -896,10 +960,32 @@ class TelegramBridge(BridgeInterface):
             )
             return
 
+        text = update.message.text.strip()
+
+        # Check for pending "Deny with reason" — intercept reply as denial reason
+        pending = self._pending_deny_reason.pop(topic_id, None)
+        if pending:
+            p_session_id, p_request_id, p_username = pending
+            reason = text
+            message = f"Denied by {p_username}: {reason}"
+            ok = await self._respond_to_permission(
+                p_session_id,
+                p_request_id,
+                allow=False,
+                message=message,
+            )
+            if ok:
+                await update.message.reply_text(f"❌ {message}")
+            else:
+                await update.message.reply_text(
+                    "❌ Failed to deny — request may have expired."
+                )
+            return
+
         try:
             import httpx
 
-            await self._send_input_or_start_via_api(session_id=session_id, text=update.message.text)
+            await self._send_input_or_start_via_api(session_id=session_id, text=text)
 
             logger.info(
                 "Forwarded human input from Telegram",
@@ -982,9 +1068,15 @@ class TelegramBridge(BridgeInterface):
             return
 
         try:
-            import httpx
-
             username = self._display_name(query.from_user)
+
+            # Handle "Deny ✏️" — prompt for reason, don't resolve yet
+            if option_selected == "DenyWithReason":
+                self._pending_deny_reason[topic_id] = (session_id, request_id, username)
+                await query.edit_message_text(
+                    text=f"{query.message.text}\n\n✏️ Why? Reply with your reason."
+                )
+                return
 
             # Handle "Allow All (30m)" and "Allow {tool} (30m)" options
             if option_selected == "AllowAll":
@@ -1000,22 +1092,30 @@ class TelegramBridge(BridgeInterface):
                 allow = option_selected.lower() in ("allow", "yes", "approve")
                 display_option = option_selected
 
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self._api_url(f"/sessions/{session_id}/permission"),
-                    json={
-                        "request_id": request_id,
-                        "allow": allow,
-                        "message": f"{display_option} by {username}",
-                    },
-                    headers=self._api_headers(),
-                    timeout=10.0,
-                )
-                response.raise_for_status()
+            message = f"{display_option} by {username}"
+            if not allow:
+                message = f"Denied by {username}"
 
-            await query.edit_message_text(
-                text=f"{query.message.text}\n\n✅ {display_option} by {username}"
+            ok = await self._respond_to_permission(
+                session_id,
+                request_id,
+                allow=allow,
+                message=message,
             )
+            if ok:
+                if allow:
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n✅ {display_option} by {username}"
+                    )
+                else:
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n❌ Denied by {username}"
+                    )
+            else:
+                await query.edit_message_text(
+                    text=f"{query.message.text}\n\n❌ Error: Failed to submit response"
+                )
+
             logger.info(
                 "Approval response submitted",
                 session_id=session_id,
@@ -1024,17 +1124,6 @@ class TelegramBridge(BridgeInterface):
                 username=username,
             )
 
-        except httpx.HTTPStatusError as e:
-            error_msg = "already resolved" if e.response.status_code == 404 else str(e)
-            logger.warning(
-                "Failed to submit approval",
-                session_id=session_id,
-                request_id=request_id,
-                error=error_msg,
-            )
-            await query.edit_message_text(
-                text=f"{query.message.text}\n\n❌ Error: {error_msg}"
-            )
         except Exception:
             logger.exception(
                 "Failed to handle callback",
@@ -1150,17 +1239,33 @@ class TelegramBridge(BridgeInterface):
         if was_truncated:
             self._pending_descriptions[rid] = (tool_name, request.description)
 
+        self.set_pending_permission(session_id, request)
+
         row_actions = [
             InlineKeyboardButton("Allow", callback_data=f"approval:{rid}:Allow"),
             InlineKeyboardButton("Deny", callback_data=f"approval:{rid}:Deny"),
+            InlineKeyboardButton(
+                "Deny ✏️", callback_data=f"approval:{rid}:DenyWithReason"
+            ),
         ]
         row_timers = [
-            InlineKeyboardButton(f"Allow {tool_name} (30m)", callback_data=f"approval:{rid}:AllowTool:{tool_name}"),
-            InlineKeyboardButton("Allow All (30m)", callback_data=f"approval:{rid}:AllowAll"),
+            InlineKeyboardButton(
+                f"Allow {tool_name} (30m)",
+                callback_data=f"approval:{rid}:AllowTool:{tool_name}",
+            ),
+            InlineKeyboardButton(
+                "Allow All (30m)", callback_data=f"approval:{rid}:AllowAll"
+            ),
         ]
         rows = [row_actions, row_timers]
         if was_truncated:
-            rows.append([InlineKeyboardButton("Show All", callback_data=f"approval:{rid}:ShowAll")])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "Show All", callback_data=f"approval:{rid}:ShowAll"
+                    )
+                ]
+            )
 
         reply_markup = InlineKeyboardMarkup(rows)
         text = f"⚠️ <b>{tool_name}</b>\n\n{description}"

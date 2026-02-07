@@ -107,6 +107,13 @@
           <div class="rounded bg-zinc-800 p-3 text-xs font-mono overflow-x-auto max-h-48 overflow-y-auto">
             <pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(permissionRequest.tool_input, null, 2) }}</pre>
           </div>
+          <input
+            v-model="permissionDenyReason"
+            type="text"
+            placeholder="Reason for denial (optional)"
+            class="w-full rounded bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+            @keydown.enter="handlePermissionDeny"
+          />
           <div class="flex items-center justify-end gap-2">
             <Button
               variant="ghost"
@@ -204,6 +211,7 @@ const renameMessage = ref("")
 const permissionRequest = ref<PermissionRequestData | null>(null)
 const permissionSessionId = ref<string | null>(null)  // Track which session the permission is for
 const permissionResponding = ref(false)
+const permissionDenyReason = ref("")
 
 // Directory warning state
 const directoryMissing = ref(false)
@@ -656,6 +664,7 @@ const handlePermissionAllow = async () => {
     permissionRequest.value = null
     permissionSessionId.value = null
     permissionResponding.value = false
+    permissionDenyReason.value = ""
   }
 }
 
@@ -665,10 +674,11 @@ const handlePermissionDeny = async () => {
   if (!sessionId || !permissionRequest.value) return
   permissionResponding.value = true
   try {
+    const reason = permissionDenyReason.value.trim()
     await respondToPermission(sessionId, {
       request_id: permissionRequest.value.request_id,
       allow: false,
-      message: "User denied permission",
+      message: reason ? `Denied: ${reason}` : "User denied permission",
     })
   } catch (err) {
     // Permission request may have expired/been cancelled - that's OK, just dismiss
@@ -677,6 +687,7 @@ const handlePermissionDeny = async () => {
     // Always dismiss dialog, even on error (permission no longer exists on backend)
     permissionRequest.value = null
     permissionSessionId.value = null
+    permissionDenyReason.value = ""
     permissionResponding.value = false
   }
 }

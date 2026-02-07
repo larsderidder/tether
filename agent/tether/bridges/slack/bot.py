@@ -44,9 +44,13 @@ class SlackBridge(BridgeInterface):
         try:
             from slack_sdk.web.async_client import AsyncWebClient
             from slack_bolt.async_app import AsyncApp
-            from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+            from slack_bolt.adapter.socket_mode.async_handler import (
+                AsyncSocketModeHandler,
+            )
         except ImportError:
-            logger.error("slack_sdk or slack_bolt not installed. Install with: pip install slack-sdk slack-bolt")
+            logger.error(
+                "slack_sdk or slack_bolt not installed. Install with: pip install slack-sdk slack-bolt"
+            )
             return
 
         self._client = AsyncWebClient(token=self._bot_token)
@@ -63,14 +67,26 @@ class SlackBridge(BridgeInterface):
 
                 handler = AsyncSocketModeHandler(self._app, app_token)
                 import asyncio
+
                 asyncio.create_task(handler.start_async())
 
-                logger.info("Slack bridge initialized with socket mode", channel_id=self._channel_id)
+                logger.info(
+                    "Slack bridge initialized with socket mode",
+                    channel_id=self._channel_id,
+                )
             except Exception:
-                logger.exception("Failed to initialize Slack socket mode, falling back to basic mode")
-                logger.info("Slack bridge initialized (basic mode, no input forwarding)", channel_id=self._channel_id)
+                logger.exception(
+                    "Failed to initialize Slack socket mode, falling back to basic mode"
+                )
+                logger.info(
+                    "Slack bridge initialized (basic mode, no input forwarding)",
+                    channel_id=self._channel_id,
+                )
         else:
-            logger.info("Slack bridge initialized (basic mode — set SLACK_APP_TOKEN for commands and input)", channel_id=self._channel_id)
+            logger.info(
+                "Slack bridge initialized (basic mode — set SLACK_APP_TOKEN for commands and input)",
+                channel_id=self._channel_id,
+            )
 
     async def stop(self) -> None:
         """Stop Slack client."""
@@ -109,7 +125,10 @@ class SlackBridge(BridgeInterface):
                 response = await client.get(
                     self._api_url(f"/external-sessions/{external_id}/history"),
                     headers=self._api_headers(),
-                    params={"runner_type": runner_type, "limit": _EXTERNAL_REPLAY_LIMIT},
+                    params={
+                        "runner_type": runner_type,
+                        "limit": _EXTERNAL_REPLAY_LIMIT,
+                    },
                     timeout=10.0,
                 )
                 response.raise_for_status()
@@ -126,10 +145,16 @@ class SlackBridge(BridgeInterface):
         if not messages:
             return
 
-        lines: list[str] = [f"*Recent history* (last {min(_EXTERNAL_REPLAY_LIMIT, len(messages))} messages):\n"]
+        lines: list[str] = [
+            f"*Recent history* (last {min(_EXTERNAL_REPLAY_LIMIT, len(messages))} messages):\n"
+        ]
         for i, msg in enumerate(messages, 1):
             role = str(msg.get("role") or "").lower()
-            prefix = "U" if role == "user" else ("A" if role == "assistant" else role[:1].upper() or "?")
+            prefix = (
+                "U"
+                if role == "user"
+                else ("A" if role == "assistant" else role[:1].upper() or "?")
+            )
             content = (msg.get("content") or "").strip()
             thinking = (msg.get("thinking") or "").strip()
             if content and len(content) > 800:
@@ -152,7 +177,9 @@ class SlackBridge(BridgeInterface):
                 text=text,
             )
         except Exception:
-            logger.exception("Failed to send Slack external session replay", external_id=external_id)
+            logger.exception(
+                "Failed to send Slack external session replay", external_id=external_id
+            )
 
     async def _reply(self, event: dict, text: str) -> None:
         """Send a reply to the channel/thread where the event originated."""
@@ -224,7 +251,9 @@ class SlackBridge(BridgeInterface):
         elif cmd == "!usage":
             await self._cmd_usage(event)
         else:
-            await self._reply(event, f"Unknown command: {cmd}\nUse !help for available commands.")
+            await self._reply(
+                event, f"Unknown command: {cmd}\nUse !help for available commands."
+            )
 
     # ------------------------------------------------------------------
     # Commands
@@ -326,7 +355,9 @@ class SlackBridge(BridgeInterface):
 
         try:
             assert directory_raw is not None
-            directory = await self._resolve_directory_arg(directory_raw, base_directory=base_directory)
+            directory = await self._resolve_directory_arg(
+                directory_raw, base_directory=base_directory
+            )
         except Exception as e:
             await self._reply(event, f"Invalid directory: {e}")
             return
@@ -435,7 +466,9 @@ class SlackBridge(BridgeInterface):
             await self._reply(event, "No external sessions listed. Run !list first.")
             return
         if index < 0 or index >= len(self._external_view):
-            await self._reply(event, f"Invalid number. Use 1–{len(self._external_view)}.")
+            await self._reply(
+                event, f"Invalid number. Use 1–{len(self._external_view)}."
+            )
             return
 
         external = self._external_view[index]
@@ -458,7 +491,9 @@ class SlackBridge(BridgeInterface):
 
             # Check if already has a thread
             if session_id in self._thread_ts:
-                await self._reply(event, "Already attached — check the existing thread.")
+                await self._reply(
+                    event, "Already attached — check the existing thread."
+                )
                 return
 
             # Create thread
@@ -468,7 +503,9 @@ class SlackBridge(BridgeInterface):
             )
             thread_info = await self.create_thread(session_id, session_name)
             try:
-                thread_ts = str(thread_info.get("thread_ts") or thread_info.get("thread_id") or "")
+                thread_ts = str(
+                    thread_info.get("thread_ts") or thread_info.get("thread_id") or ""
+                )
                 if thread_ts:
                     await self._send_external_session_replay(
                         thread_ts=thread_ts,
@@ -476,7 +513,9 @@ class SlackBridge(BridgeInterface):
                         runner_type=str(external["runner_type"]),
                     )
             except Exception:
-                logger.exception("Failed to replay external session history into Slack thread")
+                logger.exception(
+                    "Failed to replay external session history into Slack thread"
+                )
 
             # Bind platform
             from tether.store import store
@@ -561,6 +600,14 @@ class SlackBridge(BridgeInterface):
     async def _forward_input(self, event: dict, session_id: str, text: str) -> None:
         import httpx
 
+        # Check if this is an approval response (allow/deny) for a pending permission
+        pending = self.get_pending_permission(session_id)
+        if pending:
+            parsed = self.parse_approval_text(text)
+            if parsed is not None:
+                await self._handle_approval_text(event, session_id, pending, parsed)
+                return
+
         try:
             await self._send_input_or_start_via_api(session_id=session_id, text=text)
             logger.info(
@@ -578,6 +625,42 @@ class SlackBridge(BridgeInterface):
         except Exception:
             logger.exception("Failed to forward human input", session_id=session_id)
             await self._reply(event, "Failed to send input.")
+
+    async def _handle_approval_text(
+        self, event: dict, session_id: str, request: ApprovalRequest, parsed: dict
+    ) -> None:
+        """Handle a parsed approval text response."""
+        allow = parsed["allow"]
+        reason = parsed.get("reason")
+        timer = parsed.get("timer")
+
+        if allow and timer == "all":
+            self.set_allow_all(session_id)
+        elif allow and timer:
+            self.set_allow_tool(session_id, timer)
+
+        if allow:
+            message = "Approved"
+            if timer == "all":
+                message = "Allow All (30m)"
+            elif timer:
+                message = f"Allow {timer} (30m)"
+        else:
+            message = f"Denied: {reason}" if reason else "Denied"
+
+        ok = await self._respond_to_permission(
+            session_id,
+            request.request_id,
+            allow=allow,
+            message=message,
+        )
+        if ok:
+            if allow:
+                await self._reply(event, f"✅ {message}")
+            else:
+                await self._reply(event, f"❌ {message}")
+        else:
+            await self._reply(event, "❌ Failed — request may have expired.")
 
     # ------------------------------------------------------------------
     # Bridge interface (outgoing events)
@@ -632,9 +715,11 @@ class SlackBridge(BridgeInterface):
         if not thread_ts:
             return
 
+        self.set_pending_permission(session_id, request)
+
         text = (
             f"*⚠️ Approval Required*\n\n*{request.title}*\n\n{request.description}\n\n"
-            "Reply with `allow`, `deny`, `allow all`, or `allow {tool}`."
+            "Reply with `allow`, `deny`, `deny: <reason>`, `allow all`, or `allow {tool}`."
         )
         try:
             await self._client.chat_postMessage(
@@ -643,7 +728,9 @@ class SlackBridge(BridgeInterface):
                 text=text,
             )
         except Exception:
-            logger.exception("Failed to send Slack approval request", session_id=session_id)
+            logger.exception(
+                "Failed to send Slack approval request", session_id=session_id
+            )
 
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None

@@ -68,6 +68,8 @@ class BridgeInterface(ABC):
         # Auto-approve timers: session_id → expiry timestamp
         self._allow_all_until: dict[str, float] = {}
         self._allow_tool_until: dict[str, dict[str, float]] = {}
+        # Pending permission requests: session_id → request
+        self._pending_permissions: dict[str, ApprovalRequest] = {}
 
     # ------------------------------------------------------------------
     # API helpers (shared across all bridges)
@@ -232,7 +234,8 @@ class BridgeInterface(ABC):
             return
         q_lower = q.lower()
         self._external_view = [
-            s for s in self._cached_external
+            s
+            for s in self._cached_external
             if q_lower in str(s.get("directory", "")).lower()
         ]
 
@@ -282,7 +285,10 @@ class BridgeInterface(ABC):
             if prompt_short:
                 lines.append(f"      {prompt_short}")
 
-        if not self._external_query and len(self._cached_external) == _EXTERNAL_MAX_FETCH:
+        if (
+            not self._external_query
+            and len(self._cached_external) == _EXTERNAL_MAX_FETCH
+        ):
             lines.append(f"\nShowing up to {_EXTERNAL_MAX_FETCH} sessions (API limit).")
         lines.append(f"\nUse {attach_cmd} <number> to attach.")
         return "\n".join(lines), page, total_pages
@@ -334,7 +340,12 @@ class BridgeInterface(ABC):
                     headers=self._api_headers(),
                     timeout=10.0,
                 )
-            logger.info("Auto-approved via %s", reason, session_id=session_id, request_id=request.request_id)
+            logger.info(
+                "Auto-approved via %s",
+                reason,
+                session_id=session_id,
+                request_id=request.request_id,
+            )
         except Exception:
             logger.exception("Failed to auto-approve", request_id=request.request_id)
 
@@ -381,10 +392,116 @@ class BridgeInterface(ABC):
     async def on_typing(self, session_id: str) -> None:
         """Show a typing indicator. Override if platform supports it."""
 
+    def set_pending_permission(self, session_id: str, request: ApprovalRequest) -> None:
+        """Track a pending permission request for a session."""
+        self._pending_permissions[session_id] = request
+
+    def get_pending_permission(self, session_id: str) -> ApprovalRequest | None:
+        """Get the pending permission request for a session, if any."""
+        return self._pending_permissions.get(session_id)
+
+    def clear_pending_permission(self, session_id: str) -> None:
+        """Clear the pending permission request for a session."""
+        self._pending_permissions.pop(session_id, None)
+
+    async def _respond_to_permission(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        allow: bool,
+        message: str | None = None,
+    ) -> bool:
+        """Send a permission response via the API.
+
+        Returns True on success, False on error.
+        """
+        import httpx
+        import structlog
+
+        logger = structlog.get_logger(__name__)
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    self._api_url(f"/sessions/{session_id}/permission"),
+                    json={
+                        "request_id": request_id,
+                        "allow": allow,
+                        "message": message
+                        or ("Approved" if allow else "User denied permission"),
+                    },
+                    headers=self._api_headers(),
+                    timeout=10.0,
+                )
+                r.raise_for_status()
+            self.clear_pending_permission(session_id)
+            return True
+        except Exception:
+            logger.exception(
+                "Failed to respond to permission",
+                session_id=session_id,
+                request_id=request_id,
+            )
+            return False
+
+    def parse_approval_text(self, text: str) -> dict | None:
+        """Parse a text message as an approval response.
+
+        Returns a dict with keys: allow (bool), reason (str|None), timer (str|None)
+        or None if the text is not an approval command.
+
+        Recognized patterns:
+          allow / yes / approve          → allow
+          deny / no / reject             → deny without reason
+          deny: <reason>                 → deny with reason
+          deny <reason>                  → deny with reason (if >1 word after deny)
+          allow all                      → allow + timer "all"
+          allow <tool>                   → allow + timer tool name
+        """
+        stripped = text.strip()
+        lower = stripped.lower()
+
+        # "allow all" → approve with allow-all timer
+        if lower == "allow all":
+            return {"allow": True, "reason": None, "timer": "all"}
+
+        # "allow <tool>" → approve with tool timer (but not bare "allow")
+        if lower.startswith("allow ") and lower != "allow all":
+            rest = stripped[6:].strip()
+            if rest:
+                return {"allow": True, "reason": None, "timer": rest}
+
+        # Bare allow/approve/yes
+        if lower in ("allow", "approve", "yes"):
+            return {"allow": True, "reason": None, "timer": None}
+
+        # "deny: reason" or "deny reason" (multi-word)
+        if (
+            lower.startswith("deny:")
+            or lower.startswith("reject:")
+            or lower.startswith("no:")
+        ):
+            sep = stripped.index(":")
+            reason = stripped[sep + 1 :].strip()
+            return {"allow": False, "reason": reason or None, "timer": None}
+
+        if lower.startswith("deny ") or lower.startswith("reject "):
+            first_space = stripped.index(" ")
+            reason = stripped[first_space + 1 :].strip()
+            if reason:
+                return {"allow": False, "reason": reason, "timer": None}
+
+        # Bare deny/reject/no
+        if lower in ("deny", "reject", "no"):
+            return {"allow": False, "reason": None, "timer": None}
+
+        return None
+
     def on_session_removed(self, session_id: str) -> None:
         """Clean up when a session is deleted."""
         self._allow_all_until.pop(session_id, None)
         self._allow_tool_until.pop(session_id, None)
+        self._pending_permissions.pop(session_id, None)
 
     # ------------------------------------------------------------------
     # Required interface methods

@@ -44,7 +44,9 @@ class DiscordBridge(BridgeInterface):
         try:
             import discord
         except ImportError:
-            logger.error("discord.py not installed. Install with: pip install discord.py")
+            logger.error(
+                "discord.py not installed. Install with: pip install discord.py"
+            )
             return
 
         intents = discord.Intents.default()
@@ -60,9 +62,12 @@ class DiscordBridge(BridgeInterface):
             await self._handle_message(message)
 
         import asyncio
+
         asyncio.create_task(self._client.start(self._bot_token))
 
-        logger.info("Discord bridge initialized and starting", channel_id=self._channel_id)
+        logger.info(
+            "Discord bridge initialized and starting", channel_id=self._channel_id
+        )
 
     async def stop(self) -> None:
         """Stop Discord client."""
@@ -101,7 +106,10 @@ class DiscordBridge(BridgeInterface):
                 response = await client.get(
                     self._api_url(f"/external-sessions/{external_id}/history"),
                     headers=self._api_headers(),
-                    params={"runner_type": runner_type, "limit": _EXTERNAL_REPLAY_LIMIT},
+                    params={
+                        "runner_type": runner_type,
+                        "limit": _EXTERNAL_REPLAY_LIMIT,
+                    },
                     timeout=10.0,
                 )
                 response.raise_for_status()
@@ -118,10 +126,16 @@ class DiscordBridge(BridgeInterface):
         if not messages:
             return
 
-        lines: list[str] = [f"Recent history (last {min(_EXTERNAL_REPLAY_LIMIT, len(messages))} messages):\n"]
+        lines: list[str] = [
+            f"Recent history (last {min(_EXTERNAL_REPLAY_LIMIT, len(messages))} messages):\n"
+        ]
         for i, msg in enumerate(messages, 1):
             role = str(msg.get("role") or "").lower()
-            prefix = "U" if role == "user" else ("A" if role == "assistant" else role[:1].upper() or "?")
+            prefix = (
+                "U"
+                if role == "user"
+                else ("A" if role == "assistant" else role[:1].upper() or "?")
+            )
             content = (msg.get("content") or "").strip()
             thinking = (msg.get("thinking") or "").strip()
             if content and len(content) > 800:
@@ -142,7 +156,10 @@ class DiscordBridge(BridgeInterface):
             if thread:
                 await thread.send(text)
         except Exception:
-            logger.exception("Failed to send Discord external session replay", external_id=external_id)
+            logger.exception(
+                "Failed to send Discord external session replay",
+                external_id=external_id,
+            )
 
     def _session_for_thread(self, thread_id: int) -> str | None:
         for sid, tid in self._thread_ids.items():
@@ -203,7 +220,9 @@ class DiscordBridge(BridgeInterface):
         elif cmd == "!usage":
             await self._cmd_usage(message)
         else:
-            await message.channel.send(f"Unknown command: {cmd}\nUse !help for available commands.")
+            await message.channel.send(
+                f"Unknown command: {cmd}\nUse !help for available commands."
+            )
 
     # ------------------------------------------------------------------
     # Commands
@@ -307,7 +326,9 @@ class DiscordBridge(BridgeInterface):
 
         try:
             assert directory_raw is not None
-            directory = await self._resolve_directory_arg(directory_raw, base_directory=base_directory)
+            directory = await self._resolve_directory_arg(
+                directory_raw, base_directory=base_directory
+            )
         except Exception as e:
             await message.channel.send(f"Invalid directory: {e}")
             return
@@ -415,7 +436,9 @@ class DiscordBridge(BridgeInterface):
             await message.channel.send("No external sessions listed. Run !list first.")
             return
         if index < 0 or index >= len(self._external_view):
-            await message.channel.send(f"Invalid number. Use 1–{len(self._external_view)}.")
+            await message.channel.send(
+                f"Invalid number. Use 1–{len(self._external_view)}."
+            )
             return
 
         external = self._external_view[index]
@@ -438,7 +461,9 @@ class DiscordBridge(BridgeInterface):
 
             # Check if already has a thread
             if session_id in self._thread_ids:
-                await message.channel.send("Already attached — check the existing thread.")
+                await message.channel.send(
+                    "Already attached — check the existing thread."
+                )
                 return
 
             # Create thread
@@ -456,7 +481,9 @@ class DiscordBridge(BridgeInterface):
                         runner_type=str(external["runner_type"]),
                     )
             except Exception:
-                logger.exception("Failed to replay external session history into Discord thread")
+                logger.exception(
+                    "Failed to replay external session history into Discord thread"
+                )
 
             # Bind platform
             from tether.store import store
@@ -544,6 +571,14 @@ class DiscordBridge(BridgeInterface):
     async def _forward_input(self, message: any, session_id: str, text: str) -> None:
         import httpx
 
+        # Check if this is an approval response for a pending permission
+        pending = self.get_pending_permission(session_id)
+        if pending:
+            parsed = self.parse_approval_text(text)
+            if parsed is not None:
+                await self._handle_approval_text(message, session_id, pending, parsed)
+                return
+
         try:
             await self._send_input_or_start_via_api(session_id=session_id, text=text)
             logger.info(
@@ -562,6 +597,42 @@ class DiscordBridge(BridgeInterface):
         except Exception:
             logger.exception("Failed to forward human input", session_id=session_id)
             await message.channel.send("Failed to send input.")
+
+    async def _handle_approval_text(
+        self, message: any, session_id: str, request: ApprovalRequest, parsed: dict
+    ) -> None:
+        """Handle a parsed approval text response."""
+        allow = parsed["allow"]
+        reason = parsed.get("reason")
+        timer = parsed.get("timer")
+
+        if allow and timer == "all":
+            self.set_allow_all(session_id)
+        elif allow and timer:
+            self.set_allow_tool(session_id, timer)
+
+        if allow:
+            msg = "Approved"
+            if timer == "all":
+                msg = "Allow All (30m)"
+            elif timer:
+                msg = f"Allow {timer} (30m)"
+        else:
+            msg = f"Denied: {reason}" if reason else "Denied"
+
+        ok = await self._respond_to_permission(
+            session_id,
+            request.request_id,
+            allow=allow,
+            message=msg,
+        )
+        if ok:
+            if allow:
+                await message.channel.send(f"✅ {msg}")
+            else:
+                await message.channel.send(f"❌ {msg}")
+        else:
+            await message.channel.send("❌ Failed — request may have expired.")
 
     # ------------------------------------------------------------------
     # Bridge interface (outgoing events)
@@ -585,7 +656,7 @@ class DiscordBridge(BridgeInterface):
             if thread:
                 # Discord has a 2000 char limit per message
                 for i in range(0, len(text), _DISCORD_MSG_LIMIT):
-                    await thread.send(text[i:i + _DISCORD_MSG_LIMIT])
+                    await thread.send(text[i : i + _DISCORD_MSG_LIMIT])
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
 
@@ -605,7 +676,9 @@ class DiscordBridge(BridgeInterface):
                 try:
                     thread = self._client.get_channel(thread_id)
                     if thread:
-                        await thread.send(f"✅ **{request.title}** — auto-approved ({reason})")
+                        await thread.send(
+                            f"✅ **{request.title}** — auto-approved ({reason})"
+                        )
                 except Exception:
                     pass
             return
@@ -614,16 +687,20 @@ class DiscordBridge(BridgeInterface):
         if not thread_id:
             return
 
+        self.set_pending_permission(session_id, request)
+
         text = (
             f"**⚠️ Approval Required**\n\n**{request.title}**\n\n{request.description}\n\n"
-            "Reply with `allow`, `deny`, `allow all`, or `allow {tool}`."
+            "Reply with `allow`, `deny`, `deny: <reason>`, `allow all`, or `allow {tool}`."
         )
         try:
             thread = self._client.get_channel(thread_id)
             if thread:
                 await thread.send(text)
         except Exception:
-            logger.exception("Failed to send Discord approval request", session_id=session_id)
+            logger.exception(
+                "Failed to send Discord approval request", session_id=session_id
+            )
 
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
