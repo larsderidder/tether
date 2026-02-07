@@ -4,7 +4,6 @@
 
 - Python 3.10+
 - Node.js 20+
-- Docker (optional, for Codex sidecar)
 
 ## Development Setup
 
@@ -51,10 +50,11 @@ npm test         # Run tests
 ### With Codex Sidecar
 
 ```bash
-# Start sidecar in Docker
-docker compose --profile codex up -d codex-sidecar
+# Terminal 1: Start sidecar locally
+make install-codex
+cd codex-sdk-sidecar && DOTENV_CONFIG_PATH=../.env npm run start
 
-# Run agent with TETHER_AGENT_ADAPTER=codex_sdk_sidecar
+# Terminal 2: Run agent with TETHER_AGENT_ADAPTER=codex_sdk_sidecar
 TETHER_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
 ```
 
@@ -64,10 +64,7 @@ TETHER_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
 make install      # Install Python and Node dependencies
 make start        # Build UI and run agent
 make start-codex  # Build UI, start sidecar, run agent
-make stop         # Stop sidecar container
 make dev-ui       # Run UI dev server (hot reload)
-make dev          # Run Codex sidecar in Docker (watch mode)
-make dev-stop     # Stop dev containers
 make test         # Run agent tests
 ```
 

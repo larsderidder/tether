@@ -1,4 +1,4 @@
-.PHONY: help install install-all dev test format lint clean migrate mcp docker-build docker-up docker-down
+.PHONY: help install install-all dev test format lint clean migrate mcp
 
 help:
 	@echo "Tether Agent - Development Commands"
@@ -19,11 +19,6 @@ help:
 	@echo ""
 	@echo "Servers:"
 	@echo "  make mcp          - Run MCP server"
-	@echo ""
-	@echo "Docker:"
-	@echo "  make docker-build - Build Docker image"
-	@echo "  make docker-up    - Start services with docker-compose"
-	@echo "  make docker-down  - Stop docker-compose services"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean        - Remove build artifacts and caches"
@@ -61,15 +56,6 @@ migration:
 
 mcp:
 	python -m tether.mcp.server
-
-docker-build:
-	docker build -t tether-agent:latest -f Dockerfile ..
-
-docker-up:
-	docker-compose up -d
-
-docker-down:
-	docker-compose down
 
 clean:
 	rm -rf build/ dist/ *.egg-info .pytest_cache .coverage htmlcov/

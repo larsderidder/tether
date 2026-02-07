@@ -14,7 +14,7 @@ Store events ──> BridgeSubscriber ──> BridgeManager ──> Platform Bri
 - `BridgeManager` — singleton registry mapping platform names to bridge instances
 - `BridgeSubscriber` — background task per session consuming events from store queue
 
-## BridgeInterface (`bridges/base.py`)
+## BridgeInterface (`agent/tether/bridges/base.py`)
 
 Abstract methods every bridge must implement:
 - `on_output(session_id, text)` — send agent output
@@ -34,7 +34,7 @@ Shared helpers (in base class):
 - `_fetch_usage()` / `_format_usage_text()` — token usage display
 - `_api_url()` / `_api_headers()` — internal API helpers
 
-## BridgeSubscriber (`bridges/subscriber.py`)
+## BridgeSubscriber (`agent/tether/bridges/subscriber.py`)
 
 Routes store events to bridge methods:
 - `output` with `final=True` → `on_output()` (skips non-final, history, empty)
@@ -46,24 +46,26 @@ Routes store events to bridge methods:
 
 ## Platform Implementations
 
-### Telegram (`bridges/telegram/`)
+### Telegram (`agent/tether/bridges/telegram/`)
 - **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/usage`, `/help`
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
 - Approval UI: inline keyboard with Allow, Deny, Allow {tool} (30m), Allow All (30m), Show All
 - Auto-approve sends `✅ <b>Tool</b> — auto-approved (reason)` notification
 
-### Slack (`bridges/slack/`)
+### Slack (`agent/tether/bridges/slack/`)
 - **bot.py** — Thread-based: `!attach`, `!list`, `!stop`, `!usage`, `!help`, `!status`
 - Socket mode for real-time events (requires `SLACK_APP_TOKEN`)
 - Text-based approval: reply `allow`, `deny`, `allow all`, `allow {tool}`
 - Auto-approve sends `✅ *Tool* — auto-approved (reason)` notification
 
-### Discord (`bridges/discord/`)
+### Discord (`agent/tether/bridges/discord/`)
 - **bot.py** — Thread-based: same `!` commands as Slack
 - discord.py client with message_content intent
 - Text-based approval: same as Slack
 - Auto-approve sends `✅ **Tool** — auto-approved (reason)` notification
+- Optional pairing/allowlist: when enabled, only authorized Discord user IDs can run commands or send input
+- Optional no-ID setup: if `DISCORD_CHANNEL_ID` is unset, run `!setup <code>` in the desired channel to configure it
 
 ## Auto-Approve System
 
@@ -84,6 +86,9 @@ Stored in base class as in-memory dicts:
 | `SLACK_CHANNEL_ID` | Slack channel ID |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_CHANNEL_ID` | Discord channel ID (int) |
+| `DISCORD_REQUIRE_PAIRING` | Require pairing before using the Discord bot (0/1) |
+| `DISCORD_PAIRING_CODE` | Optional fixed pairing code (if unset and pairing is required, one is generated and logged) |
+| `DISCORD_ALLOWED_USER_IDS` | Comma-separated Discord user IDs that are always authorized |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 
@@ -98,10 +103,10 @@ Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 
 ## Tests
 
-- `tests/test_bridge_base.py` — Auto-approve, pagination, usage formatting, cleanup
-- `tests/test_subscriber.py` — Event routing, lifecycle, error resilience
-- `tests/test_telegram_bridge.py` — Interface, output, approvals, topics, state
-- `tests/test_slack_bridge.py` — Interface, output, approvals, threads
-- `tests/test_discord_bridge.py` — Interface, output, approvals, threads
-- `tests/test_formatting.py` — HTML conversion, tables, tool markers, chunking
-- `tests/test_external_agent_api.py` — Bridge manager routing
+- `agent/tests/test_bridge_base.py` — Auto-approve, pagination, usage formatting, cleanup
+- `agent/tests/test_subscriber.py` — Event routing, lifecycle, error resilience
+- `agent/tests/test_telegram_bridge.py` — Interface, output, approvals, topics, state
+- `agent/tests/test_slack_bridge.py` — Interface, output, approvals, threads
+- `agent/tests/test_discord_bridge.py` — Interface, output, approvals, threads
+- `agent/tests/test_formatting.py` — HTML conversion, tables, tool markers, chunking
+- `agent/tests/test_external_agent_api.py` — Bridge manager routing

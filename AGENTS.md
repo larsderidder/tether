@@ -79,12 +79,11 @@ background/             # Specs, docs, plans (not runtime code)
 
 ```bash
 make install            # Install Python + Node dependencies
-make start              # Start agent (Claude adapter)
-make start-codex        # Start agent (Codex adapter)
-make dev                # Start with hot reload (agent + UI)
+make start              # Build UI and start agent
+make start-codex        # Build UI, start codex-sdk-sidecar, run agent
+make dev-ui             # Run UI dev server (hot reload) - run agent separately
 make test               # Run pytest
 make verify             # Health check agent + UI
-make lint               # Run Black formatter check
 ```
 
 ## Running Tests
@@ -130,13 +129,10 @@ To access from a phone on the same network:
    - **macOS:** System Settings > Network > Firewall > Allow incoming
 3. Open `http://<ip>:8787` on phone
 
-## Docker Alternative
+## Docker
 
-```bash
-make docker-start
-```
-
-Map host directories in `docker-compose.yml` for file system access. Native setup (`make start`) is recommended.
+Docker support has been removed. Tether is designed to run locally so it can
+attach to existing sessions and operate directly on your filesystem.
 
 ---
 

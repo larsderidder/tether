@@ -100,7 +100,7 @@ Configure bridges to get notifications on your preferred platform:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="your_bot_token"
-export TELEGRAM_GROUP_ID="your_group_id"
+export TELEGRAM_FORUM_GROUP_ID="your_group_id"
 ```
 
 #### Slack
@@ -225,12 +225,6 @@ Example WebSocket message:
 
 ```bash
 pytest tests/
-```
-
-### Run with Docker
-
-```bash
-docker-compose up
 ```
 
 ### Database Migrations

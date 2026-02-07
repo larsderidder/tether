@@ -43,7 +43,7 @@ make start
 
 Then open `http://localhost:8787`.
 
-Use `make start-codex` to run with the Codex sidecar adapter.
+Use `make start-codex` to run with the Codex sidecar adapter (codex-sdk-sidecar).
 
 ## Adapters
 
@@ -65,7 +65,7 @@ credentials in `.env` — the bridge starts automatically.
 
 | Platform | What you need |
 |----------|---------------|
-| **Telegram** | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_GROUP_ID` (supergroup with topics) |
+| **Telegram** | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_FORUM_GROUP_ID` (supergroup with topics) |
 | **Slack** | `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` + `SLACK_CHANNEL_ID` |
 | **Discord** | `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` |
 
@@ -126,20 +126,16 @@ timeouts, logging, and bridge configuration.
 
 ## Docker
 
-```bash
-docker compose up -d
-docker compose --profile codex up -d codex-sidecar
-```
-
-Map host directories in `docker-compose.yml` for file system access. Native setup is recommended.
+Docker support has been removed. Tether is designed to run locally so it can
+attach to existing agent sessions and operate directly on your filesystem.
 
 ## Development
 
 ```bash
 make install    # Install Python + Node dependencies
-make dev        # Agent + UI with hot reload
+make start      # Build UI and run agent
+make dev-ui     # Run UI dev server (hot reload) - run agent separately
 make test       # Run pytest
-make lint       # Black formatter check
 make verify     # Health check
 ```
 

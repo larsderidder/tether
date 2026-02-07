@@ -1,6 +1,4 @@
-.PHONY: start start-codex stop build-ui install verify \
-        docker-start docker-start-codex docker-stop docker-logs docker-status docker-build docker-clean \
-        dev dev-ui dev-stop test
+.PHONY: start start-codex install install-codex build-ui verify dev-ui test
 
 # =============================================================================
 # Native mode (recommended)
@@ -10,6 +8,10 @@
 install:
 	cd agent && pip install -e ".[dev]"
 	cd ui && npm ci
+
+install-codex:
+	cd codex-src/sdk/typescript && npm install --ignore-scripts
+	cd codex-sdk-sidecar && npm ci
 
 # Build UI for production
 build-ui:
@@ -21,29 +23,13 @@ build-ui:
 start: build-ui
 	cd agent && python -m tether.main
 
-# Start agent + Codex sidecar (sidecar runs in Docker)
+# Start agent + Codex sidecar locally (recommended)
 start-codex: build-ui
-	docker compose --profile codex up -d --build codex-sidecar
-	cd agent && TETHER_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
-
-# Stop sidecar container
-stop:
-	docker compose stop codex-sidecar 2>/dev/null || true
-
-# =============================================================================
-# Development mode
-# =============================================================================
+	./scripts/start-codex-local.sh
 
 # Run UI dev server (hot reload) - run agent separately
 dev-ui:
 	cd ui && npm run dev
-
-# Run Codex sidecar in Docker for development
-dev:
-	docker compose -f docker-compose.dev.yml up
-
-dev-stop:
-	docker compose -f docker-compose.dev.yml down
 
 # Run tests
 test:
@@ -52,28 +38,3 @@ test:
 # Verify setup (agent must be running)
 verify:
 	./scripts/verify.sh
-
-# =============================================================================
-# Docker mode (legacy - for users who prefer Docker with volume mounts)
-# =============================================================================
-
-docker-start:
-	docker compose up -d agent
-
-docker-start-codex:
-	docker compose --profile codex up -d codex-sidecar
-
-docker-stop:
-	docker compose --profile codex down
-
-docker-logs:
-	docker compose logs -f
-
-docker-status:
-	docker compose ps -a
-
-docker-build:
-	docker compose build
-
-docker-clean:
-	docker compose --profile codex down -v

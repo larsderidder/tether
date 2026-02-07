@@ -68,8 +68,8 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 | `TETHER_AGENT_ADAPTER` | Force adapter: `claude_local`, `claude_api`, `codex_sdk_sidecar` |
 | `ANTHROPIC_API_KEY` | API key for `claude_api` adapter |
 | `TETHER_AGENT_CLAUDE_MODEL` | Model override (default: claude-sonnet-4-20250514) |
-| `TETHER_AGENT_CODEX_SIDECAR_URL` | Sidecar URL (default: http://localhost:8788) |
-| `TETHER_AGENT_CODEX_SIDECAR_TOKEN` | Sidecar auth token |
+| `TETHER_CODEX_SIDECAR_URL` | Sidecar URL (default: http://localhost:8788) |
+| `TETHER_CODEX_SIDECAR_TOKEN` | Sidecar auth token |
 
 ## Key Files
 
