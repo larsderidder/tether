@@ -148,6 +148,18 @@ class Settings:
         return _get_int("TETHER_AGENT_SESSION_IDLE_SECONDS", default=0)
 
     @staticmethod
+    def bridge_error_debounce_seconds() -> int:
+        """Debounce error notifications sent by messaging bridges.
+
+        When a runner hits an error, multiple error events/status changes may be
+        emitted in quick succession. Bridges can use this setting to avoid
+        spamming messaging channels.
+
+        Env: TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS (default: 30)
+        """
+        return _get_int("TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS", default=30)
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 
@@ -224,9 +236,11 @@ class Settings:
     def telegram_group_id() -> int:
         """Telegram forum group ID for creating topics.
 
-        Env: TELEGRAM_GROUP_ID
+        Env: TELEGRAM_FORUM_GROUP_ID (preferred), TELEGRAM_GROUP_ID (legacy)
         """
-        value = os.environ.get("TELEGRAM_GROUP_ID", "").strip()
+        value = os.environ.get("TELEGRAM_FORUM_GROUP_ID", "").strip() or os.environ.get(
+            "TELEGRAM_GROUP_ID", ""
+        ).strip()
         if not value:
             return 0
         try:
@@ -279,6 +293,48 @@ class Settings:
             return int(value)
         except ValueError:
             return 0
+
+    @staticmethod
+    def discord_require_pairing() -> bool:
+        """Require Discord users to pair before using the bot.
+
+        When enabled, only paired users (or explicitly allowlisted users) may run
+        commands or send session input.
+
+        Env: DISCORD_REQUIRE_PAIRING (default: 0)
+        """
+        return _get_bool("DISCORD_REQUIRE_PAIRING", default=False)
+
+    @staticmethod
+    def discord_pairing_code() -> str:
+        """Optional fixed pairing code for Discord.
+
+        If unset and pairing is required, the Discord bridge will generate a code
+        on startup and log it.
+
+        Env: DISCORD_PAIRING_CODE
+        """
+        return os.environ.get("DISCORD_PAIRING_CODE", "").strip()
+
+    @staticmethod
+    def discord_allowed_user_ids() -> set[int]:
+        """Comma-separated Discord user IDs that are always authorized.
+
+        Env: DISCORD_ALLOWED_USER_IDS (e.g. "123,456")
+        """
+        raw = os.environ.get("DISCORD_ALLOWED_USER_IDS", "").strip()
+        if not raw:
+            return set()
+        out: set[int] = set()
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.add(int(part))
+            except ValueError:
+                continue
+        return out
 
 
 # Singleton instance for convenient imports

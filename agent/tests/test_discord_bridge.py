@@ -90,6 +90,36 @@ class TestDiscordBridgePoC:
         assert result["platform"] == "discord"
 
     @pytest.mark.anyio
+    async def test_thread_names_are_unique_like_telegram(
+        self, fresh_store: SessionStore
+    ) -> None:
+        from tether.bridges.discord.bot import DiscordBridge
+
+        # Mock Discord client
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_thread = MagicMock()
+        mock_thread.id = 111
+        mock_channel.create_thread.return_value = mock_thread
+        mock_client.get_channel.return_value = mock_channel
+
+        bridge = DiscordBridge(bot_token="discord_bot_token", channel_id=1234567890)
+        bridge._client = mock_client
+
+        name1 = bridge._make_external_thread_name(directory="/repo", session_id="sess_1")
+        await bridge.create_thread("sess_1", name1)
+
+        mock_thread_2 = MagicMock()
+        mock_thread_2.id = 222
+        mock_channel.create_thread.return_value = mock_thread_2
+
+        name2 = bridge._make_external_thread_name(directory="/repo", session_id="sess_2")
+        await bridge.create_thread("sess_2", name2)
+
+        assert name1 == "Repo"
+        assert name2 == "Repo 2"
+
+    @pytest.mark.anyio
     async def test_on_status_change_sends_to_discord(
         self, fresh_store: SessionStore
     ) -> None:
@@ -118,6 +148,38 @@ class TestDiscordBridgePoC:
 
         # Verify status was sent
         assert mock_thread.send.called
+
+    @pytest.mark.anyio
+    async def test_on_status_change_error_is_debounced(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        """Repeated error status changes shouldn't spam."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setenv("TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS", "30")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(bot_token="discord_bot_token", channel_id=1234567890)
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        import tether.bridges.base as base_mod
+
+        t = 1000.0
+        monkeypatch.setattr(base_mod.time, "time", lambda: t)
+        await bridge.on_status_change(session.id, "error")
+        t += 1.0
+        await bridge.on_status_change(session.id, "error")
+
+        # Only the first error should be sent within debounce window.
+        assert mock_thread.send.call_count == 1
 
     @pytest.mark.anyio
     async def test_on_approval_request_sends_message(
@@ -309,3 +371,99 @@ class TestDiscordBridgePoC:
             # Should have called input API, not permission API
             call_url = mock_http_inst.post.call_args[0][0]
             assert "/input" in call_url or "/start" in call_url
+
+    @pytest.mark.anyio
+    async def test_pairing_required_blocks_unpaired_input(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setenv("DISCORD_REQUIRE_PAIRING", "1")
+        monkeypatch.setenv("DISCORD_PAIRING_CODE", "12345678")
+
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(bot_token="x", channel_id=1234567890)
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        mock_message = MagicMock()
+        mock_message.channel = mock_thread
+        mock_message.channel.id = 9876543210
+        mock_message.author.name = "testuser"
+        mock_message.author.id = 111
+
+        with patch("httpx.AsyncClient") as mock_http:
+            mock_http_inst = AsyncMock()
+            mock_http_inst.__aenter__ = AsyncMock(return_value=mock_http_inst)
+            mock_http_inst.__aexit__ = AsyncMock(return_value=False)
+            mock_http.return_value = mock_http_inst
+
+            await bridge._forward_input(mock_message, session.id, "hello")
+
+            # Should NOT have sent anything to the API (blocked on pairing)
+            assert not mock_http_inst.post.called
+
+        assert mock_thread.send.called
+
+    @pytest.mark.anyio
+    async def test_pair_command_pairs_user_and_allows_commands(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setenv("DISCORD_REQUIRE_PAIRING", "1")
+        monkeypatch.setenv("DISCORD_PAIRING_CODE", "12345678")
+
+        bridge = DiscordBridge(bot_token="x", channel_id=1234567890)
+
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        mock_message = MagicMock()
+        mock_message.channel = mock_channel
+        mock_message.guild = MagicMock()
+        mock_message.author.id = 222
+        mock_message.author.name = "testuser"
+
+        await bridge._dispatch_command(mock_message, "!pair 12345678")
+        assert 222 in bridge._paired_user_ids
+
+        with patch("httpx.AsyncClient") as mock_http:
+            mock_http_inst = AsyncMock()
+            mock_http_inst.__aenter__ = AsyncMock(return_value=mock_http_inst)
+            mock_http_inst.__aexit__ = AsyncMock(return_value=False)
+            mock_http_inst.get.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value=[]),
+                raise_for_status=MagicMock(),
+            )
+            mock_http.return_value = mock_http_inst
+
+            await bridge._dispatch_command(mock_message, "!status")
+            assert mock_http_inst.get.called
+
+    @pytest.mark.anyio
+    async def test_setup_command_sets_control_channel_and_pairs_user(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setenv("DISCORD_PAIRING_CODE", "12345678")
+
+        bridge = DiscordBridge(bot_token="x", channel_id=0)
+
+        mock_channel = AsyncMock()
+        mock_channel.id = 999
+        mock_message = MagicMock()
+        mock_message.channel = mock_channel
+        mock_message.guild = MagicMock()
+        mock_message.author.id = 333
+        mock_message.author.name = "testuser"
+
+        await bridge._dispatch_command(mock_message, "!setup 12345678")
+        assert bridge._channel_id == 999
+        assert 333 in bridge._paired_user_ids

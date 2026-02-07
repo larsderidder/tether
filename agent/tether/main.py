@@ -78,6 +78,7 @@ async def _init_bridges() -> None:
                 channel_id=slack_channel,
             )
             await bridge.start()
+            bridge.restore_thread_mappings()
             bridge_manager.register_bridge("slack", bridge)
             logger.info("Slack bridge registered and started")
         except Exception:
@@ -86,7 +87,7 @@ async def _init_bridges() -> None:
     # Discord bridge
     discord_token = settings.discord_bot_token()
     discord_channel = settings.discord_channel_id()
-    if discord_token and discord_channel:
+    if discord_token:
         try:
             from tether.bridges.discord.bot import DiscordBridge
 
@@ -95,6 +96,7 @@ async def _init_bridges() -> None:
                 channel_id=discord_channel,
             )
             await bridge.start()
+            bridge.restore_thread_mappings()
             bridge_manager.register_bridge("discord", bridge)
             logger.info("Discord bridge registered and started")
         except Exception:

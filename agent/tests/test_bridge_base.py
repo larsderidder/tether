@@ -118,31 +118,35 @@ class TestAutoApprove:
 class TestSessionRemoved:
     """Test on_session_removed cleanup."""
 
-    def test_cleans_allow_all_timer(self) -> None:
+    @pytest.mark.anyio
+    async def test_cleans_allow_all_timer(self) -> None:
         bridge = ConcreteBridge()
         bridge.set_allow_all("sess_1")
         assert "sess_1" in bridge._allow_all_until
-        bridge.on_session_removed("sess_1")
+        await bridge.on_session_removed("sess_1")
         assert "sess_1" not in bridge._allow_all_until
 
-    def test_cleans_allow_tool_timers(self) -> None:
+    @pytest.mark.anyio
+    async def test_cleans_allow_tool_timers(self) -> None:
         bridge = ConcreteBridge()
         bridge.set_allow_tool("sess_1", "Read")
         bridge.set_allow_tool("sess_1", "Edit")
         assert "sess_1" in bridge._allow_tool_until
-        bridge.on_session_removed("sess_1")
+        await bridge.on_session_removed("sess_1")
         assert "sess_1" not in bridge._allow_tool_until
 
-    def test_safe_for_unknown_session(self) -> None:
+    @pytest.mark.anyio
+    async def test_safe_for_unknown_session(self) -> None:
         bridge = ConcreteBridge()
         # Should not raise
-        bridge.on_session_removed("nonexistent")
+        await bridge.on_session_removed("nonexistent")
 
-    def test_does_not_affect_other_sessions(self) -> None:
+    @pytest.mark.anyio
+    async def test_does_not_affect_other_sessions(self) -> None:
         bridge = ConcreteBridge()
         bridge.set_allow_all("sess_1")
         bridge.set_allow_all("sess_2")
-        bridge.on_session_removed("sess_1")
+        await bridge.on_session_removed("sess_1")
         assert "sess_2" in bridge._allow_all_until
 
 
@@ -367,10 +371,11 @@ class TestPendingPermissions:
         bridge = ConcreteBridge()
         bridge.clear_pending_permission("nonexistent")  # should not raise
 
-    def test_session_removed_clears_pending(self) -> None:
+    @pytest.mark.anyio
+    async def test_session_removed_clears_pending(self) -> None:
         bridge = ConcreteBridge()
         bridge.set_pending_permission("sess_1", self._make_request())
-        bridge.on_session_removed("sess_1")
+        await bridge.on_session_removed("sess_1")
         assert bridge.get_pending_permission("sess_1") is None
 
     def test_multiple_sessions(self) -> None:

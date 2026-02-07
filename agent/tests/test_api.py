@@ -450,7 +450,7 @@ class TestDeleteSessionCleanup:
         # Track unsubscribe calls on the singleton
         from tether.bridges.subscriber import bridge_subscriber
 
-        mock_unsubscribe = MagicMock()
+        mock_unsubscribe = AsyncMock()
         monkeypatch.setattr(bridge_subscriber, "unsubscribe", mock_unsubscribe)
 
         response = await api_client.delete(f"/api/sessions/{session_id}")

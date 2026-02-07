@@ -185,7 +185,7 @@ async def delete_session(session_id: str, _: None = Depends(require_token)) -> O
         if session.platform:
             from tether.bridges.subscriber import bridge_subscriber
 
-            bridge_subscriber.unsubscribe(session_id, platform=session.platform)
+            await bridge_subscriber.unsubscribe(session_id, platform=session.platform)
 
         store.delete_session(session_id)
         remove_session_lock(session_id)
@@ -286,7 +286,18 @@ async def start_session(
                 )
                 transition(session, SessionState.ERROR, ended_at=True)
                 await emit_state(session)
-                raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+                # Do not leak low-level connection errors to UI/bridges.
+                if (session.adapter or "").lower() == "codex_sdk_sidecar":
+                    raise_http_error(
+                        "AGENT_UNAVAILABLE",
+                        "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                        503,
+                    )
+                raise_http_error(
+                    "AGENT_UNAVAILABLE",
+                    "Runner backend is not reachable. Check that the adapter is running and try again.",
+                    503,
+                )
             except Exception as exc:
                 # Revert to ERROR state if runner fails to start
                 logger.exception("Runner failed to start", session_id=session_id)
@@ -384,7 +395,17 @@ async def send_input(
                 )
                 transition(session, SessionState.ERROR, ended_at=True)
                 await emit_state(session)
-                raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+                if (session.adapter or "").lower() == "codex_sdk_sidecar":
+                    raise_http_error(
+                        "AGENT_UNAVAILABLE",
+                        "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                        503,
+                    )
+                raise_http_error(
+                    "AGENT_UNAVAILABLE",
+                    "Runner backend is not reachable. Check that the adapter is running and try again.",
+                    503,
+                )
             except Exception as exc:
                 logger.exception("Runner failed while sending input", session_id=session_id)
                 transition(session, SessionState.ERROR, ended_at=True)
@@ -427,7 +448,17 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
                 )
                 transition(session, SessionState.ERROR, ended_at=True)
                 await emit_state(session)
-                raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+                if (session.adapter or "").lower() == "codex_sdk_sidecar":
+                    raise_http_error(
+                        "AGENT_UNAVAILABLE",
+                        "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                        503,
+                    )
+                raise_http_error(
+                    "AGENT_UNAVAILABLE",
+                    "Runner backend is not reachable. Check that the adapter is running and try again.",
+                    503,
+                )
             except Exception as exc:
                 logger.exception("Runner failed while interrupting", session_id=session_id)
                 transition(session, SessionState.ERROR, ended_at=True)

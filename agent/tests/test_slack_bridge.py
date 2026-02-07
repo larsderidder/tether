@@ -28,6 +28,31 @@ class TestSlackBridgePoC:
         assert bridge is not None
 
     @pytest.mark.anyio
+    async def test_thread_names_are_unique_like_telegram(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Second thread with same directory gets 'Name 2'."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        mock_client = AsyncMock()
+        mock_client.chat_postMessage.side_effect = [
+            {"ok": True, "ts": "1"},
+            {"ok": True, "ts": "2"},
+        ]
+
+        bridge = SlackBridge(bot_token="xoxb-test-token", channel_id="C01234567")
+        bridge._client = mock_client
+
+        name1 = bridge._make_external_thread_name(directory="/repo", session_id="sess_1")
+        await bridge.create_thread("sess_1", name1)
+
+        name2 = bridge._make_external_thread_name(directory="/repo", session_id="sess_2")
+        await bridge.create_thread("sess_2", name2)
+
+        assert name1 == "Repo"
+        assert name2 == "Repo 2"
+
+    @pytest.mark.anyio
     async def test_on_output_sends_to_slack_thread(
         self, fresh_store: SessionStore
     ) -> None:

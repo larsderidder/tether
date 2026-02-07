@@ -24,14 +24,6 @@ from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
 
-_STATE_EMOJI = {
-    "CREATED": "🆕",
-    "RUNNING": "🔄",
-    "AWAITING_INPUT": "📝",
-    "INTERRUPTING": "⏳",
-    "ERROR": "❌",
-}
-
 _TELEGRAM_TOPIC_NAME_MAX_LEN = 64
 _APPROVAL_TRUNCATE = 120  # max chars per value in compact approval view
 
@@ -216,25 +208,27 @@ class TelegramBridge(BridgeInterface):
         if isinstance(obj, dict):
             lines: list[str] = []
             for key, value in obj.items():
-                v = str(value)
+                label = BridgeInterface._humanize_key(str(key))
+                v = BridgeInterface._humanize_enum_value(value)
                 if len(v) > truncate:
                     v = v[:truncate] + "…"
                     truncated = True
                 v_escaped = html_mod.escape(v)
+                label_escaped = html_mod.escape(label)
                 if key in ("file_path", "path", "notebook_path"):
                     lines.append(
-                        f"<b>{html_mod.escape(key)}</b>: <code>{v_escaped}</code>"
+                        f"<b>{label_escaped}</b>: <code>{v_escaped}</code>"
                     )
                 elif key in ("command",):
                     lines.append(
-                        f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>"
+                        f"<b>{label_escaped}</b>:\n<pre>{v_escaped}</pre>"
                     )
                 elif key in ("old_string", "new_string", "content", "new_source"):
                     lines.append(
-                        f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>"
+                        f"<b>{label_escaped}</b>:\n<pre>{v_escaped}</pre>"
                     )
                 else:
-                    lines.append(f"<b>{html_mod.escape(key)}</b>: {v_escaped}")
+                    lines.append(f"<b>{label_escaped}</b>: {v_escaped}")
             return "\n".join(lines), truncated
 
         text = html_mod.escape(str(raw))
@@ -256,10 +250,13 @@ class TelegramBridge(BridgeInterface):
         if isinstance(obj, dict):
             lines: list[str] = []
             for key, value in obj.items():
-                v_escaped = html_mod.escape(str(value))
+                label = BridgeInterface._humanize_key(str(key))
+                v = BridgeInterface._humanize_enum_value(value)
+                v_escaped = html_mod.escape(v)
+                label_escaped = html_mod.escape(label)
                 if key in ("file_path", "path", "notebook_path"):
                     lines.append(
-                        f"<b>{html_mod.escape(key)}</b>: <code>{v_escaped}</code>"
+                        f"<b>{label_escaped}</b>: <code>{v_escaped}</code>"
                     )
                 elif key in (
                     "command",
@@ -269,10 +266,10 @@ class TelegramBridge(BridgeInterface):
                     "new_source",
                 ):
                     lines.append(
-                        f"<b>{html_mod.escape(key)}</b>:\n<pre>{v_escaped}</pre>"
+                        f"<b>{label_escaped}</b>:\n<pre>{v_escaped}</pre>"
                     )
                 else:
-                    lines.append(f"<b>{html_mod.escape(key)}</b>: {v_escaped}")
+                    lines.append(f"<b>{label_escaped}</b>: {v_escaped}")
             return "\n".join(lines)
 
         return html_mod.escape(str(raw))
@@ -495,7 +492,7 @@ class TelegramBridge(BridgeInterface):
 
         lines = ["Sessions:\n"]
         for s in sessions:
-            emoji = _STATE_EMOJI.get(s.get("state", ""), "❓")
+            emoji = self._STATE_EMOJI.get(s.get("state", ""), "❓")
             name = s.get("name") or s.get("id", "")[:12]
             lines.append(f"  {emoji} {name}")
         await update.message.reply_text("\n".join(lines))
@@ -654,23 +651,6 @@ class TelegramBridge(BridgeInterface):
         except Exception as e:
             logger.exception("Failed to attach to external session")
             await update.message.reply_text(f"Failed to attach: {e}")
-
-    @staticmethod
-    def _agent_to_adapter(raw: str) -> str | None:
-        """Map a user-friendly agent name to an adapter name."""
-        key = (raw or "").strip().lower()
-        if not key:
-            return None
-        aliases = {
-            "claude": "claude_auto",
-            "codex": "codex_sdk_sidecar",
-        }
-        if key in aliases:
-            return aliases[key]
-        # Allow explicit adapter names.
-        if key in {"claude_auto", "claude_local", "claude_api", "codex_sdk_sidecar"}:
-            return key
-        return None
 
     async def _cmd_new(self, update: Any, context: Any) -> None:
         """Handle /new — create a new session and topic.
@@ -989,6 +969,26 @@ class TelegramBridge(BridgeInterface):
                 )
             return
 
+        # Pending choice request: allow replying with "1"/"2"/... or an exact label.
+        pending_req = self.get_pending_permission(session_id)
+        if pending_req and pending_req.kind == "choice":
+            selected = self.parse_choice_text(session_id, text)
+            if selected:
+                try:
+                    await self._send_input_or_start_via_api(
+                        session_id=session_id, text=selected
+                    )
+                    self.clear_pending_permission(session_id)
+                    await update.message.reply_text(f"✅ Selected: {selected}")
+                except Exception:
+                    logger.exception(
+                        "Failed to forward choice selection",
+                        session_id=session_id,
+                        topic_id=topic_id,
+                    )
+                    await update.message.reply_text("Failed to send selection.")
+                return
+
         try:
             import httpx
 
@@ -1003,7 +1003,13 @@ class TelegramBridge(BridgeInterface):
         except httpx.HTTPStatusError as e:
             try:
                 data = e.response.json()
-                message = data.get("error", {}).get("message") or e.response.text
+                err = data.get("error") or {}
+                code = err.get("code")
+                message = err.get("message") or e.response.text
+                if code == "RUNNER_UNAVAILABLE":
+                    message = (
+                        "Runner backend is not reachable. Start `codex-sdk-sidecar` and try again."
+                    )
             except Exception:
                 message = e.response.text
             await update.message.reply_text(f"Failed to send input: {message}")
@@ -1079,6 +1085,41 @@ class TelegramBridge(BridgeInterface):
 
         try:
             username = self._display_name(query.from_user)
+
+            # Choice selection: send selected option as session input.
+            if option_selected.startswith("Choose:"):
+                pending_req = self.get_pending_permission(session_id)
+                if (
+                    not pending_req
+                    or pending_req.request_id != request_id
+                    or pending_req.kind != "choice"
+                ):
+                    await query.edit_message_text(
+                        text=f"{original_html}\n\n❌ Request expired.",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                try:
+                    raw = option_selected.split(":", 1)[1]
+                    idx = int(raw) - 1
+                except Exception:
+                    idx = -1
+
+                if idx < 0 or idx >= len(pending_req.options):
+                    await query.answer("Invalid option")
+                    return
+
+                selected = pending_req.options[idx]
+                await self._send_input_or_start_via_api(
+                    session_id=session_id, text=selected
+                )
+                self.clear_pending_permission(session_id)
+                await query.edit_message_text(
+                    text=f"{original_html}\n\n✅ {selected} by {username}",
+                    parse_mode="HTML",
+                )
+                return
 
             # Handle "Deny ✏️" — prompt for reason, don't resolve yet
             if option_selected == "DenyWithReason":
@@ -1237,23 +1278,90 @@ class TelegramBridge(BridgeInterface):
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
     ) -> None:
-        """Send an approval request with inline keyboard buttons."""
+        """Send an approval request with inline keyboard buttons.
+
+        Supports:
+        - permission requests (Allow/Deny + timers)
+        - choice requests (arbitrary options; sends selected option as session input)
+        """
         self._stop_typing(session_id)
         if not self._app:
             logger.warning("Telegram app not initialized")
             return
 
-        # Auto-approve if "Allow All" or "Allow {tool}" is active
-        reason = self.check_auto_approve(session_id, request.title)
+        # Choice requests: present options directly (not allow/deny).
+        if request.kind == "choice":
+            topic_id = self._state.get_topic_for_session(session_id)
+            if not topic_id:
+                logger.warning("No Telegram topic for session", session_id=session_id)
+                return
+
+            try:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            except ImportError:
+                logger.error("python-telegram-bot not installed")
+                return
+
+            self.set_pending_permission(session_id, request)
+
+            md = f"⚠️ *{request.title}*\n\n{request.description}"
+            html_text = markdown_to_telegram_html(md)
+            rid = request.request_id
+            self._approval_html[rid] = html_text
+
+            rows: list[list[InlineKeyboardButton]] = []
+            current: list[InlineKeyboardButton] = []
+            for idx, label in enumerate(request.options, start=1):
+                current.append(
+                    InlineKeyboardButton(
+                        f"{idx}. {label}",
+                        callback_data=f"approval:{rid}:Choose:{idx}",
+                    )
+                )
+                if len(current) == 2:
+                    rows.append(current)
+                    current = []
+            if current:
+                rows.append(current)
+
+            reply_markup = InlineKeyboardMarkup(rows)
+            try:
+                await self._app.bot.send_message(
+                    chat_id=self._forum_group_id,
+                    message_thread_id=topic_id,
+                    text=html_text,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send choice request",
+                    session_id=session_id,
+                    request_id=request.request_id,
+                )
+            return
+
+        # Auto-approve only applies to real permission prompts, not plans/tasks.
+        tool_name_norm = request.title.strip().lower()
+        reason: str | None = None
+        if request.kind == "permission" and not tool_name_norm.startswith("task"):
+            reason = self.check_auto_approve(session_id, request.title)
         if reason:
             await self._auto_approve(session_id, request, reason=reason)
             topic_id = self._state.get_topic_for_session(session_id)
             if topic_id:
                 try:
+                    detail_html, was_truncated = self._format_tool_input_html(
+                        request.description
+                    )
+                    suffix = " <i>(truncated)</i>" if was_truncated else ""
                     await self._app.bot.send_message(
-                        chat_id=self._group_id,
+                        chat_id=self._forum_group_id,
                         message_thread_id=topic_id,
-                        text=f"✅ <b>{request.title}</b> — auto-approved ({reason})",
+                        text=(
+                            f"✅ <b>{request.title}</b> — auto-approved ({reason})\n\n"
+                            f"{detail_html}{suffix}"
+                        ),
                         parse_mode="HTML",
                     )
                 except Exception:
@@ -1275,6 +1383,7 @@ class TelegramBridge(BridgeInterface):
 
         tool_name = request.title
         rid = request.request_id
+        is_task = tool_name.strip().lower().startswith("task")
 
         # Cache full description for "Show All"
         if was_truncated:
@@ -1282,23 +1391,34 @@ class TelegramBridge(BridgeInterface):
 
         self.set_pending_permission(session_id, request)
 
+        # "Task" prompts are effectively "proceed/cancel". Keep callback values as Allow/Deny.
         row_actions = [
-            InlineKeyboardButton("Allow", callback_data=f"approval:{rid}:Allow"),
-            InlineKeyboardButton("Deny", callback_data=f"approval:{rid}:Deny"),
             InlineKeyboardButton(
-                "Deny ✏️", callback_data=f"approval:{rid}:DenyWithReason"
+                "Proceed" if is_task else "Allow",
+                callback_data=f"approval:{rid}:Allow",
+            ),
+            InlineKeyboardButton(
+                "Cancel" if is_task else "Deny",
+                callback_data=f"approval:{rid}:Deny",
+            ),
+            InlineKeyboardButton(
+                "Cancel ✏️" if is_task else "Deny ✏️",
+                callback_data=f"approval:{rid}:DenyWithReason",
             ),
         ]
-        row_timers = [
-            InlineKeyboardButton(
-                f"Allow {tool_name} (30m)",
-                callback_data=f"approval:{rid}:AllowTool:{tool_name}",
-            ),
-            InlineKeyboardButton(
-                "Allow All (30m)", callback_data=f"approval:{rid}:AllowAll"
-            ),
-        ]
-        rows = [row_actions, row_timers]
+
+        rows = [row_actions]
+        if not is_task:
+            row_timers = [
+                InlineKeyboardButton(
+                    f"Allow {tool_name} (30m)",
+                    callback_data=f"approval:{rid}:AllowTool:{tool_name}",
+                ),
+                InlineKeyboardButton(
+                    "Allow All (30m)", callback_data=f"approval:{rid}:AllowAll"
+                ),
+            ]
+            rows.append(row_timers)
         if was_truncated:
             rows.append(
                 [
@@ -1327,10 +1447,10 @@ class TelegramBridge(BridgeInterface):
                 request_id=request.request_id,
             )
 
-    def on_session_removed(self, session_id: str) -> None:
+    async def on_session_removed(self, session_id: str) -> None:
         """Clean up state when a session is deleted."""
         self._stop_typing(session_id)
-        super().on_session_removed(session_id)
+        await super().on_session_removed(session_id)
         self._state.remove_session(session_id)
         logger.info("Cleaned up Telegram state for session", session_id=session_id)
 
@@ -1339,6 +1459,9 @@ class TelegramBridge(BridgeInterface):
     ) -> None:
         """Send status change notification to Telegram."""
         if not self._app:
+            return
+
+        if status == "error" and not self._should_send_error_status(session_id):
             return
 
         topic_id = self._state.get_topic_for_session(session_id)

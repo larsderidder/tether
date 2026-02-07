@@ -38,8 +38,8 @@ class FakeBridge(BridgeInterface):
     async def on_typing(self, session_id: str) -> None:
         self.typing_calls.append(session_id)
 
-    def on_session_removed(self, session_id: str) -> None:
-        super().on_session_removed(session_id)
+    async def on_session_removed(self, session_id: str) -> None:
+        await super().on_session_removed(session_id)
         self.removed_calls.append(session_id)
 
 
@@ -64,7 +64,7 @@ class TestSubscriberLifecycle:
             subscriber.subscribe(session.id, "fake")
         assert session.id in subscriber._tasks
         assert not subscriber._tasks[session.id].done()
-        subscriber.unsubscribe(session.id)
+        await subscriber.unsubscribe(session.id)
 
     @pytest.mark.anyio
     async def test_subscribe_idempotent(self, subscriber: BridgeSubscriber, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
@@ -76,7 +76,7 @@ class TestSubscriberLifecycle:
             subscriber.subscribe(session.id, "fake")
             task2 = subscriber._tasks[session.id]
         assert task1 is task2
-        subscriber.unsubscribe(session.id)
+        await subscriber.unsubscribe(session.id)
 
     @pytest.mark.anyio
     async def test_unsubscribe_removes_task(self, subscriber: BridgeSubscriber, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
@@ -85,7 +85,7 @@ class TestSubscriberLifecycle:
         with patch("tether.bridges.subscriber.bridge_manager") as mgr:
             mgr.get_bridge.return_value = fake_bridge
             subscriber.subscribe(session.id, "fake")
-            subscriber.unsubscribe(session.id)
+            await subscriber.unsubscribe(session.id)
         assert session.id not in subscriber._tasks
 
     @pytest.mark.anyio
@@ -94,7 +94,7 @@ class TestSubscriberLifecycle:
         with patch("tether.bridges.subscriber.bridge_manager") as mgr:
             mgr.get_bridge.return_value = fake_bridge
             subscriber.subscribe(session.id, "fake")
-            subscriber.unsubscribe(session.id, platform="fake")
+            await subscriber.unsubscribe(session.id, platform="fake")
         assert session.id in fake_bridge.removed_calls
 
     @pytest.mark.anyio
@@ -103,12 +103,12 @@ class TestSubscriberLifecycle:
         with patch("tether.bridges.subscriber.bridge_manager") as mgr:
             mgr.get_bridge.return_value = fake_bridge
             subscriber.subscribe(session.id, "fake")
-            subscriber.unsubscribe(session.id)
+            await subscriber.unsubscribe(session.id)
         assert session.id not in fake_bridge.removed_calls
 
     @pytest.mark.anyio
     async def test_unsubscribe_unknown_session_safe(self, subscriber: BridgeSubscriber) -> None:
-        subscriber.unsubscribe("nonexistent")
+        await subscriber.unsubscribe("nonexistent")
 
 
 class TestEventRouting:
@@ -135,7 +135,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "output",
                 "data": {"text": "Hello world", "final": True},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 1
         assert fake_bridge.output_calls[0]["text"] == "Hello world"
 
@@ -151,7 +151,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "output",
                 "data": {"text": "thinking step", "final": False},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
@@ -166,7 +166,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "output_final",
                 "data": {"text": "accumulated blob"},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
@@ -185,7 +185,7 @@ class TestEventRouting:
                     "tool_input": {"path": "/tmp/test.txt"},
                 },
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.approval_calls) == 1
         req = fake_bridge.approval_calls[0]["request"]
         assert isinstance(req, ApprovalRequest)
@@ -205,7 +205,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "session_state",
                 "data": {"state": "RUNNING"},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert session.id in fake_bridge.typing_calls
 
     @pytest.mark.anyio
@@ -220,7 +220,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "session_state",
                 "data": {"state": "ERROR"},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.status_calls) == 1
         assert fake_bridge.status_calls[0]["status"] == "error"
 
@@ -236,7 +236,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "error",
                 "data": {"message": "Process crashed"},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.status_calls) == 1
         assert fake_bridge.status_calls[0]["status"] == "error"
         assert fake_bridge.status_calls[0]["metadata"]["message"] == "Process crashed"
@@ -253,7 +253,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "output",
                 "data": {"text": "old history", "final": True, "is_history": True},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
@@ -268,7 +268,7 @@ class TestEventRouting:
                 "session_id": session.id, "type": "output",
                 "data": {"text": "", "final": True},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
@@ -315,7 +315,7 @@ class TestEventRouting:
                 "data": {"text": "recovery message", "final": True},
             })
 
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
 
         assert len(fake_bridge.output_calls) == 1
         assert fake_bridge.output_calls[0]["text"] == "recovery message"
@@ -333,6 +333,6 @@ class TestEventRouting:
                 "session_id": session.id, "type": "session_state",
                 "data": {"state": "AWAITING_INPUT"},
             })
-            sub.unsubscribe(session.id)
+            await sub.unsubscribe(session.id)
         assert len(fake_bridge.typing_calls) == 0
         assert len(fake_bridge.status_calls) == 0

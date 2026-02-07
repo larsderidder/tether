@@ -35,7 +35,7 @@ class BridgeSubscriber:
             platform=platform,
         )
 
-    def unsubscribe(self, session_id: str, *, platform: str | None = None) -> None:
+    async def unsubscribe(self, session_id: str, *, platform: str | None = None) -> None:
         """Stop consuming events for a session and clean up bridge state."""
         task = self._tasks.pop(session_id, None)
         if task:
@@ -46,7 +46,7 @@ class BridgeSubscriber:
         if platform:
             bridge = bridge_manager.get_bridge(platform)
             if bridge:
-                bridge.on_session_removed(session_id)
+                await bridge.on_session_removed(session_id)
 
     async def _consume(self, session_id: str, platform: str) -> None:
         """Background task that reads from a store subscriber and routes events."""
@@ -89,13 +89,56 @@ class BridgeSubscriber:
 
                     elif event_type == "permission_request":
                         tool_input = data.get("tool_input", {})
-                        description = json.dumps(tool_input) if isinstance(tool_input, dict) else str(tool_input)
-                        request = ApprovalRequest(
-                            request_id=data.get("request_id", ""),
-                            title=data.get("tool_name", "Permission request"),
-                            description=description,
-                            options=["Allow", "Deny"],
-                        )
+                        tool_name = data.get("tool_name", "Permission request")
+
+                        # Special-case multi-choice questions coming through as a "tool".
+                        # Codex emits these as AskUserQuestion with a structured schema.
+                        if (
+                            isinstance(tool_input, dict)
+                            and str(tool_name).startswith("AskUserQuestion")
+                            and isinstance(tool_input.get("questions"), list)
+                            and tool_input["questions"]
+                            and isinstance(tool_input["questions"][0], dict)
+                        ):
+                            q = tool_input["questions"][0]
+                            header = str(q.get("header") or "Question")
+                            question = str(q.get("question") or "")
+                            options = q.get("options") or []
+                            labels: list[str] = []
+                            lines: list[str] = [question.strip()] if question else []
+                            for i, opt in enumerate(options, start=1):
+                                if not isinstance(opt, dict):
+                                    continue
+                                label = str(opt.get("label") or "").strip()
+                                desc = str(opt.get("description") or "").strip()
+                                if not label:
+                                    continue
+                                labels.append(label)
+                                if desc:
+                                    lines.append(f"{i}. {label} - {desc}")
+                                else:
+                                    lines.append(f"{i}. {label}")
+
+                            request = ApprovalRequest(
+                                kind="choice",
+                                request_id=data.get("request_id", ""),
+                                title=header,
+                                description="\n".join([l for l in lines if l]).strip(),
+                                options=labels,
+                            )
+                        else:
+                            description = (
+                                json.dumps(tool_input)
+                                if isinstance(tool_input, dict)
+                                else str(tool_input)
+                            )
+                            request = ApprovalRequest(
+                                kind="permission",
+                                request_id=data.get("request_id", ""),
+                                title=tool_name,
+                                description=description,
+                                options=["Allow", "Deny"],
+                            )
                         await bridge.on_approval_request(session_id, request)
 
                     elif event_type == "session_state":

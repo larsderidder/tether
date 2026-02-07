@@ -1,5 +1,7 @@
 """Slack bridge implementation with command handling and session threading."""
 
+from pathlib import Path
+
 import structlog
 
 from tether.bridges.base import (
@@ -9,17 +11,10 @@ from tether.bridges.base import (
     _EXTERNAL_REPLAY_LIMIT,
     _EXTERNAL_REPLAY_MAX_CHARS,
 )
+from tether.bridges.thread_state import load_mapping, save_mapping
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
-
-_STATE_EMOJI = {
-    "CREATED": "🆕",
-    "RUNNING": "🔄",
-    "AWAITING_INPUT": "📝",
-    "INTERRUPTING": "⏳",
-    "ERROR": "❌",
-}
 
 _SLACK_THREAD_NAME_MAX_LEN = 64
 
@@ -38,6 +33,17 @@ class SlackBridge(BridgeInterface):
         self._client: any = None
         self._app: any = None
         self._thread_ts: dict[str, str] = {}  # session_id -> thread_ts
+        self._thread_name_path = Path(settings.data_dir()) / "slack_threads.json"
+        self._thread_names: dict[str, str] = load_mapping(path=self._thread_name_path)
+        self._used_thread_names: set[str] = set(self._thread_names.values())
+
+    def restore_thread_mappings(self) -> None:
+        """Restore session-to-thread mappings from the store after restart."""
+        from tether.store import store
+
+        for session in store.list_sessions():
+            if session.platform == "slack" and session.platform_thread_id:
+                self._thread_ts[session.id] = session.platform_thread_id
 
     async def start(self) -> None:
         """Initialize Slack client and socket mode."""
@@ -98,18 +104,27 @@ class SlackBridge(BridgeInterface):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _pick_unique_thread_name(self, base_name: str) -> str:
+        base_name = (base_name or "Session").strip() or "Session"
+        base_name = base_name[:_SLACK_THREAD_NAME_MAX_LEN]
+        if base_name not in self._used_thread_names:
+            return base_name
+
+        for i in range(2, 100):
+            suffix = f" {i}"
+            avail = max(1, _SLACK_THREAD_NAME_MAX_LEN - len(suffix))
+            candidate = (base_name[:avail] + suffix)[:_SLACK_THREAD_NAME_MAX_LEN]
+            if candidate not in self._used_thread_names:
+                return candidate
+
+        return base_name
+
     def _make_external_thread_name(self, *, directory: str, session_id: str) -> str:
-        dir_short = (directory or "").rstrip("/").rsplit("/", 1)[-1] or "session"
-        raw_id = (session_id or "").strip()
-        raw_id = raw_id.removeprefix("sess_")
-        suffix = (raw_id[-6:] if raw_id else "") or "unknown"
-        max_dir_len = max(1, _SLACK_THREAD_NAME_MAX_LEN - (1 + len(suffix)))
-        if len(dir_short) > max_dir_len:
-            if max_dir_len <= 3:
-                dir_short = dir_short[:max_dir_len]
-            else:
-                dir_short = dir_short[: max_dir_len - 3] + "..."
-        return f"{dir_short} {suffix}"[:_SLACK_THREAD_NAME_MAX_LEN]
+        # Match Telegram's naming style: directory name, upper-cased, and ensure
+        # uniqueness by appending numbers ("Repo", "Repo 2", ...).
+        dir_short = (directory or "").rstrip("/").rsplit("/", 1)[-1] or "Session"
+        base_name = (dir_short[:1].upper() + dir_short[1:])[:_SLACK_THREAD_NAME_MAX_LEN]
+        return self._pick_unique_thread_name(base_name)
 
     async def _send_external_session_replay(
         self, *, thread_ts: str, external_id: str, runner_type: str
@@ -273,21 +288,6 @@ class SlackBridge(BridgeInterface):
         )
         await self._reply(event, text)
 
-    @staticmethod
-    def _agent_to_adapter(raw: str) -> str | None:
-        key = (raw or "").strip().lower()
-        if not key:
-            return None
-        aliases = {
-            "claude": "claude_auto",
-            "codex": "codex_sdk_sidecar",
-        }
-        if key in aliases:
-            return aliases[key]
-        if key in {"claude_auto", "claude_local", "claude_api", "codex_sdk_sidecar"}:
-            return key
-        return None
-
     async def _cmd_new(self, event: dict, args: str) -> None:
         """Create a new session and Slack thread.
 
@@ -362,9 +362,9 @@ class SlackBridge(BridgeInterface):
             await self._reply(event, f"Invalid directory: {e}")
             return
 
-        dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "session"
+        dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
         agent_label = adapter or "default"
-        session_name = f"{dir_short} ({agent_label})"[:_SLACK_THREAD_NAME_MAX_LEN]
+        session_name = self._make_external_thread_name(directory=directory, session_id="")
 
         try:
             await self._create_session_via_api(
@@ -405,7 +405,7 @@ class SlackBridge(BridgeInterface):
 
         lines = ["Sessions:\n"]
         for s in sessions:
-            emoji = _STATE_EMOJI.get(s.get("state", ""), "❓")
+            emoji = self._STATE_EMOJI.get(s.get("state", ""), "❓")
             name = s.get("name") or s.get("id", "")[:12]
             lines.append(f"  {emoji} {name}")
         await self._reply(event, "\n".join(lines))
@@ -603,6 +603,17 @@ class SlackBridge(BridgeInterface):
         # Check if this is an approval response (allow/deny) for a pending permission
         pending = self.get_pending_permission(session_id)
         if pending:
+            # Choice requests: allow "1"/"2"/... or exact label; send as normal input.
+            if pending.kind == "choice":
+                selected = self.parse_choice_text(session_id, text)
+                if selected:
+                    await self._send_input_or_start_via_api(
+                        session_id=session_id, text=selected
+                    )
+                    self.clear_pending_permission(session_id)
+                    await self._reply(event, f"✅ Selected: {selected}")
+                    return
+
             parsed = self.parse_approval_text(text)
             if parsed is not None:
                 await self._handle_approval_text(event, session_id, pending, parsed)
@@ -618,7 +629,11 @@ class SlackBridge(BridgeInterface):
         except httpx.HTTPStatusError as e:
             try:
                 data = e.response.json()
-                msg = (data.get("error") or {}).get("message") or e.response.text
+                err = data.get("error") or {}
+                code = err.get("code")
+                msg = err.get("message") or e.response.text
+                if code == "RUNNER_UNAVAILABLE":
+                    msg = "Runner backend is not reachable. Start `codex-sdk-sidecar` and try again."
             except Exception:
                 msg = e.response.text
             await self._reply(event, f"Failed to send input: {msg}")
@@ -695,17 +710,46 @@ class SlackBridge(BridgeInterface):
         if not self._client:
             return
 
-        # Auto-approve if timer is active
-        reason = self.check_auto_approve(session_id, request.title)
+        # Choice requests: send options and let user reply with "1"/"2"/... or the label.
+        if request.kind == "choice":
+            thread_ts = self._thread_ts.get(session_id)
+            if not thread_ts:
+                return
+            self.set_pending_permission(session_id, request)
+            options = "\n".join([f"{i}. {o}" for i, o in enumerate(request.options, start=1)])
+            text = (
+                f"*⚠️ {request.title}*\n\n{request.description}\n\n{options}\n\n"
+                "Reply with a number (e.g. `1`) or an exact option label."
+            )
+            try:
+                await self._client.chat_postMessage(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    text=text,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send Slack choice request", session_id=session_id
+                )
+            return
+
+        # Auto-approve only applies to real permission prompts, not plans/tasks.
+        title_norm = request.title.strip().lower()
+        reason: str | None = None
+        if request.kind == "permission" and not title_norm.startswith("task"):
+            reason = self.check_auto_approve(session_id, request.title)
         if reason:
             await self._auto_approve(session_id, request, reason=reason)
             thread_ts = self._thread_ts.get(session_id)
             if thread_ts:
                 try:
+                    detail = self.format_tool_input_markdown(
+                        request.description, truncate=200, truncate_code=600, max_chars=1200
+                    )
                     await self._client.chat_postMessage(
                         channel=self._channel_id,
                         thread_ts=thread_ts,
-                        text=f"✅ *{request.title}* — auto-approved ({reason})",
+                        text=f"✅ *{request.title}* — auto-approved ({reason})\n\n{detail}",
                     )
                 except Exception:
                     pass
@@ -717,9 +761,10 @@ class SlackBridge(BridgeInterface):
 
         self.set_pending_permission(session_id, request)
 
+        formatted = self.format_tool_input_markdown(request.description)
         text = (
-            f"*⚠️ Approval Required*\n\n*{request.title}*\n\n{request.description}\n\n"
-            "Reply with `allow`, `deny`, `deny: <reason>`, `allow all`, or `allow {tool}`."
+            f"*⚠️ Approval Required*\n\n*{request.title}*\n\n{formatted}\n\n"
+            "Reply with `allow`/`proceed`, `deny`/`cancel`, `deny: <reason>`, `allow all`, or `allow {tool}`."
         )
         try:
             await self._client.chat_postMessage(
@@ -737,6 +782,9 @@ class SlackBridge(BridgeInterface):
     ) -> None:
         """Send status change to Slack thread."""
         if not self._client:
+            return
+
+        if status == "error" and not self._should_send_error_status(session_id):
             return
 
         thread_ts = self._thread_ts.get(session_id)
@@ -767,6 +815,11 @@ class SlackBridge(BridgeInterface):
             raise RuntimeError("Slack client not initialized")
 
         try:
+            # Reserve name for uniqueness within this bridge instance and across restarts.
+            self._thread_names[session_id] = session_name
+            self._used_thread_names.add(session_name)
+            save_mapping(path=self._thread_name_path, mapping=self._thread_names)
+
             response = await self._client.chat_postMessage(
                 channel=self._channel_id,
                 text=f"*New Session:* {session_name}",
@@ -793,4 +846,16 @@ class SlackBridge(BridgeInterface):
 
         except Exception as e:
             logger.exception("Failed to create Slack thread", session_id=session_id)
+            # Best-effort rollback if thread creation failed.
+            if self._thread_names.get(session_id) == session_name:
+                self._thread_names.pop(session_id, None)
+                self._used_thread_names.discard(session_name)
+                save_mapping(path=self._thread_name_path, mapping=self._thread_names)
             raise RuntimeError(f"Failed to create Slack thread: {e}")
+
+    async def on_session_removed(self, session_id: str) -> None:
+        name = self._thread_names.pop(session_id, None)
+        if name:
+            self._used_thread_names.discard(name)
+            save_mapping(path=self._thread_name_path, mapping=self._thread_names)
+        await super().on_session_removed(session_id)

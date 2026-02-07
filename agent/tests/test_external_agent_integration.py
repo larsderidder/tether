@@ -358,7 +358,7 @@ class TestBridgeSubscriberResilience:
             assert len(bridge.status_calls) >= 1
             assert bridge.status_calls[0]["status"] == "error"
         finally:
-            subscriber.unsubscribe(session.id)
+            await subscriber.unsubscribe(session.id)
             tether.bridges.subscriber.bridge_manager = original_manager
 
     @pytest.mark.anyio
@@ -402,7 +402,7 @@ class TestBridgeSubscriberResilience:
             assert "Allow" in req.options
             assert "Deny" in req.options
         finally:
-            subscriber.unsubscribe(session.id)
+            await subscriber.unsubscribe(session.id)
             tether.bridges.subscriber.bridge_manager = original_manager
 
     @pytest.mark.anyio
@@ -449,7 +449,7 @@ class TestBridgeSubscriberResilience:
             assert "new output" in texts
             assert "old history" not in texts
         finally:
-            subscriber.unsubscribe(session.id)
+            await subscriber.unsubscribe(session.id)
             tether.bridges.subscriber.bridge_manager = original_manager
 
 

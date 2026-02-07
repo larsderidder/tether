@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+import json
+import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
+from typing import Literal
 
 from tether.settings import settings
 
@@ -25,6 +28,7 @@ _ALLOW_ALL_DURATION_S = 30 * 60  # 30 minutes
 class ApprovalRequest(BaseModel):
     """An approval request from an agent to a human."""
 
+    kind: Literal["permission", "choice"] = "permission"
     request_id: str
     title: str
     description: str
@@ -70,6 +74,8 @@ class BridgeInterface(ABC):
         self._allow_tool_until: dict[str, dict[str, float]] = {}
         # Pending permission requests: session_id → request
         self._pending_permissions: dict[str, ApprovalRequest] = {}
+        # Debounce error notifications: session_id -> last_sent_timestamp
+        self._last_error_status_sent_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # API helpers (shared across all bridges)
@@ -86,6 +92,128 @@ class BridgeInterface(ABC):
     def _api_url(self, path: str) -> str:
         """Build a localhost API URL."""
         return f"http://localhost:{settings.port()}/api{path}"
+
+    # ------------------------------------------------------------------
+    # Formatting helpers (shared across bridges)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _humanize_key(key: str) -> str:
+        """Convert snake_case keys into a human-friendly label.
+
+        Examples:
+          output_mode -> Output mode
+          session_id  -> Session ID
+        """
+        # Keep non-snake keys as-is (e.g. "-C", "argc").
+        if not key or "_" not in key:
+            return key
+
+        acronyms = {
+            "id",
+            "url",
+            "api",
+            "sdk",
+            "http",
+            "https",
+            "cli",
+            "ui",
+            "sse",
+            "mcp",
+            "json",
+        }
+        parts = [p for p in key.strip().split("_") if p]
+        if not parts:
+            return key
+        out: list[str] = []
+        for i, p in enumerate(parts):
+            low = p.lower()
+            if low in acronyms:
+                out.append(low.upper())
+            elif i == 0:
+                out.append(low[:1].upper() + low[1:])
+            else:
+                out.append(low)
+        return " ".join(out)
+
+    @staticmethod
+    def _humanize_enum_value(value: object) -> str:
+        """Humanize enum-ish snake_case values like `files_with_matches`."""
+        s = str(value)
+        if "_" not in s:
+            return s
+        # Only touch values that look like enums to avoid mangling paths/commands.
+        if not re.fullmatch(r"[a-z0-9_]+", s):
+            return s
+        parts = [p for p in s.split("_") if p]
+        if not parts:
+            return s
+        out: list[str] = []
+        for i, p in enumerate(parts):
+            low = p.lower()
+            if low == "id":
+                out.append("ID")
+            elif i == 0:
+                out.append(low[:1].upper() + low[1:])
+            else:
+                out.append(low)
+        return " ".join(out)
+
+    def format_tool_input_markdown(
+        self,
+        raw: str,
+        *,
+        truncate: int = 400,
+        truncate_code: int = 1400,
+        max_chars: int = 2000,
+    ) -> str:
+        """Format tool_input JSON as readable markdown for Slack/Discord.
+
+        This is best-effort formatting; if parsing fails, returns the raw string.
+        """
+        try:
+            obj = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return str(raw)
+
+        if not isinstance(obj, dict):
+            return str(raw)
+
+        path_keys = {"file_path", "path", "notebook_path"}
+        code_block_keys = {"command", "old_string", "new_string", "content", "new_source"}
+
+        lines: list[str] = []
+        total = 0
+        for key, value in obj.items():
+            key_s = str(key)
+            label = self._humanize_key(key_s)
+
+            if isinstance(value, (dict, list)):
+                v = json.dumps(value, ensure_ascii=True)
+            else:
+                v = self._humanize_enum_value(value)
+
+            limit = truncate_code if key_s in code_block_keys else truncate
+            if len(v) > limit:
+                v = v[:limit] + "..."
+
+            # Prevent closing the code block early.
+            v = v.replace("```", "``\\`")
+
+            if key_s in path_keys:
+                part = f"{label}: `{v}`"
+            elif key_s in code_block_keys:
+                part = f"{label}:\n```\n{v}\n```"
+            else:
+                part = f"{label}: {v}"
+
+            if total + len(part) > max_chars and lines:
+                lines.append("...(truncated)")
+                break
+            lines.append(part)
+            total += len(part) + 1
+
+        return "\n".join(lines).strip()
 
     async def _create_session_via_api(
         self,
@@ -386,6 +514,39 @@ class BridgeInterface(ABC):
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
+    # Shared constants
+    # ------------------------------------------------------------------
+
+    _STATE_EMOJI: dict[str, str] = {
+        "CREATED": "🆕",
+        "RUNNING": "🔄",
+        "AWAITING_INPUT": "📝",
+        "INTERRUPTING": "⏳",
+        "ERROR": "❌",
+    }
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _agent_to_adapter(raw: str) -> str | None:
+        """Map a user-friendly agent name to an adapter name."""
+        key = (raw or "").strip().lower()
+        if not key:
+            return None
+        aliases = {
+            "claude": "claude_auto",
+            "codex": "codex_sdk_sidecar",
+        }
+        if key in aliases:
+            return aliases[key]
+        # Allow explicit adapter names.
+        if key in {"claude_auto", "claude_local", "claude_api", "codex_sdk_sidecar"}:
+            return key
+        return None
+
+    # ------------------------------------------------------------------
     # Optional lifecycle hooks (override as needed)
     # ------------------------------------------------------------------
 
@@ -461,6 +622,12 @@ class BridgeInterface(ABC):
         stripped = text.strip()
         lower = stripped.lower()
 
+        # Common synonyms (esp. for "Task"/plan-style prompts)
+        if lower in ("proceed", "continue", "start", "go", "ok", "okay"):
+            return {"allow": True, "reason": None, "timer": None}
+        if lower in ("cancel", "stop", "abort"):
+            return {"allow": False, "reason": None, "timer": None}
+
         # "allow all" → approve with allow-all timer
         if lower == "allow all":
             return {"allow": True, "reason": None, "timer": "all"}
@@ -497,11 +664,58 @@ class BridgeInterface(ABC):
 
         return None
 
-    def on_session_removed(self, session_id: str) -> None:
+    def parse_choice_text(self, session_id: str, text: str) -> str | None:
+        """Parse a text message as a choice selection for a pending choice request.
+
+        Supports:
+        - `1`..`N` selecting the corresponding option (1-indexed)
+        - matching an option label (case-insensitive)
+        """
+        pending = self.get_pending_permission(session_id)
+        if not pending or pending.kind != "choice":
+            return None
+
+        stripped = text.strip()
+        if not stripped:
+            return None
+
+        # Numeric selection (1-indexed)
+        if stripped.isdigit():
+            idx = int(stripped) - 1
+            if 0 <= idx < len(pending.options):
+                return pending.options[idx]
+            return None
+
+        # Label match (case-insensitive)
+        lowered = stripped.casefold()
+        for opt in pending.options:
+            if opt.casefold() == lowered:
+                return opt
+        return None
+
+    async def on_session_removed(self, session_id: str) -> None:
         """Clean up when a session is deleted."""
         self._allow_all_until.pop(session_id, None)
         self._allow_tool_until.pop(session_id, None)
         self._pending_permissions.pop(session_id, None)
+        self._last_error_status_sent_at.pop(session_id, None)
+
+    def _should_send_error_status(self, session_id: str) -> bool:
+        """Return True if an 'error' status notification should be sent now.
+
+        Used by bridges to debounce repeated error events/status changes.
+        """
+        debounce_s = max(0, int(settings.bridge_error_debounce_seconds() or 0))
+        if debounce_s == 0:
+            return True
+
+        now_ts = time.time()
+        last = self._last_error_status_sent_at.get(session_id)
+        if last is not None and (now_ts - last) < debounce_s:
+            return False
+
+        self._last_error_status_sent_at[session_id] = now_ts
+        return True
 
     # ------------------------------------------------------------------
     # Required interface methods
