@@ -20,7 +20,7 @@ except ImportError:
 class TestTelegramBridgeIntegration:
     """Test Telegram bridge implementation following BridgeInterface."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_telegram_bridge_implements_interface(self) -> None:
         """TelegramBridge implements BridgeInterface correctly."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -29,7 +29,7 @@ class TestTelegramBridgeIntegration:
         # Verify it's a subclass
         assert issubclass(TelegramBridge, BridgeInterface)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_telegram_bridge_can_be_instantiated(self) -> None:
         """TelegramBridge can be created with minimal config."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -41,7 +41,7 @@ class TestTelegramBridgeIntegration:
         )
         assert bridge is not None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_output_sends_to_telegram(self, fresh_store: SessionStore) -> None:
         """on_output sends text to Telegram topic."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -73,7 +73,7 @@ class TestTelegramBridgeIntegration:
         assert mock_bot.send_message.called
 
     @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_approval_request_creates_inline_keyboard(self, fresh_store: SessionStore) -> None:
         """on_approval_request creates Telegram inline keyboard."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -117,7 +117,7 @@ class TestTelegramBridgeIntegration:
             call_kwargs = mock_bot.send_message.call_args.kwargs
             assert "reply_markup" in call_kwargs
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_thread_creates_telegram_topic(self, fresh_store: SessionStore) -> None:
         """create_thread creates a Telegram forum topic."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -177,7 +177,7 @@ class TestTelegramStateManagement:
 class TestTelegramMessageFormatting:
     """Test Telegram markdown formatting."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_markdown_escaping(self) -> None:
         """Telegram messages escape MarkdownV2 special characters."""
         from tether.bridges.telegram.formatting import escape_markdown
@@ -193,7 +193,7 @@ class TestTelegramMessageFormatting:
         assert "\\." in escaped
         assert "\\!" in escaped
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_message_chunking(self) -> None:
         """Long messages are split at Telegram's 4096 char limit."""
         from tether.bridges.telegram.formatting import chunk_message

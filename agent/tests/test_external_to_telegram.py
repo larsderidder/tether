@@ -35,7 +35,7 @@ class MockTelegramBridge:
 class TestExternalAgentToTelegramIntegration:
     """Test that external agent events are routed to Telegram via bridge subscriber."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_session_creates_telegram_thread(self, api_client, fresh_store: SessionStore) -> None:
         """Creating a session with platform=telegram auto-creates a thread."""
         mock_bridge = MockTelegramBridge()
@@ -58,7 +58,7 @@ class TestExternalAgentToTelegramIntegration:
         assert len(mock_bridge.thread_calls) == 1
         assert mock_bridge.thread_calls[0]["session_name"] == "Test Session"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_output_routes_to_telegram_via_subscriber(self, api_client, fresh_store: SessionStore) -> None:
         """Output events pushed via /events reach the bridge via subscriber."""
         mock_bridge = MockTelegramBridge()
@@ -81,7 +81,7 @@ class TestExternalAgentToTelegramIntegration:
             f"/api/sessions/{session_id}/events",
             json={
                 "type": "output",
-                "data": {"text": "Hello from external agent!"},
+                "data": {"text": "Hello from external agent!", "is_final": True},
             },
         )
 
@@ -93,7 +93,7 @@ class TestExternalAgentToTelegramIntegration:
         texts = [c["text"] for c in mock_bridge.output_calls]
         assert "Hello from external agent!" in texts
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_status_routes_to_telegram_via_subscriber(self, api_client, fresh_store: SessionStore) -> None:
         """Status changes reach the bridge via subscriber."""
         mock_bridge = MockTelegramBridge()

@@ -2,9 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from tether.api.errors import raise_http_error
 from tether.models import Session, SessionState
 from tether.store import store
+
+# Per-session asyncio locks to serialize state-mutating operations
+# (start, input, interrupt) and prevent concurrent handler execution.
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+def session_lock(session_id: str) -> asyncio.Lock:
+    """Get or create an asyncio.Lock for a session.
+
+    Used to prevent concurrent start/input/interrupt handlers from
+    racing across await points on the same session.
+    """
+    lock = _session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[session_id] = lock
+    return lock
+
+
+def remove_session_lock(session_id: str) -> None:
+    """Clean up the lock when a session is deleted."""
+    _session_locks.pop(session_id, None)
 
 _VALID_TRANSITIONS = {
     SessionState.CREATED: {SessionState.RUNNING},

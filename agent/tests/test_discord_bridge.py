@@ -27,7 +27,7 @@ class TestDiscordBridgePoC:
         )
         assert bridge is not None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_output_sends_to_discord_thread(self, fresh_store: SessionStore) -> None:
         """on_output sends text to Discord thread."""
         from tether.bridges.discord.bot import DiscordBridge
@@ -56,7 +56,7 @@ class TestDiscordBridgePoC:
         # Verify message was sent to Discord thread
         assert mock_thread.send.called
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_thread_creates_discord_thread(self, fresh_store: SessionStore) -> None:
         """create_thread creates a Discord thread."""
         from tether.bridges.discord.bot import DiscordBridge
@@ -85,7 +85,7 @@ class TestDiscordBridgePoC:
         assert result["thread_id"] == "9876543210"
         assert result["platform"] == "discord"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_status_change_sends_to_discord(self, fresh_store: SessionStore) -> None:
         """on_status_change sends status to Discord thread."""
         from tether.bridges.discord.bot import DiscordBridge
@@ -113,7 +113,7 @@ class TestDiscordBridgePoC:
         # Verify status was sent
         assert mock_thread.send.called
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_approval_request_not_implemented_in_poc(self, fresh_store: SessionStore) -> None:
         """Approval requests not implemented in Discord PoC."""
         from tether.bridges.discord.bot import DiscordBridge

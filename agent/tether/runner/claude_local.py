@@ -50,6 +50,8 @@ class ClaudeLocalRunner:
         self._tasks: dict[str, asyncio.Task] = {}
         # Store permission mode per session for follow-up inputs
         self._permission_modes: dict[str, str] = {}
+        # Queue follow-up inputs while a query is running
+        self._pending_inputs: dict[str, list[str]] = {}
 
     async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
         """Start a Claude conversation session.
@@ -124,15 +126,20 @@ class ClaudeLocalRunner:
         existing_task = self._tasks.get(session_id)
         if existing_task and not existing_task.done():
             logger.warning(
-                "send_input called while query still running",
+                "send_input called while query still running; queueing input",
                 session_id=session_id,
             )
+            self._pending_inputs.setdefault(session_id, []).append(text)
             return
 
         store.clear_stop_requested(session_id)
 
-        # Use stored permission mode from start(), fallback to bypassPermissions
-        permission_mode = self._permission_modes.get(session_id, "bypassPermissions")
+        # Use cached permission mode from start(), falling back to the
+        # persisted approval_mode on the session (survives agent restarts).
+        permission_mode = self._permission_modes.get(session_id)
+        if not permission_mode:
+            approval_mode = session.approval_mode if session else None
+            permission_mode = self._map_permission_mode(approval_mode or 0)
 
         # Start new query with resume
         task = asyncio.create_task(
@@ -412,6 +419,11 @@ class ClaudeLocalRunner:
 
                     logger.info("Received message", session_id=session_id, message_type=type(message).__name__)
                     await self._handle_message(session_id, message)
+
+                    # ResultMessage indicates completion; allow stdin to close
+                    if isinstance(message, ResultMessage):
+                        query_done.set()
+                        break
             finally:
                 # Signal the generator to finish so it can be garbage collected
                 query_done.set()
@@ -431,6 +443,28 @@ class ClaudeLocalRunner:
             # Emit final heartbeat
             elapsed = time.monotonic() - start_time
             await self._events.on_heartbeat(session_id, elapsed, done=True)
+
+            # If inputs are queued, start the next query immediately
+            pending = self._pending_inputs.get(session_id)
+            if pending and not store.is_stop_requested(session_id):
+                next_input = pending.pop(0)
+                if not pending:
+                    self._pending_inputs.pop(session_id, None)
+
+                # Reuse the permission_mode from this query's scope — it was
+                # already resolved at the top of _run_query's caller.
+
+                task = asyncio.create_task(
+                    self._run_query(
+                        session_id,
+                        next_input,
+                        cwd,
+                        permission_mode=permission_mode,
+                        resume=self._sdk_sessions.get(session_id),
+                    )
+                )
+                self._tasks[session_id] = task
+                return
 
             # Signal completion
             if store.is_stop_requested(session_id):
@@ -462,16 +496,21 @@ class ClaudeLocalRunner:
             # Store SDK session ID for resume
             sdk_session_id = data.get("session_id")
 
-            # Check if we expected a specific session (from attach flow)
+            # Check if we expected a specific session (from attach or prior run)
             expected_session_id = self._sdk_sessions.get(session_id)
             if expected_session_id and sdk_session_id:
                 if expected_session_id != sdk_session_id:
+                    # SDK created a new session instead of resuming the bound one.
+                    # The original session is likely gone — accept the new one
+                    # and update our binding so we stay consistent going forward.
                     logger.warning(
-                        "SDK returned different session ID than expected",
+                        "SDK returned different session ID than expected — "
+                        "rebinding to new session",
                         session_id=session_id,
                         expected=expected_session_id,
                         actual=sdk_session_id,
                     )
+                    store.clear_runner_session_id(session_id)
                 else:
                     logger.info(
                         "SDK resumed expected session",

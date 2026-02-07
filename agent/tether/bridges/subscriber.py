@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import structlog
 
@@ -67,34 +68,39 @@ class BridgeSubscriber:
 
                 try:
                     if event_type == "output":
-                        text = data.get("text", "")
-                        if text:
-                            await bridge.on_output(session_id, text)
+                        # Only forward the final assistant message of a turn.
+                        # Intermediate steps (thinking, tool calls) have
+                        # final=False / kind="step" and are skipped.
+                        if data.get("final"):
+                            text = data.get("text", "")
+                            if text:
+                                await bridge.on_output(session_id, text)
 
                     elif event_type == "output_final":
-                        text = data.get("text", "")
-                        if text:
-                            await bridge.on_output(session_id, text)
+                        # Accumulated blob — skip, we use the per-step
+                        # final output above instead.
+                        pass
 
                     elif event_type == "permission_request":
+                        tool_input = data.get("tool_input", {})
+                        description = json.dumps(tool_input) if isinstance(tool_input, dict) else str(tool_input)
                         request = ApprovalRequest(
                             request_id=data.get("request_id", ""),
                             title=data.get("tool_name", "Permission request"),
-                            description=str(data.get("tool_input", {})),
+                            description=description,
                             options=["Allow", "Deny"],
                         )
                         await bridge.on_approval_request(session_id, request)
 
                     elif event_type == "session_state":
                         state = data.get("state", "")
-                        state_map = {
-                            "RUNNING": "executing",
-                            "AWAITING_INPUT": "done",
-                            "ERROR": "error",
-                        }
-                        status = state_map.get(state)
-                        if status:
-                            await bridge.on_status_change(session_id, status)
+                        if state == "RUNNING":
+                            # Show typing indicator instead of a message
+                            if hasattr(bridge, "on_typing"):
+                                await bridge.on_typing(session_id)
+                        elif state == "ERROR":
+                            await bridge.on_status_change(session_id, "error")
+                        # AWAITING_INPUT ("done") — no message needed
 
                     elif event_type == "error":
                         msg = data.get("message", "Unknown error")

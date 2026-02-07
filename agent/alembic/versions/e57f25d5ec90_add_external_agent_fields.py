@@ -34,13 +34,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    # Remove external agent metadata fields
-    op.drop_column('sessions', 'external_agent_id')
-    op.drop_column('sessions', 'external_agent_name')
-    op.drop_column('sessions', 'external_agent_type')
-    op.drop_column('sessions', 'external_agent_icon')
-    op.drop_column('sessions', 'external_agent_workspace')
-
-    # Remove platform binding fields
-    op.drop_column('sessions', 'platform')
-    op.drop_column('sessions', 'platform_thread_id')
+    with op.batch_alter_table('sessions') as batch_op:
+        batch_op.drop_column('external_agent_id')
+        batch_op.drop_column('external_agent_name')
+        batch_op.drop_column('external_agent_type')
+        batch_op.drop_column('external_agent_icon')
+        batch_op.drop_column('external_agent_workspace')
+        batch_op.drop_column('platform')
+        batch_op.drop_column('platform_thread_id')

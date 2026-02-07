@@ -27,7 +27,7 @@ class TestSlackBridgePoC:
         )
         assert bridge is not None
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_output_sends_to_slack_thread(self, fresh_store: SessionStore) -> None:
         """on_output sends text to Slack thread."""
         from tether.bridges.slack.bot import SlackBridge
@@ -54,7 +54,7 @@ class TestSlackBridgePoC:
         # Verify message was sent to Slack thread
         assert mock_client.chat_postMessage.called
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_thread_creates_slack_thread(self, fresh_store: SessionStore) -> None:
         """create_thread creates a Slack thread."""
         from tether.bridges.slack.bot import SlackBridge
@@ -80,7 +80,7 @@ class TestSlackBridgePoC:
         assert result["thread_id"] == "1234567890.123456"
         assert result["platform"] == "slack"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_status_change_sends_to_slack(self, fresh_store: SessionStore) -> None:
         """on_status_change sends status to Slack thread."""
         from tether.bridges.slack.bot import SlackBridge
@@ -106,7 +106,7 @@ class TestSlackBridgePoC:
         # Verify status was sent
         assert mock_client.chat_postMessage.called
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_on_approval_request_not_implemented_in_poc(self, fresh_store: SessionStore) -> None:
         """Approval requests not implemented in Slack PoC."""
         from tether.bridges.slack.bot import SlackBridge

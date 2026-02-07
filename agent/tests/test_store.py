@@ -1,5 +1,8 @@
 """Unit tests for SessionStore operations."""
 
+import os
+import sqlite3
+
 import pytest
 
 from tether.models import SessionState
@@ -155,3 +158,69 @@ class TestEventSequence:
 
         assert seq_s1 == 3
         assert seq_s2 == 1
+
+
+class TestMigrationEnforcement:
+    """Test that init_db runs migrations to update existing schemas."""
+
+    def test_migration_adds_missing_columns(self, tmp_path, monkeypatch) -> None:
+        """An old DB missing columns gets them added via migration."""
+        data_dir = str(tmp_path / "data")
+        os.makedirs(data_dir, exist_ok=True)
+        db_path = os.path.join(data_dir, "sessions.db")
+
+        # Create a minimal DB with only the initial schema columns
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE sessions (
+                id VARCHAR PRIMARY KEY,
+                repo_id VARCHAR NOT NULL,
+                repo_display VARCHAR NOT NULL,
+                repo_ref_type VARCHAR NOT NULL,
+                repo_ref_value VARCHAR NOT NULL,
+                state VARCHAR NOT NULL,
+                name VARCHAR,
+                created_at VARCHAR NOT NULL,
+                started_at VARCHAR,
+                ended_at VARCHAR,
+                last_activity_at VARCHAR NOT NULL,
+                exit_code INTEGER,
+                summary VARCHAR,
+                runner_header VARCHAR,
+                runner_type VARCHAR,
+                runner_session_id VARCHAR UNIQUE,
+                directory VARCHAR,
+                directory_has_git BOOLEAN NOT NULL DEFAULT 0,
+                workdir_managed BOOLEAN NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE messages (
+                id VARCHAR PRIMARY KEY,
+                session_id VARCHAR NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                role VARCHAR NOT NULL,
+                content VARCHAR,
+                created_at VARCHAR NOT NULL,
+                seq INTEGER NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", data_dir)
+
+        from tether.db import reset_engine, init_db
+        reset_engine()
+        init_db()
+
+        # Verify the new columns exist
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        conn.close()
+
+        # These columns were added by later migrations
+        assert "adapter" in columns, "adapter column missing after migration"
+        assert "approval_mode" in columns, "approval_mode column missing after migration"
+        assert "platform" in columns, "platform column missing after migration"
+        assert "external_agent_name" in columns, "external_agent_name column missing after migration"

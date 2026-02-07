@@ -61,7 +61,7 @@ Add Tether as an MCP server in your Claude Desktop config:
   "mcpServers": {
     "tether": {
       "command": "python",
-      "args": ["-m", "tether.mcp.server"],
+      "args": ["-m", "tether.mcp_server.server"],
       "env": {
         "TETHER_API_URL": "http://localhost:8787"
       }

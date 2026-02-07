@@ -96,7 +96,7 @@ class TestBridgeManager:
         manager.register_bridge("mock", bridge)
         assert "mock" in manager.list_bridges()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_route_output_to_bridge(self) -> None:
         """Output events route to registered bridge."""
         manager = BridgeManager()
@@ -109,7 +109,7 @@ class TestBridgeManager:
         assert bridge.output_calls[0]["session_id"] == "sess_123"
         assert bridge.output_calls[0]["text"] == "Hello world"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_route_approval_to_bridge(self) -> None:
         """Approval requests route to registered bridge."""
         manager = BridgeManager()
@@ -129,7 +129,7 @@ class TestBridgeManager:
         assert len(bridge.approval_calls) == 1
         assert bridge.approval_calls[0]["session_id"] == "sess_123"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_thread_on_session_create(self) -> None:
         """Thread creation delegates to bridge."""
         manager = BridgeManager()
@@ -145,7 +145,7 @@ class TestBridgeManager:
 class TestApprovalFlow:
     """Test approval request and response flow."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_approval_request_creates_pending_approval(self, fresh_store: SessionStore) -> None:
         """Creating an approval request stores it as pending."""
         session = fresh_store.create_session("repo_test", "main")
@@ -164,7 +164,7 @@ class TestApprovalFlow:
         assert pending.request_id == "req_1"
         assert not pending.future.done()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_approval_response_resolves_future(self, fresh_store: SessionStore) -> None:
         """Responding to an approval resolves the future."""
         session = fresh_store.create_session("repo_test", "main")
@@ -186,7 +186,7 @@ class TestApprovalFlow:
         assert future.done()
         assert await future == result
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_approval_first_response_wins(self, fresh_store: SessionStore) -> None:
         """Only the first response to an approval is accepted."""
         session = fresh_store.create_session("repo_test", "main")
@@ -211,7 +211,7 @@ class TestApprovalFlow:
         assert success is False
         assert await future == result1
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_approval_timeout_auto_deny(self, fresh_store: SessionStore) -> None:
         """Approval times out and auto-denies if no response."""
         session = fresh_store.create_session("repo_test", "main")
@@ -236,7 +236,7 @@ class TestApprovalFlow:
 class TestEventReplay:
     """Test event replay after disconnect."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_read_event_log_since_seq(self, fresh_store: SessionStore) -> None:
         """Event log can be read with sequence filtering."""
         session = fresh_store.create_session("repo_test", "main")
@@ -303,7 +303,7 @@ class TestExternalAgentSession:
 class TestRESTEndpoints:
     """Test converged REST API endpoints for external agents."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_health_check(self, api_client) -> None:
         """Health endpoint returns OK."""
         response = await api_client.get("/api/health")
@@ -311,7 +311,7 @@ class TestRESTEndpoints:
         data = response.json()
         assert data["ok"] is True
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_session_with_agent_name(self, api_client, fresh_store: SessionStore) -> None:
         """Can create a session with external agent fields via POST /api/sessions."""
         from tether.bridges.manager import bridge_manager
@@ -343,7 +343,7 @@ class TestRESTEndpoints:
         assert session.platform == "mock"
         assert session.repo_id == "external"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_push_output_event(self, api_client, fresh_store: SessionStore) -> None:
         """Can push output events via POST /api/sessions/{id}/events."""
         session = fresh_store.create_session("external", None)
@@ -363,7 +363,7 @@ class TestRESTEndpoints:
         updated = fresh_store.get_session(session.id)
         assert updated.state == SessionState.RUNNING
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_push_status_event(self, api_client, fresh_store: SessionStore) -> None:
         """Can push status events to transition session state."""
         session = fresh_store.create_session("external", None)
@@ -384,7 +384,7 @@ class TestRESTEndpoints:
         updated = fresh_store.get_session(session.id)
         assert updated.state == SessionState.AWAITING_INPUT
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_push_permission_request(self, api_client, fresh_store: SessionStore) -> None:
         """Can push permission_request events and poll for resolution."""
         session = fresh_store.create_session("external", None)
@@ -408,7 +408,7 @@ class TestRESTEndpoints:
         assert len(pending) == 1
         assert pending[0].request_id == "perm_1"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_poll_events(self, api_client, fresh_store: SessionStore) -> None:
         """Can poll for events via GET /api/sessions/{id}/events/poll."""
         session = fresh_store.create_session("external", None)
