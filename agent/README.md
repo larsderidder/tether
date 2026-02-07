@@ -245,8 +245,8 @@ alembic upgrade head
 
 ## Documentation
 
-For full documentation, see [github.com/XIThing/tether](https://github.com/XIThing/tether).
+For full documentation, see [github.com/larsderidder/tether](https://github.com/larsderidder/tether).
 
 ## License
 
-Apache 2.0. See [LICENSE](https://github.com/XIThing/tether/blob/main/LICENSE) for details.
+Apache 2.0. See [LICENSE](https://github.com/larsderidder/tether/blob/main/LICENSE) for details.

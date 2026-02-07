@@ -74,10 +74,10 @@ mcp = [
 
 [project.urls]
 Homepage = "https://gettether.dev"
-Documentation = "https://github.com/XIThing/tether#readme"
-Repository = "https://github.com/XIThing/tether"
-Issues = "https://github.com/XIThing/tether/issues"
-Changelog = "https://github.com/XIThing/tether/releases"
+Documentation = "https://github.com/larsderidder/tether#readme"
+Repository = "https://github.com/larsderidder/tether"
+Issues = "https://github.com/larsderidder/tether/issues"
+Changelog = "https://github.com/larsderidder/tether/releases"
 
 [project.scripts]
 tether-agent = "tether.main:run"

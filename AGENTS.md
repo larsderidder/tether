@@ -35,7 +35,7 @@ Key principles:
 
 ```bash
 # Clone the repository
-git clone https://github.com/XIThing/tether.git
+git clone https://github.com/larsderidder/tether.git
 cd tether
 
 # Install dependencies

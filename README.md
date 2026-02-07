@@ -1,6 +1,6 @@
 # <img src="tether_compact_logo.png" height="32"> Tether
 
-[![CI](https://github.com/XIThing/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/XIThing/tether/actions/workflows/ci.yml)
+[![CI](https://github.com/larsderidder/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/larsderidder/tether/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early_Development-orange.svg)]()
 
@@ -33,7 +33,7 @@ No port forwarding. No SSH. No web UI to expose. Just Telegram.
 ## Quick Start
 
 ```bash
-git clone https://github.com/xithing/tether.git
+git clone https://github.com/larsderidder/tether.git
 cd tether
 make install
 make start
