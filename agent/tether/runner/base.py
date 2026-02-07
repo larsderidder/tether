@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import Protocol
 
 
+class RunnerUnavailableError(RuntimeError):
+    """Raised when a configured runner backend is not reachable.
+
+    This is used to return a clean 503 error to clients instead of a 500 + stack trace.
+    """
+
+
 class RunnerEvents(Protocol):
     """Callbacks invoked by runners to report process activity and terminal state."""
 

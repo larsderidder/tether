@@ -12,6 +12,7 @@ from typing import Any, Coroutine
 import structlog
 
 from tether.runner.base import RunnerEvents
+from tether.runner.base import RunnerUnavailableError
 from tether.settings import settings
 from tether.store import store
 
@@ -276,14 +277,26 @@ class SidecarRunner:
             payload: JSON body to send.
         """
         url = urllib.parse.urlparse(self._base_url)
+        if not url.hostname:
+            raise RunnerUnavailableError(f"Invalid sidecar URL: {self._base_url}")
         conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=10)
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["X-Sidecar-Token"] = self._token
-        conn.request("POST", path, body=body, headers=headers)
-        resp = conn.getresponse()
-        data = resp.read().decode("utf-8", errors="replace")
-        conn.close()
+        try:
+            conn.request("POST", path, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read().decode("utf-8", errors="replace")
+        except (ConnectionRefusedError, socket.timeout, OSError) as exc:
+            raise RunnerUnavailableError(
+                "Agent backend is not reachable "
+                f"at {self._base_url} ({exc}). "
+                "If you're using Codex sidecar, start it with: "
+                "docker compose -f docker-compose.sidecar.yml up -d "
+                "(or run: make start-codex)."
+            ) from exc
+        finally:
+            conn.close()
         if resp.status < 200 or resp.status >= 300:
             raise RuntimeError(f"Sidecar request failed: {resp.status} {data}")

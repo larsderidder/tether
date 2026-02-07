@@ -32,13 +32,14 @@ from tether.api.schemas import (
     StartSessionRequest,
     UpdateApprovalModeRequest,
 )
-from tether.api.state import maybe_set_session_name, now, transition
+from tether.api.state import maybe_set_session_name, now, remove_session_lock, session_lock, transition
 from tether.bridges.manager import bridge_manager
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import SessionState
 from tether.runner import get_runner_type
+from tether.runner.base import RunnerUnavailableError
 from tether.store import store
 
 router = APIRouter(tags=["sessions"])
@@ -176,7 +177,18 @@ async def delete_session(session_id: str, _: None = Depends(require_token)) -> O
             raise_http_error("NOT_FOUND", "Session not found", 404)
         if session.state in (SessionState.RUNNING, SessionState.INTERRUPTING):
             raise_http_error("INVALID_STATE", "Session is active", 409)
+
+        # Clean up pending permission futures before deleting
+        store.clear_pending_permissions(session_id)
+
+        # Cancel bridge subscriber if one is running
+        if session.platform:
+            from tether.bridges.subscriber import bridge_subscriber
+
+            bridge_subscriber.unsubscribe(session_id)
+
         store.delete_session(session_id)
+        remove_session_lock(session_id)
         logger.info("Session deleted")
         return OkResponse()
 
@@ -189,77 +201,91 @@ async def start_session(
 ) -> SessionResponse:
     """Start a session and launch the configured runner."""
     with _session_logging_context(session_id):
-        session = store.get_session(session_id)
-        if not session:
-            raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state not in (SessionState.CREATED, SessionState.AWAITING_INPUT, SessionState.ERROR):
-            raise_http_error("INVALID_STATE", "Session not ready to start", 409)
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+            if session.state not in (SessionState.CREATED, SessionState.AWAITING_INPUT, SessionState.ERROR):
+                raise_http_error("INVALID_STATE", "Session not ready to start", 409)
 
-        # Validate inputs BEFORE state transition
-        if not session.directory:
-            raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
-        prompt = payload.prompt
-        approval_choice = payload.approval_choice
+            # Validate inputs BEFORE state transition
+            if not session.directory:
+                raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
+            prompt = payload.prompt
+            approval_choice = payload.approval_choice
 
-        # Clear stale state from previous runs
-        # NOTE: Do NOT clear runner_session_id here - it may contain an attached
-        # external session ID that we need to preserve for resume
-        if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
-            session.ended_at = None
-            session.exit_code = None
-            session.summary = None
-            if hasattr(session, "runner_header"):
-                session.runner_header = None
-            store.clear_process(session_id)
-            store.clear_pending_inputs(session_id)
-            store.clear_last_output(session_id)
+            # Persist approval mode so the runner can recover it after restart
+            session.approval_mode = approval_choice
+            store.update_session(session)
 
-        logger.info("Session start requested")
+            # Clear stale state from previous runs
+            # NOTE: Do NOT clear runner_session_id here - it may contain an attached
+            # external session ID that we need to preserve for resume
+            if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
+                session.ended_at = None
+                session.exit_code = None
+                session.summary = None
+                if hasattr(session, "runner_header"):
+                    session.runner_header = None
+                store.clear_process(session_id)
+                store.clear_pending_inputs(session_id)
+                store.clear_last_output(session_id)
 
-        # Warn if the attached external session is currently busy in another CLI
-        external_session_id = store.get_runner_session_id(session_id)
-        if external_session_id and is_claude_session_running(external_session_id):
-            logger.warning(
-                "External session is busy at start",
-                session_id=session_id,
-                external_session_id=external_session_id,
-            )
-            await emit_warning(
-                session,
-                "EXTERNAL_SESSION_BUSY",
-                "The attached Claude session is currently running in another CLI. "
-                "Your message will be sent, but may not appear in the other CLI until it's restarted.",
-            )
+            logger.info("Session start requested")
 
-        # Get runner for this session's adapter
-        runner = get_api_runner(session.adapter)
-        session.runner_type = runner.runner_type
+            # Warn if the attached external session is currently busy in another CLI
+            external_session_id = store.get_runner_session_id(session_id)
+            if external_session_id and is_claude_session_running(external_session_id):
+                logger.warning(
+                    "External session is busy at start",
+                    session_id=session_id,
+                    external_session_id=external_session_id,
+                )
+                await emit_warning(
+                    session,
+                    "EXTERNAL_SESSION_BUSY",
+                    "The attached Claude session is currently running in another CLI. "
+                    "Your message will be sent, but may not appear in the other CLI until it's restarted.",
+                )
 
-        if not store.get_workdir(session_id):
-            store.set_workdir(session_id, session.directory, managed=False)
-        maybe_set_session_name(session, prompt)
+            # Get runner for this session's adapter
+            runner = get_api_runner(session.adapter)
+            session.runner_type = runner.runner_type
 
-        # Transition to RUNNING and attempt to start the runner
-        transition(session, SessionState.RUNNING, started_at=True)
-        await emit_state(session)
+            if not store.get_workdir(session_id):
+                store.set_workdir(session_id, session.directory, managed=False)
+            maybe_set_session_name(session, prompt)
 
-        try:
-            if prompt:
-                await emit_user_input(session, prompt)
-            await runner.start(session_id, prompt, approval_choice)
-            logger.info(
-                "Session started",
-                adapter=session.adapter or "default",
-                runner_type=session.runner_type,
-            )
-        except Exception as exc:
-            # Revert to ERROR state if runner fails to start
-            logger.exception("Runner failed to start", session_id=session_id)
-            transition(session, SessionState.ERROR, ended_at=True)
+            # Transition to RUNNING and attempt to start the runner
+            transition(session, SessionState.RUNNING, started_at=True)
             await emit_state(session)
-            raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
 
-        return SessionResponse.from_session(session, store)
+            try:
+                if prompt:
+                    await emit_user_input(session, prompt)
+                await runner.start(session_id, prompt, approval_choice)
+                logger.info(
+                    "Session started",
+                    adapter=session.adapter or "default",
+                    runner_type=session.runner_type,
+                )
+            except RunnerUnavailableError as exc:
+                logger.warning(
+                    "Runner unavailable during start",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+                raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+            except Exception as exc:
+                # Revert to ERROR state if runner fails to start
+                logger.exception("Runner failed to start", session_id=session_id)
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+                raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
+
+            return SessionResponse.from_session(session, store)
 
 
 @router.patch("/sessions/{session_id}/rename", response_model=SessionResponse)
@@ -289,73 +315,124 @@ async def send_input(
 ) -> SessionResponse:
     """Send input to a running or awaiting session."""
     with _session_logging_context(session_id):
-        text = payload.text
-        session = store.get_session(session_id)
-        if not session:
-            raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state not in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
-            raise_http_error("INVALID_STATE", "Session not running or awaiting input", 409)
-        logger.info("Session input received", text_length=len(text))
+        async with session_lock(session_id):
+            text = payload.text
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+            if session.state not in (
+                SessionState.RUNNING,
+                SessionState.AWAITING_INPUT,
+                SessionState.ERROR,
+            ):
+                raise_http_error(
+                    "INVALID_STATE",
+                    "Session not running, awaiting input, or recoverable error",
+                    409,
+                )
+            logger.info("Session input received", text_length=len(text))
 
-        # Warn if the attached external session is currently busy in another CLI
-        external_session_id = store.get_runner_session_id(session_id)
-        if external_session_id and is_claude_session_running(external_session_id):
-            logger.warning(
-                "External session is busy",
-                session_id=session_id,
-                external_session_id=external_session_id,
-            )
-            await emit_warning(
-                session,
-                "EXTERNAL_SESSION_BUSY",
-                "The attached Claude session is currently running in another CLI. "
-                "Your message will be sent, but may not appear in the other CLI until it's restarted.",
-            )
+            # Warn if the attached external session is currently busy in another CLI
+            external_session_id = store.get_runner_session_id(session_id)
+            if external_session_id and is_claude_session_running(external_session_id):
+                logger.warning(
+                    "External session is busy",
+                    session_id=session_id,
+                    external_session_id=external_session_id,
+                )
+                await emit_warning(
+                    session,
+                    "EXTERNAL_SESSION_BUSY",
+                    "The attached Claude session is currently running in another CLI. "
+                    "Your message will be sent, but may not appear in the other CLI until it's restarted.",
+                )
 
-        # Transition from AWAITING_INPUT to RUNNING when user provides input
-        if session.state == SessionState.AWAITING_INPUT:
-            transition(session, SessionState.RUNNING)
-            await emit_state(session)
-        maybe_set_session_name(session, text)
-        await emit_user_input(session, text)
-        runner = get_api_runner(session.adapter)
-        await runner.send_input(session_id, text)
-        session = store.get_session(session_id)
-        if session:
-            session.last_activity_at = now()
-            store.update_session(session)
-        logger.info("Session input forwarded")
-        return SessionResponse.from_session(session, store)
+            # Clear stale error state so the session can resume
+            if session.state == SessionState.ERROR:
+                session.ended_at = None
+                session.exit_code = None
+                session.summary = None
+                if hasattr(session, "runner_header"):
+                    session.runner_header = None
+                store.clear_process(session_id)
+                store.clear_pending_inputs(session_id)
+                store.clear_last_output(session_id)
+
+            # Transition to RUNNING when user provides input
+            if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
+                transition(session, SessionState.RUNNING)
+                await emit_state(session)
+            maybe_set_session_name(session, text)
+            await emit_user_input(session, text)
+            runner = get_api_runner(session.adapter)
+            try:
+                await runner.send_input(session_id, text)
+            except RunnerUnavailableError as exc:
+                logger.warning(
+                    "Runner unavailable during input",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+                raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+            except Exception as exc:
+                logger.exception("Runner failed while sending input", session_id=session_id)
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+                raise_http_error("RUNNER_ERROR", f"Failed to send input: {exc}", 500)
+            session = store.get_session(session_id)
+            if session:
+                session.last_activity_at = now()
+                store.update_session(session)
+            logger.info("Session input forwarded")
+            return SessionResponse.from_session(session, store)
 
 
 @router.post("/sessions/{session_id}/interrupt", response_model=SessionResponse)
 async def interrupt_session(session_id: str, _: None = Depends(require_token)) -> SessionResponse:
     """Interrupt the current turn. Session remains active and can continue with new input."""
     with _session_logging_context(session_id):
-        session = store.get_session(session_id)
-        if not session:
-            raise_http_error("NOT_FOUND", "Session not found", 404)
-        # Idempotent: already awaiting input or interrupting
-        if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING):
-            logger.info("Session interrupt requested but already idle/interrupting")
-            return SessionResponse.from_session(session, store)
-        if session.state in (SessionState.CREATED, SessionState.ERROR):
-            raise_http_error("INVALID_STATE", "Session not running", 409)
-        # Transition to INTERRUPTING
-        transition(session, SessionState.INTERRUPTING)
-        await emit_state(session)
-        logger.info("Interrupting session")
-        runner = get_api_runner(session.adapter)
-        await runner.stop(session_id)
-        session = store.get_session(session_id)
-        if not session:
-            raise_http_error("NOT_FOUND", "Session not found", 404)
-        # Transition to AWAITING_INPUT after interrupt completes
-        if session.state == SessionState.INTERRUPTING:
-            transition(session, SessionState.AWAITING_INPUT)
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+            # Idempotent: already awaiting input or interrupting
+            if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING):
+                logger.info("Session interrupt requested but already idle/interrupting")
+                return SessionResponse.from_session(session, store)
+            if session.state in (SessionState.CREATED, SessionState.ERROR):
+                raise_http_error("INVALID_STATE", "Session not running", 409)
+            # Transition to INTERRUPTING
+            transition(session, SessionState.INTERRUPTING)
             await emit_state(session)
-        logger.info("Session interrupted")
-        return SessionResponse.from_session(session, store)
+            logger.info("Interrupting session")
+            runner = get_api_runner(session.adapter)
+            try:
+                await runner.stop(session_id)
+            except RunnerUnavailableError as exc:
+                logger.warning(
+                    "Runner unavailable during interrupt",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+                raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+            except Exception as exc:
+                logger.exception("Runner failed while interrupting", session_id=session_id)
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+                raise_http_error("RUNNER_ERROR", f"Failed to interrupt session: {exc}", 500)
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+            # Transition to AWAITING_INPUT after interrupt completes
+            if session.state == SessionState.INTERRUPTING:
+                transition(session, SessionState.AWAITING_INPUT)
+                await emit_state(session)
+            logger.info("Session interrupted")
+            return SessionResponse.from_session(session, store)
 
 
 @router.get("/sessions/{session_id}/diff", response_model=DiffResponse)
@@ -461,62 +538,63 @@ async def push_agent_event(
     import uuid
 
     with _session_logging_context(session_id):
-        session = store.get_session(session_id)
-        if not session:
-            raise_http_error("NOT_FOUND", "Session not found", 404)
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
 
-        # Auto-transition CREATED -> RUNNING on first event
-        if session.state == SessionState.CREATED:
-            transition(session, SessionState.RUNNING, started_at=True)
-            await emit_state(session)
-
-        if payload.type == "output":
-            text = payload.data.get("text", "")
-            kind = payload.data.get("kind", "step")
-            is_final = payload.data.get("is_final")
-            await emit_output(session, text, kind=kind, is_final=is_final)
-
-        elif payload.type == "status":
-            status = payload.data.get("status", "")
-            status_map = {
-                "running": SessionState.RUNNING,
-                "awaiting_input": SessionState.AWAITING_INPUT,
-                "done": SessionState.AWAITING_INPUT,
-                "error": SessionState.ERROR,
-            }
-            target_state = status_map.get(status)
-            if target_state and target_state != session.state:
-                ended = target_state in (SessionState.ERROR,)
-                transition(session, target_state, allow_same=True, ended_at=ended)
+            # Auto-transition CREATED -> RUNNING on first event
+            if session.state == SessionState.CREATED:
+                transition(session, SessionState.RUNNING, started_at=True)
                 await emit_state(session)
 
-        elif payload.type == "error":
-            code = payload.data.get("code", "AGENT_ERROR")
-            message = payload.data.get("message", "Unknown error")
-            if session.state != SessionState.ERROR:
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-            await emit_error(session, code, message)
+            if payload.type == "output":
+                text = payload.data.get("text", "")
+                kind = payload.data.get("kind", "step")
+                is_final = payload.data.get("is_final")
+                await emit_output(session, text, kind=kind, is_final=is_final)
 
-        elif payload.type == "permission_request":
-            request_id = payload.data.get("request_id") or f"perm_{uuid.uuid4().hex[:8]}"
-            tool_name = payload.data.get("tool_name", "approval")
-            tool_input = payload.data.get("tool_input", payload.data)
-            future = asyncio.get_event_loop().create_future()
-            store.add_pending_permission(
-                session_id, request_id, tool_name, tool_input, future
-            )
-            await emit_permission_request(
-                session,
-                request_id=request_id,
-                tool_name=tool_name,
-                tool_input=tool_input,
-            )
+            elif payload.type == "status":
+                status = payload.data.get("status", "")
+                status_map = {
+                    "running": SessionState.RUNNING,
+                    "awaiting_input": SessionState.AWAITING_INPUT,
+                    "done": SessionState.AWAITING_INPUT,
+                    "error": SessionState.ERROR,
+                }
+                target_state = status_map.get(status)
+                if target_state and target_state != session.state:
+                    ended = target_state in (SessionState.ERROR,)
+                    transition(session, target_state, allow_same=True, ended_at=ended)
+                    await emit_state(session)
 
-        session.last_activity_at = now()
-        store.update_session(session)
-        logger.info("Agent event processed", event_type=payload.type)
-        return OkResponse()
+            elif payload.type == "error":
+                code = payload.data.get("code", "AGENT_ERROR")
+                message = payload.data.get("message", "Unknown error")
+                if session.state != SessionState.ERROR:
+                    transition(session, SessionState.ERROR, ended_at=True)
+                    await emit_state(session)
+                await emit_error(session, code, message)
+
+            elif payload.type == "permission_request":
+                request_id = payload.data.get("request_id") or f"perm_{uuid.uuid4().hex[:8]}"
+                tool_name = payload.data.get("tool_name", "approval")
+                tool_input = payload.data.get("tool_input", payload.data)
+                future = asyncio.get_event_loop().create_future()
+                store.add_pending_permission(
+                    session_id, request_id, tool_name, tool_input, future
+                )
+                await emit_permission_request(
+                    session,
+                    request_id=request_id,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                )
+
+            session.last_activity_at = now()
+            store.update_session(session)
+            logger.info("Agent event processed", event_type=payload.type)
+            return OkResponse()
 
 
 @router.get("/sessions/{session_id}/events/poll")
