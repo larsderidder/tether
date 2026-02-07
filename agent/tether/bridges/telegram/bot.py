@@ -68,6 +68,8 @@ class TelegramBridge(BridgeInterface):
         self._approval_html: dict[str, str] = {}
         # Pending "Deny with reason" state: topic_id → (session_id, request_id, username)
         self._pending_deny_reason: dict[int, tuple[str, str, str]] = {}
+        # Background typing indicator loops: session_id → asyncio.Task
+        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         """Start the Telegram bot."""
@@ -1158,6 +1160,7 @@ class TelegramBridge(BridgeInterface):
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
         """Send output text to the session's Telegram topic."""
+        self._stop_typing(session_id)
         if not self._app:
             logger.warning("Telegram app not initialized")
             return
@@ -1192,8 +1195,30 @@ class TelegramBridge(BridgeInterface):
                         topic_id=topic_id,
                     )
 
+    def _stop_typing(self, session_id: str) -> None:
+        """Cancel the background typing loop for a session."""
+        task = self._typing_tasks.pop(session_id, None)
+        if task:
+            task.cancel()
+
+    async def _typing_loop(self, session_id: str, topic_id: int) -> None:
+        """Send typing indicator every 5s until cancelled."""
+        try:
+            while True:
+                try:
+                    await self._app.bot.send_chat_action(
+                        chat_id=self._forum_group_id,
+                        message_thread_id=topic_id,
+                        action="typing",
+                    )
+                except Exception:
+                    logger.debug("Failed to send typing action", session_id=session_id)
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+
     async def on_typing(self, session_id: str) -> None:
-        """Send a typing indicator (chat action) to the session's topic."""
+        """Start a repeating typing indicator for the session."""
         if not self._app:
             return
 
@@ -1201,19 +1226,19 @@ class TelegramBridge(BridgeInterface):
         if not topic_id:
             return
 
-        try:
-            await self._app.bot.send_chat_action(
-                chat_id=self._forum_group_id,
-                message_thread_id=topic_id,
-                action="typing",
-            )
-        except Exception:
-            logger.debug("Failed to send typing action", session_id=session_id)
+        # Already running for this session
+        if session_id in self._typing_tasks:
+            return
+
+        self._typing_tasks[session_id] = asyncio.create_task(
+            self._typing_loop(session_id, topic_id)
+        )
 
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
     ) -> None:
         """Send an approval request with inline keyboard buttons."""
+        self._stop_typing(session_id)
         if not self._app:
             logger.warning("Telegram app not initialized")
             return
@@ -1304,6 +1329,7 @@ class TelegramBridge(BridgeInterface):
 
     def on_session_removed(self, session_id: str) -> None:
         """Clean up state when a session is deleted."""
+        self._stop_typing(session_id)
         super().on_session_removed(session_id)
         self._state.remove_session(session_id)
         logger.info("Cleaned up Telegram state for session", session_id=session_id)
