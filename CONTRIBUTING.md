@@ -52,7 +52,7 @@ npm test         # Run tests
 
 ```bash
 # Start sidecar in Docker
-docker compose -f docker-compose.sidecar.yml up -d
+docker compose --profile codex up -d codex-sidecar
 
 # Run agent with TETHER_AGENT_ADAPTER=codex_sdk_sidecar
 TETHER_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
@@ -66,7 +66,7 @@ make start        # Build UI and run agent
 make start-codex  # Build UI, start sidecar, run agent
 make stop         # Stop sidecar container
 make dev-ui       # Run UI dev server (hot reload)
-make dev          # Run sidecar + telegram in Docker
+make dev          # Run Codex sidecar in Docker (watch mode)
 make dev-stop     # Stop dev containers
 make test         # Run agent tests
 ```
@@ -76,4 +76,4 @@ make test         # Run agent tests
 See [background/CODE_STANDARDS.md](background/CODE_STANDARDS.md) for style guidelines.
 
 - Python: Format with Black (`cd agent && python -m black .`)
-- Commits: Single-line, lowercase start, no AI attribution
+- Commits: Single-line, sentence case, no AI attribution

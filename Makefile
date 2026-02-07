@@ -23,12 +23,12 @@ start: build-ui
 
 # Start agent + Codex sidecar (sidecar runs in Docker)
 start-codex: build-ui
-	docker compose -f docker-compose.sidecar.yml up -d
+	docker compose --profile codex up -d --build codex-sidecar
 	cd agent && TETHER_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
 
 # Stop sidecar container
 stop:
-	docker compose -f docker-compose.sidecar.yml down 2>/dev/null || true
+	docker compose stop codex-sidecar 2>/dev/null || true
 
 # =============================================================================
 # Development mode
@@ -38,7 +38,7 @@ stop:
 dev-ui:
 	cd ui && npm run dev
 
-# Run sidecar + telegram in Docker for development
+# Run Codex sidecar in Docker for development
 dev:
 	docker compose -f docker-compose.dev.yml up
 
@@ -61,13 +61,10 @@ docker-start:
 	docker compose up -d agent
 
 docker-start-codex:
-	docker compose --profile codex up -d
-
-docker-start-telegram:
-	docker compose --profile telegram up -d
+	docker compose --profile codex up -d codex-sidecar
 
 docker-stop:
-	docker compose --profile codex --profile telegram down
+	docker compose --profile codex down
 
 docker-logs:
 	docker compose logs -f
@@ -79,4 +76,4 @@ docker-build:
 	docker compose build
 
 docker-clean:
-	docker compose --profile codex --profile telegram down -v
+	docker compose --profile codex down -v

@@ -36,6 +36,7 @@ import {
   emitExit,
 } from "./session.js";
 import { ensureWorkdir } from "./workdir.js";
+import { accessSync, constants as fsConstants } from "node:fs";
 
 // =============================================================================
 // Constants
@@ -51,13 +52,33 @@ const LOG_EVENTS = process.env.TETHER_CODEX_SIDECAR_LOG_EVENTS === "1";
 // Codex Client
 // =============================================================================
 
+function resolveCodexPathOverride(): string | undefined {
+  const override = settings.codexBin();
+  if (!override) {
+    return undefined;
+  }
+
+  try {
+    // Ensure the path exists and is executable. In Docker, host paths from .env
+    // commonly leak in and should be ignored rather than hard-failing later.
+    accessSync(override, fsConstants.X_OK);
+    return override;
+  } catch (err) {
+    logger.warn(
+      { override, error: err instanceof Error ? err.message : String(err) },
+      "TETHER_CODEX_SIDECAR_CODEX_BIN is set but not executable; ignoring override",
+    );
+    return undefined;
+  }
+}
+
 /**
  * Singleton Codex SDK client instance.
  *
  * Created once at module load with optional binary path override.
  */
 export const codex = new Codex({
-  codexPathOverride: settings.codexBin(),
+  codexPathOverride: resolveCodexPathOverride(),
 });
 
 // =============================================================================
@@ -427,7 +448,24 @@ export async function runTurn(
         },
         "Turn failed",
       );
-      emitError(session, "INTERNAL_ERROR", String(err));
+
+      // Codex CLI missing/misconfigured: make this actionable.
+      if (
+        err instanceof Error &&
+        err.message.includes("spawn ") &&
+        err.message.includes("codex") &&
+        err.message.includes("ENOENT")
+      ) {
+        const override = settings.codexBin();
+        const suffix = override ? ` (TETHER_CODEX_SIDECAR_CODEX_BIN=${override})` : "";
+        emitError(
+          session,
+          "CODEX_NOT_FOUND",
+          `Could not spawn 'codex' binary${suffix}. Install Codex CLI or set TETHER_CODEX_SIDECAR_CODEX_BIN to a valid path.`,
+        );
+      } else {
+        emitError(session, "INTERNAL_ERROR", String(err));
+      }
     }
   } finally {
     // Clean up timers

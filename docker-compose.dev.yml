@@ -1,37 +1,18 @@
-# Dev mode: sidecar + telegram-bridge only
-# Agent and UI run locally on the host
-# Source directories are mounted and services auto-reload on changes
+# Dev mode: Codex sidecar only
+# Agent and UI run locally on the host. Sidecar auto-reloads on changes.
 
 services:
-  sidecar:
+  codex-sidecar:
     build:
       context: .
       dockerfile: codex-sdk-sidecar/Dockerfile
     network_mode: host
-    env_file:
-      - .env
     volumes:
       - ./codex-sdk-sidecar/src:/app/src:ro
     command: ["npx", "tsx", "watch", "src/index.ts"]
     environment:
-      - SIDECAR_HOST=127.0.0.1
-      - SIDECAR_PORT=8788
-      - SIDECAR_TOKEN=${TETHER_CODEX_SIDECAR_TOKEN:-}
+      - TETHER_CODEX_SIDECAR_HOST=127.0.0.1
+      - TETHER_CODEX_SIDECAR_PORT=8788
+      - TETHER_CODEX_SIDECAR_TOKEN=${TETHER_CODEX_SIDECAR_TOKEN:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - CODEX_MODEL=${CODEX_MODEL:-}
-
-  telegram-bridge:
-    build:
-      context: .
-      dockerfile: bridges/telegram/Dockerfile
-    network_mode: host
-    env_file:
-      - .env
-    volumes:
-      - ./bridges/telegram:/app/bridges/telegram:ro
-    command: ["watchmedo", "auto-restart", "--directory=/app/bridges/telegram/src", "--pattern=*.py", "--recursive", "--", "python", "-m", "tether.bridges.telegram.main"]
-    environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_FORUM_GROUP_ID=${TELEGRAM_FORUM_GROUP_ID}
-      - AGENT_URL=http://127.0.0.1:8787
-      - AGENT_TOKEN=${TETHER_AGENT_TOKEN:-}
+      - TETHER_CODEX_SIDECAR_MODEL=${TETHER_CODEX_SIDECAR_MODEL:-}

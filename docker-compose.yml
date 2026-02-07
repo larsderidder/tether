@@ -13,7 +13,7 @@ services:
       # For Claude API adapter
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # For Codex SDK sidecar adapter
-      - TETHER_CODEX_SIDECAR_URL=http://sidecar:8788
+      - TETHER_CODEX_SIDECAR_URL=http://codex-sidecar:8788
     volumes:
       - agent_data:/app/data
     restart: unless-stopped
@@ -23,31 +23,17 @@ services:
       timeout: 10s
       retries: 3
 
-  sidecar:
+  codex-sidecar:
     profiles: ["codex"]
     build:
       context: .
       dockerfile: codex-sdk-sidecar/Dockerfile
     environment:
-      - SIDECAR_HOST=0.0.0.0
-      - SIDECAR_PORT=8788
-      - SIDECAR_TOKEN=${TETHER_CODEX_SIDECAR_TOKEN:-}
+      - TETHER_CODEX_SIDECAR_HOST=0.0.0.0
+      - TETHER_CODEX_SIDECAR_PORT=8788
+      - TETHER_CODEX_SIDECAR_TOKEN=${TETHER_CODEX_SIDECAR_TOKEN:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - CODEX_MODEL=${CODEX_MODEL:-}
-    restart: unless-stopped
-
-  telegram-bridge:
-    profiles: ["telegram"]
-    build:
-      context: .
-      dockerfile: bridges/telegram/Dockerfile
-    environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_FORUM_GROUP_ID=${TELEGRAM_FORUM_GROUP_ID}
-      - AGENT_URL=http://agent:8787
-      - AGENT_TOKEN=${TETHER_AGENT_TOKEN:-}
-    depends_on:
-      - agent
+      - TETHER_CODEX_SIDECAR_MODEL=${TETHER_CODEX_SIDECAR_MODEL:-}
     restart: unless-stopped
 
 volumes:
