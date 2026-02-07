@@ -55,12 +55,16 @@ const LOG_EVENTS = process.env.TETHER_CODEX_SIDECAR_LOG_EVENTS === "1";
 function resolveCodexPathOverride(): string | undefined {
   const override = settings.codexBin();
   if (!override) {
-    return undefined;
+    // The upstream SDK defaults to a vendored codex binary under vendor/,
+    // but that vendor directory may not exist in this repo/vendor setup.
+    // Defaulting to `codex` uses PATH resolution and works with:
+    // - host-installed Codex CLI
+    return "codex";
   }
 
   try {
-    // Ensure the path exists and is executable. In Docker, host paths from .env
-    // commonly leak in and should be ignored rather than hard-failing later.
+    // Ensure the path exists and is executable. Misconfigured env values should
+    // be ignored rather than hard-failing later during a turn.
     accessSync(override, fsConstants.X_OK);
     return override;
   } catch (err) {
@@ -68,7 +72,7 @@ function resolveCodexPathOverride(): string | undefined {
       { override, error: err instanceof Error ? err.message : String(err) },
       "TETHER_CODEX_SIDECAR_CODEX_BIN is set but not executable; ignoring override",
     );
-    return undefined;
+    return "codex";
   }
 }
 
@@ -96,9 +100,14 @@ export const codex = new Codex({
  */
 export function buildThreadOptions(session: SessionState, approvalChoice: number): ThreadOptions {
   const options: ThreadOptions = {
-    workingDirectory: session.workdir,
     skipGitRepoCheck: true, // Agent manages git context
   };
+
+  // Only set workingDirectory when explicitly provided.
+  // When resuming an existing thread, forcing a new workdir breaks "attach" flows.
+  if (session.workdir) {
+    options.workingDirectory = session.workdir;
+  }
 
   // Apply settings from environment
   const model = settings.codexModel();
@@ -110,6 +119,10 @@ export function buildThreadOptions(session: SessionState, approvalChoice: number
   if (sandboxMode) {
     options.sandboxMode = sandboxMode as ThreadOptions["sandboxMode"];
   }
+
+  // Network access for workspace-write sandbox.
+  // Default is enabled; can be disabled via TETHER_CODEX_SIDECAR_NETWORK_ACCESS_ENABLED=0.
+  options.networkAccessEnabled = settings.networkAccessEnabled();
 
   // Map approval_choice to Codex approvalPolicy
   // Match Claude's interpretation: 2 = full auto (no approvals), 1 = partial, 0 = ask
@@ -388,11 +401,16 @@ export async function runTurn(
   }, HEARTBEAT_SECONDS * 1000);
 
   try {
-    // Ensure working directory exists
-    const workdir = await ensureWorkdir(session);
-    logger.debug({ session_id: session.id, workdir }, "Workdir resolved");
+    // Workdir behavior:
+    // - If the agent provided a workdir, use it.
+    // - If resuming an existing thread (threadId provided), do NOT create/override a workdir.
+    // - Otherwise (new thread without workdir), create a temp workdir.
+    if (!session.workdir && !threadId) {
+      const created = await ensureWorkdir(session);
+      logger.debug({ session_id: session.id, workdir: created }, "Created temp workdir");
+    }
 
-    const options = buildThreadOptions({ ...session, workdir }, approvalChoice);
+    const options = buildThreadOptions(session, approvalChoice);
     logger.debug({ session_id: session.id, options }, "Thread options built");
 
     // Create or resume thread if this is the first turn
@@ -461,7 +479,7 @@ export async function runTurn(
         emitError(
           session,
           "CODEX_NOT_FOUND",
-          `Could not spawn 'codex' binary${suffix}. Install Codex CLI or set TETHER_CODEX_SIDECAR_CODEX_BIN to a valid path.`,
+          `Could not spawn 'codex' binary${suffix}: ${err.message}. Install Codex CLI or set TETHER_CODEX_SIDECAR_CODEX_BIN to a valid path.`,
         );
       } else {
         emitError(session, "INTERNAL_ERROR", String(err));

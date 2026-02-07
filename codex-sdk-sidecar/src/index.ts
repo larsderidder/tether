@@ -22,6 +22,9 @@
 
 import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
+import path from "node:path";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { settings } from "./settings.js";
 import { logger } from "./logger.js";
 import { router } from "./routes.js";
@@ -87,6 +90,62 @@ app.use(router);
 const port = settings.port();
 const host = settings.host();
 
-app.listen(port, host, () => {
+async function validateCodexHomeWritable(): Promise<void> {
+  const codexHome = (process.env.CODEX_HOME || "").trim();
+  if (!codexHome) {
+    return;
+  }
+
+  try {
+    await mkdir(codexHome, { recursive: true });
+    const probe = path.join(codexHome, ".tether_write_probe");
+    await writeFile(probe, "ok");
+    await unlink(probe);
+  } catch (err) {
+    logger.fatal(
+      {
+        codex_home: codexHome,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "CODEX_HOME is not writable; Codex CLI cannot create sessions/logs. Fix directory permissions/ownership.",
+    );
+    process.exit(1);
+  }
+}
+
+async function warnIfNoAuthConfigured(): Promise<void> {
+  const hasApiKey =
+    !!(process.env.OPENAI_API_KEY || "").trim() || !!(process.env.CODEX_API_KEY || "").trim();
+  if (hasApiKey) {
+    return;
+  }
+
+  const codexHome = (process.env.CODEX_HOME || "").trim();
+  if (!codexHome) {
+    logger.warn(
+      "No OPENAI_API_KEY/CODEX_API_KEY and CODEX_HOME is unset; Codex CLI OAuth likely not configured",
+    );
+    return;
+  }
+
+  try {
+    await access(path.join(codexHome, "auth.json"));
+    return;
+  } catch {
+    logger.warn(
+      {
+        codex_home: codexHome,
+        expected_auth_json: path.join(codexHome, "auth.json"),
+      },
+      "No OPENAI_API_KEY/CODEX_API_KEY and no auth.json found; Codex CLI will likely fail until OAuth credentials are configured",
+    );
+  }
+}
+
+void (async () => {
+  await validateCodexHomeWritable();
+  await warnIfNoAuthConfigured();
+  app.listen(port, host, () => {
   logger.info({ url: `http://${host}:${port}` }, "Codex SDK Sidecar listening");
-});
+  });
+})();

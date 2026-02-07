@@ -195,4 +195,15 @@ export const settings = {
    */
   codexApprovalPolicy: (): string | undefined =>
     get("TETHER_CODEX_SIDECAR_APPROVAL_POLICY") || undefined,
+
+  /**
+   * Allow network access for Codex execution when sandboxMode is workspace-write.
+   *
+   * In some Codex CLI configurations, disabling this can also prevent the agent
+   * from reaching its backend.
+   *
+   * @returns True/false (default: true)
+   * @env TETHER_CODEX_SIDECAR_NETWORK_ACCESS_ENABLED
+   */
+  networkAccessEnabled: (): boolean => getBool("TETHER_CODEX_SIDECAR_NETWORK_ACCESS_ENABLED", true),
 };
