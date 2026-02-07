@@ -95,7 +95,7 @@ curl -X POST http://localhost:8787/api/agent/sessions \
 wscat -c "ws://localhost:8787/api/agent/sessions/{id}/ws?token=$TOKEN"
 ```
 
-See `background/API_REFERENCE.md` for full endpoint documentation.
+See `docs/API_REFERENCE.md` for full endpoint documentation.
 
 ## MCP Server
 
@@ -143,7 +143,7 @@ make lint       # Black formatter check
 make verify     # Health check
 ```
 
-See `AGENTS.md` for full developer docs and `background/` for architecture documentation.
+See `AGENTS.md` for full developer docs and `docs/` for architecture documentation.
 
 ## License
 

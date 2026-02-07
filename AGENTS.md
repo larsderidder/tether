@@ -29,19 +29,19 @@ Read the relevant docs below based on what you'll be working on.
 
 | Document | What it covers |
 | --- | --- |
-| `background/DATA_MODEL.md` | Session model, states, event types, runtime state |
-| `background/API_REFERENCE.md` | All REST endpoints, SSE event types, auth |
+| `docs/DATA_MODEL.md` | Session model, states, event types, runtime state |
+| `docs/API_REFERENCE.md` | All REST endpoints, SSE event types, auth |
 
 ### Read based on what you're working on
 
 | Area | Document | When to read |
 | --- | --- | --- |
-| Session engine | `background/SESSION_ENGINE.md` | Store, state machine, event pipeline, locking |
-| Bridges | `background/BRIDGES.md` | Telegram/Slack/Discord, subscriber routing, auto-approve |
-| Runners | `background/RUNNERS.md` | Runner protocol, adapters (claude_local, codex, claude_api) |
-| Web UI | `background/WEB_UI.md` | Vue 3 frontend, views, composables, dev server |
-| MCP server | `background/MCP_SERVER.md` | MCP tools, transport, config |
-| Code standards | `background/CODE_STANDARDS.md` | Formatting, typing, logging conventions |
+| Session engine | `docs/SESSION_ENGINE.md` | Store, state machine, event pipeline, locking |
+| Bridges | `docs/BRIDGES.md` | Telegram/Slack/Discord, subscriber routing, auto-approve |
+| Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_local, codex, claude_api) |
+| Web UI | `docs/WEB_UI.md` | Vue 3 frontend, views, composables, dev server |
+| MCP server | `docs/MCP_SERVER.md` | MCP tools, transport, config |
+| Code standards | `docs/CODE_STANDARDS.md` | Formatting, typing, logging conventions |
 
 ### Historical / product context (optional)
 
@@ -116,7 +116,7 @@ Refactor bridge subscriber routing
 - **Logging**: structlog with request identifiers
 - **Docstrings**: For non-trivial logic; keep concise
 
-See `background/CODE_STANDARDS.md` for full details.
+See `docs/CODE_STANDARDS.md` for full details.
 
 ---
 
