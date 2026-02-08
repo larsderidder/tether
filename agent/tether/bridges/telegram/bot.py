@@ -277,8 +277,8 @@ class TelegramBridge(BridgeInterface):
     ) -> None:
         """Send recent external session history into the Telegram topic.
 
-        Each conversation message is sent as a separate Telegram message so the
-        topic reads like a real chat rather than a single text wall.
+        Sends a single consolidated message (chunked if needed) to avoid
+        flooding the topic with many small messages.
         """
         if not self._app:
             return
@@ -307,26 +307,7 @@ class TelegramBridge(BridgeInterface):
         if not messages:
             return
 
-        # Header message
-        try:
-            header_msg = await self._app.bot.send_message(
-                chat_id=self._forum_group_id,
-                message_thread_id=topic_id,
-                text=f"📜 Replaying last {len(messages)} messages:",
-            )
-            # Telegram auto-pins the first message in a topic — undo that
-            try:
-                await self._app.bot.unpin_chat_message(
-                    chat_id=self._forum_group_id,
-                    message_id=header_msg.message_id,
-                )
-            except Exception:
-                pass  # Not critical
-        except Exception:
-            logger.exception("Failed to send replay header")
-            return
-
-        # Each conversation message as a separate Telegram message
+        blocks: list[str] = [f"📜 Replaying last {len(messages)} messages:"]
         for msg in messages:
             role = str(msg.get("role") or "").lower()
             content = strip_tool_markers((msg.get("content") or "").strip())
@@ -342,7 +323,7 @@ class TelegramBridge(BridgeInterface):
             else:
                 prefix = "💬"
 
-            parts: list[str] = []
+            parts: list[str] = [prefix]
             if thinking:
                 truncated = thinking[:400] + "..." if len(thinking) > 400 else thinking
                 parts.append(f"💭 {truncated}")
@@ -350,38 +331,55 @@ class TelegramBridge(BridgeInterface):
                 truncated = content[:800] + "..." if len(content) > 800 else content
                 parts.append(truncated)
 
-            text = prefix + " " + "\n\n".join(parts)
+            blocks.append("\n\n".join(parts))
 
-            html_text = markdown_to_telegram_html(text)
-            for part in chunk_message(html_text):
+        text = "\n\n".join(blocks)
+        html_text = markdown_to_telegram_html(text)
+
+        first_msg_id: int | None = None
+        for part in chunk_message(html_text):
+            try:
+                sent = await self._app.bot.send_message(
+                    chat_id=self._forum_group_id,
+                    message_thread_id=topic_id,
+                    text=part,
+                    parse_mode="HTML",
+                )
+                if first_msg_id is None:
+                    first_msg_id = getattr(sent, "message_id", None)
+            except Exception:
+                # Fallback to plain text if HTML fails
                 try:
-                    await self._app.bot.send_message(
+                    sent = await self._app.bot.send_message(
                         chat_id=self._forum_group_id,
                         message_thread_id=topic_id,
-                        text=part,
-                        parse_mode="HTML",
+                        text=part.replace("<pre>", "")
+                        .replace("</pre>", "")
+                        .replace("<b>", "")
+                        .replace("</b>", "")
+                        .replace("<i>", "")
+                        .replace("</i>", "")
+                        .replace("<code>", "")
+                        .replace("</code>", ""),
                     )
+                    if first_msg_id is None:
+                        first_msg_id = getattr(sent, "message_id", None)
                 except Exception:
-                    # Fallback to plain text if HTML fails
-                    try:
-                        await self._app.bot.send_message(
-                            chat_id=self._forum_group_id,
-                            message_thread_id=topic_id,
-                            text=part.replace("<pre>", "")
-                            .replace("</pre>", "")
-                            .replace("<b>", "")
-                            .replace("</b>", "")
-                            .replace("<i>", "")
-                            .replace("</i>", "")
-                            .replace("<code>", "")
-                            .replace("</code>", ""),
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to send replay message",
-                            external_id=external_id,
-                            topic_id=topic_id,
-                        )
+                    logger.exception(
+                        "Failed to send replay message",
+                        external_id=external_id,
+                        topic_id=topic_id,
+                    )
+
+        # Telegram auto-pins the first message in a topic — undo that
+        if first_msg_id:
+            try:
+                await self._app.bot.unpin_chat_message(
+                    chat_id=self._forum_group_id,
+                    message_id=first_msg_id,
+                )
+            except Exception:
+                pass  # Not critical
 
     async def _refresh_external_cache(self) -> None:
         """Refresh cached external session list from the API."""
