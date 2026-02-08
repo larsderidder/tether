@@ -10,12 +10,17 @@ Local-first control plane for supervising AI coding agents. Start agents (Claude
 
 ### If you're helping a user set up Tether
 
-Guide them through setup:
+Recommended path (installed via pipx/pip):
+1. `tether init` — interactive wizard (generates token, detects adapters, configures bridges)
+2. `tether start` — starts the server
+3. Open `http://localhost:8787` — see phone access section below
+
+From source:
 1. `make install` to install dependencies
 2. `cp .env.example .env` and configure
 3. `make start` to run (or `make start-codex` for Codex)
 4. `make verify` to check everything works
-5. Open `http://localhost:8787` — see phone access section below
+5. Open `http://localhost:8787`
 
 ### If you're developing on the codebase
 
@@ -62,6 +67,9 @@ agent/                  # Python backend
     runner/             # Execution adapters (claude_local, claude_api, codex_*)
     bridges/            # Messaging bridges (telegram, slack, discord)
     mcp/                # MCP server (tools, transport)
+    cli.py              # CLI entry point (tether start, tether init)
+    config.py           # Layered .env file loader
+    init_wizard.py      # Interactive setup wizard
     models.py           # Session + event models
     store.py            # Session store + JSONL event log
     main.py             # App entrypoint
@@ -85,6 +93,17 @@ make dev-ui             # Run UI dev server (hot reload) - run agent separately
 make test               # Run pytest
 make verify             # Health check agent + UI
 ```
+
+### CLI (installed package)
+
+```bash
+tether init             # Interactive setup wizard
+tether start            # Start server (loads ~/.config/tether/config.env)
+tether start --dev      # Dev mode (no auth)
+tether start --port 9000
+```
+
+Config precedence: env vars > local `.env` > `~/.config/tether/config.env`.
 
 ## Running Tests
 

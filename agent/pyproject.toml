@@ -80,7 +80,8 @@ Issues = "https://github.com/larsderidder/tether/issues"
 Changelog = "https://github.com/larsderidder/tether/releases"
 
 [project.scripts]
-tether-agent = "tether.main:run"
+tether = "tether.cli:main"
+tether-agent = "tether.cli:_start_compat"
 tether-mcp = "tether.mcp_server.server:main"
 
 [tool.setuptools.packages.find]

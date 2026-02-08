@@ -34,16 +34,25 @@ agent needs input — from your phone, browser, or messaging platform.
 ## Quick Start
 
 ```bash
+pipx install tether-ai
+tether init
+tether start
+```
+
+Then open `http://localhost:8787`.
+
+The `init` wizard generates an auth token, detects your `claude` CLI, and optionally
+configures a messaging bridge. Config is saved to `~/.config/tether/config.env`.
+
+### From source
+
+```bash
 git clone https://github.com/larsderidder/tether.git
 cd tether
 make install
 cp .env.example .env
 make start
 ```
-
-Then open `http://localhost:8787`.
-
-Use `make start-codex` to run with the Codex sidecar adapter (codex-sdk-sidecar).
 
 ## Adapters
 
@@ -110,9 +119,24 @@ Tools: `create_session`, `send_output`, `request_approval`, `check_input`.
 
 Install: `pip install tether-ai[mcp]`
 
+## CLI
+
+```
+tether init          # Interactive setup wizard
+tether start         # Start the server
+tether start --dev   # Dev mode (no auth required)
+tether start --port 9000 --host 127.0.0.1
+```
+
 ## Configuration
 
-Copy `.env.example` to `.env`. Key settings:
+Tether loads config from layered sources (highest precedence first):
+
+1. Environment variables
+2. Local `.env` file (working directory)
+3. `~/.config/tether/config.env` (created by `tether init`)
+
+Key settings:
 
 ```bash
 TETHER_AGENT_ADAPTER=claude_auto  # Agent adapter
