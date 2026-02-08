@@ -6,8 +6,11 @@ Each bridge implements platform-specific message formatting and API interactions
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
@@ -23,6 +26,29 @@ _EXTERNAL_MAX_FETCH = 200
 _EXTERNAL_REPLAY_LIMIT = 10
 _EXTERNAL_REPLAY_MAX_CHARS = 3500
 _ALLOW_ALL_DURATION_S = 30 * 60  # 30 minutes
+
+
+def _relative_time(iso_str: str) -> str:
+    """Convert an ISO timestamp to a short relative time string like '2h ago'."""
+    if not iso_str:
+        return ""
+    try:
+        # Handle both Z suffix and +00:00
+        ts = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 0:
+            return ""
+        if secs < 60:
+            return "just now"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except (ValueError, TypeError):
+        return ""
 
 
 class ApprovalRequest(BaseModel):
@@ -72,10 +98,17 @@ class BridgeInterface(ABC):
         # Auto-approve timers: session_id → expiry timestamp
         self._allow_all_until: dict[str, float] = {}
         self._allow_tool_until: dict[str, dict[str, float]] = {}
+        # Directory-scoped auto-approve: normalised_dir → expiry timestamp
+        self._allow_dir_until: dict[str, float] = {}
         # Pending permission requests: session_id → request
         self._pending_permissions: dict[str, ApprovalRequest] = {}
         # Debounce error notifications: session_id -> last_sent_timestamp
         self._last_error_status_sent_at: dict[str, float] = {}
+        # Auto-approve notification buffer: session_id → list of (tool_name, reason)
+        self._auto_approve_buffer: dict[str, list[tuple[str, str]]] = {}
+        self._auto_approve_flush_tasks: dict[str, asyncio.Task] = {}
+        # Delay before flushing buffered auto-approve notifications (seconds)
+        self._auto_approve_flush_delay: float = 1.5
 
     # ------------------------------------------------------------------
     # API helpers (shared across all bridges)
@@ -403,13 +436,16 @@ class BridgeInterface(ABC):
         for idx in range(start, end):
             s = sessions[idx]
             n = idx + 1
-            runner = s.get("runner_type", "unknown")
             directory = s.get("directory", "")
-            dir_short = directory.rsplit("/", 1)[-1] if directory else "unknown"
-            running = "🟢" if s.get("is_running") else "⚪"
+            dir_short = directory.rsplit("/", 1)[-1] if directory else "?"
+            age = _relative_time(s.get("last_activity", ""))
             prompt = s.get("first_prompt") or ""
-            prompt_short = (prompt[:40] + "…") if len(prompt) > 40 else prompt
-            lines.append(f"  {n}. {running} {runner} in {dir_short}")
+            prompt_short = (prompt[:50] + "…") if len(prompt) > 50 else prompt
+            # Compact: "1. tether — 2h ago"
+            header = f"  {n}. {dir_short}"
+            if age:
+                header += f" — {age}"
+            lines.append(header)
             if prompt_short:
                 lines.append(f"      {prompt_short}")
 
@@ -418,24 +454,53 @@ class BridgeInterface(ABC):
             and len(self._cached_external) == _EXTERNAL_MAX_FETCH
         ):
             lines.append(f"\nShowing up to {_EXTERNAL_MAX_FETCH} sessions (API limit).")
-        lines.append(f"\nUse {attach_cmd} <number> to attach.")
+        lines.append(f"\n{attach_cmd} <number> to attach.")
         return "\n".join(lines), page, total_pages
 
     # ------------------------------------------------------------------
     # Auto-approve logic (shared across all bridges)
     # ------------------------------------------------------------------
 
+    # Tools that require explicit human review and must never be auto-approved.
+    _NEVER_AUTO_APPROVE = {"task", "enterplanmode", "exitplanmode"}
+
     def check_auto_approve(self, session_id: str, tool_name: str) -> str | None:
         """Check if an approval request should be auto-approved.
 
         Returns the reason string if auto-approved, or None.
+        Tools in _NEVER_AUTO_APPROVE always require explicit approval.
         """
+        norm = (tool_name or "").strip().lower()
+        if any(norm.startswith(prefix) for prefix in self._NEVER_AUTO_APPROVE):
+            return None
         now = time.time()
         if now < self._allow_all_until.get(session_id, 0):
             return "Allow All"
         tool_expiry = self._allow_tool_until.get(session_id, {}).get(tool_name, 0)
         if now < tool_expiry:
             return f"Allow {tool_name}"
+        # Check directory-scoped timer
+        reason = self._check_dir_auto_approve(session_id, now)
+        if reason:
+            return reason
+        return None
+
+    def _check_dir_auto_approve(self, session_id: str, now: float) -> str | None:
+        """Check if the session's directory has an active auto-approve timer."""
+        if not self._allow_dir_until:
+            return None
+        from tether.store import store
+
+        session = store.get_session(session_id)
+        if not session or not session.directory:
+            return None
+        sess_dir = os.path.normpath(session.directory)
+        for allowed_dir, expiry in self._allow_dir_until.items():
+            if now >= expiry:
+                continue
+            if sess_dir == allowed_dir or sess_dir.startswith(allowed_dir + os.sep):
+                short = os.path.basename(allowed_dir) or allowed_dir
+                return f"Allow dir {short}"
         return None
 
     def set_allow_all(self, session_id: str) -> None:
@@ -447,6 +512,11 @@ class BridgeInterface(ABC):
         self._allow_tool_until.setdefault(session_id, {})[tool_name] = (
             time.time() + _ALLOW_ALL_DURATION_S
         )
+
+    def set_allow_directory(self, directory: str) -> None:
+        """Enable auto-approve for all sessions in *directory* for 30 minutes."""
+        norm = os.path.normpath(directory)
+        self._allow_dir_until[norm] = time.time() + _ALLOW_ALL_DURATION_S
 
     async def _auto_approve(
         self, session_id: str, request: ApprovalRequest, *, reason: str = "Allow All"
@@ -476,6 +546,57 @@ class BridgeInterface(ABC):
             )
         except Exception:
             logger.exception("Failed to auto-approve", request_id=request.request_id)
+
+    def buffer_auto_approve_notification(
+        self, session_id: str, tool_name: str, reason: str
+    ) -> None:
+        """Buffer an auto-approve notification for batched delivery.
+
+        Instead of sending one Telegram/Slack/Discord message per auto-approved
+        tool, this collects them and flushes after a short delay so rapid-fire
+        approvals collapse into a single message.
+        """
+        buf = self._auto_approve_buffer.setdefault(session_id, [])
+        buf.append((tool_name, reason))
+
+        # Cancel existing flush timer and start a new one
+        existing = self._auto_approve_flush_tasks.pop(session_id, None)
+        if existing:
+            existing.cancel()
+
+        self._auto_approve_flush_tasks[session_id] = asyncio.create_task(
+            self._flush_auto_approve_after_delay(session_id)
+        )
+
+    async def _flush_auto_approve_after_delay(self, session_id: str) -> None:
+        """Wait then flush buffered auto-approve notifications."""
+        try:
+            await asyncio.sleep(self._auto_approve_flush_delay)
+        except asyncio.CancelledError:
+            return
+        self._auto_approve_flush_tasks.pop(session_id, None)
+        items = self._auto_approve_buffer.pop(session_id, [])
+        if items:
+            await self.send_auto_approve_batch(session_id, items)
+
+    async def send_auto_approve_batch(
+        self, session_id: str, items: list[tuple[str, str]]
+    ) -> None:
+        """Send a batched auto-approve notification.
+
+        Override in subclasses to format for the specific platform.
+        Default implementation calls ``on_output`` with a plain text summary.
+        """
+        if len(items) == 1:
+            tool_name, reason = items[0]
+            text = f"✅ {tool_name} — auto-approved ({reason})"
+        else:
+            lines = [f"✅ Auto-approved {len(items)} tools:"]
+            for tool_name, reason in items:
+                lines.append(f"  • {tool_name}")
+            lines.append(f"({items[0][1]})")
+            text = "\n".join(lines)
+        await self.on_output(session_id, text)
 
     # ------------------------------------------------------------------
     # Usage helper
@@ -545,6 +666,19 @@ class BridgeInterface(ABC):
         if key in {"claude_auto", "claude_local", "claude_api", "codex_sdk_sidecar"}:
             return key
         return None
+
+    @staticmethod
+    def _adapter_label(adapter: str | None) -> str | None:
+        """Map an adapter name to a user-friendly label, or None to omit."""
+        _labels: dict[str, str] = {
+            "claude_auto": "Claude",
+            "claude_local": "Claude",
+            "claude_api": "Claude API",
+            "codex_sdk_sidecar": "Codex",
+        }
+        if not adapter:
+            return None
+        return _labels.get(adapter, adapter)
 
     # ------------------------------------------------------------------
     # Optional lifecycle hooks (override as needed)
@@ -631,6 +765,10 @@ class BridgeInterface(ABC):
         # "allow all" → approve with allow-all timer
         if lower == "allow all":
             return {"allow": True, "reason": None, "timer": "all"}
+
+        # "allow dir" → approve with directory-scoped timer
+        if lower == "allow dir":
+            return {"allow": True, "reason": None, "timer": "dir"}
 
         # "allow <tool>" → approve with tool timer (but not bare "allow")
         if lower.startswith("allow ") and lower != "allow all":

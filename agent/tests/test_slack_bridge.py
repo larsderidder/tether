@@ -365,6 +365,14 @@ class TestSlackBridgePoC:
 
             await bridge.on_approval_request(session.id, request)
 
+        # Flush the buffered auto-approve notification
+        items = bridge._auto_approve_buffer.pop(session.id, [])
+        task = bridge._auto_approve_flush_tasks.pop(session.id, None)
+        if task:
+            task.cancel()
+        if items:
+            await bridge.send_auto_approve_batch(session.id, items)
+
         # Should have sent a short notification (not the full approval prompt)
         assert mock_client.chat_postMessage.called
         sent_text = mock_client.chat_postMessage.call_args.kwargs["text"]

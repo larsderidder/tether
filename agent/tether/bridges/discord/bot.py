@@ -533,7 +533,7 @@ class DiscordBridge(BridgeInterface):
             return
 
         dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
-        agent_label = adapter or "default"
+        agent_label = self._adapter_label(adapter) or self._adapter_label(settings.adapter()) or "Claude"
         session_name = self._make_external_thread_name(directory=directory, session_id="")
 
         try:
@@ -547,9 +547,7 @@ class DiscordBridge(BridgeInterface):
             await message.channel.send(f"Failed to create session: {e}")
             return
 
-        await message.channel.send(
-            f"✅ New session created ({agent_label}) in {dir_short}. A new thread should appear in the channel."
-        )
+        await message.channel.send(f"✅ New {agent_label} session created in {dir_short}.")
         try:
             thread_id = int(session.get("platform_thread_id") or 0)
         except Exception:
@@ -838,6 +836,14 @@ class DiscordBridge(BridgeInterface):
 
         if allow and timer == "all":
             self.set_allow_all(session_id)
+        elif allow and timer == "dir":
+            from tether.store import store as _store
+
+            _sess = _store.get_session(session_id)
+            if _sess and _sess.directory:
+                self.set_allow_directory(_sess.directory)
+            else:
+                self.set_allow_all(session_id)
         elif allow and timer:
             self.set_allow_tool(session_id, timer)
 
@@ -845,6 +851,8 @@ class DiscordBridge(BridgeInterface):
             msg = "Approved"
             if timer == "all":
                 msg = "Allow All (30m)"
+            elif timer == "dir":
+                msg = "Allow dir (30m)"
             elif timer:
                 msg = f"Allow {timer} (30m)"
         else:
@@ -890,6 +898,33 @@ class DiscordBridge(BridgeInterface):
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
 
+    async def send_auto_approve_batch(
+        self, session_id: str, items: list[tuple[str, str]]
+    ) -> None:
+        """Send a batched auto-approve notification to Discord."""
+        if not self._client:
+            return
+        thread_id = self._thread_ids.get(session_id)
+        if not thread_id:
+            return
+
+        if len(items) == 1:
+            tool_name, reason = items[0]
+            text = f"✅ **{tool_name}** — auto-approved ({reason})"
+        else:
+            lines = [f"✅ Auto-approved {len(items)} tools:"]
+            for tool_name, _reason in items:
+                lines.append(f"  • {tool_name}")
+            lines.append(f"*({items[0][1]})*")
+            text = "\n".join(lines)
+
+        try:
+            thread = self._client.get_channel(thread_id)
+            if thread:
+                await thread.send(text[:_DISCORD_MSG_LIMIT])
+        except Exception:
+            pass
+
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
     ) -> None:
@@ -922,29 +957,12 @@ class DiscordBridge(BridgeInterface):
                 )
             return
 
-        # Auto-approve only applies to real permission prompts, not plans/tasks.
-        title_norm = request.title.strip().lower()
         reason: str | None = None
-        if request.kind == "permission" and not title_norm.startswith("task"):
+        if request.kind == "permission":
             reason = self.check_auto_approve(session_id, request.title)
         if reason:
             await self._auto_approve(session_id, request, reason=reason)
-            thread_id = self._thread_ids.get(session_id)
-            if thread_id:
-                try:
-                    thread = self._client.get_channel(thread_id)
-                    if thread:
-                        detail = self.format_tool_input_markdown(
-                            request.description,
-                            truncate=200,
-                            truncate_code=600,
-                            max_chars=1200,
-                        )
-                        await thread.send(
-                            f"✅ **{request.title}** — auto-approved ({reason})\n\n{detail}"
-                        )
-                except Exception:
-                    pass
+            self.buffer_auto_approve_notification(session_id, request.title, reason)
             return
 
         thread_id = self._thread_ids.get(session_id)

@@ -111,9 +111,24 @@ class TelegramBridge(BridgeInterface):
         )
 
         await self._app.initialize()
+
+        # Register command menu with Telegram
+        from telegram import BotCommand
+
+        await self._app.bot.set_my_commands(
+            [
+                BotCommand("status", "List all sessions"),
+                BotCommand("list", "List external sessions (Claude Code, Codex)"),
+                BotCommand("attach", "Attach to an external session"),
+                BotCommand("new", "Start a new session"),
+                BotCommand("stop", "Interrupt the session in this topic"),
+                BotCommand("usage", "Show token usage and cost"),
+                BotCommand("help", "Show available commands"),
+            ]
+        )
+
         await self._app.start()
         await self._app.updater.start_polling()
-        await self._ensure_control_topic()
         logger.info(
             "Telegram bridge initialized and started",
             forum_group_id=self._forum_group_id,
@@ -131,51 +146,6 @@ class TelegramBridge(BridgeInterface):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    async def _ensure_control_topic(self) -> None:
-        """Create the control topic if it doesn't exist yet."""
-        if self._state.control_topic_id:
-            logger.debug(
-                "Control topic already exists", topic_id=self._state.control_topic_id
-            )
-            # Best-effort rename for existing installs.
-            try:
-                await self._app.bot.edit_forum_topic(
-                    chat_id=self._forum_group_id,
-                    message_thread_id=self._state.control_topic_id,
-                    name="TetherCtl",
-                )
-            except Exception:
-                pass
-            return
-
-        try:
-            topic = await self._app.bot.create_forum_topic(
-                chat_id=self._forum_group_id,
-                name="TetherCtl",
-                icon_color=7322096,
-            )
-            self._state.control_topic_id = topic.message_thread_id
-            self._state.save()
-
-            await self._app.bot.send_message(
-                chat_id=self._forum_group_id,
-                message_thread_id=topic.message_thread_id,
-                text=(
-                    "TetherCtl control topic\n\n"
-                    "Commands:\n"
-                    "/status — List all sessions\n"
-                    "/list — List external sessions\n"
-                    "/attach <number> — Attach to an external session\n"
-                    "/new [agent] [directory] — Start a new session\n"
-                    "/usage — Token usage and cost (in session topic)\n"
-                    "/help — Show all commands"
-                ),
-            )
-
-            logger.info("Created control topic", topic_id=topic.message_thread_id)
-        except Exception:
-            logger.exception("Failed to create control topic")
 
     @staticmethod
     def _display_name(user: Any) -> str:
@@ -459,7 +429,7 @@ class TelegramBridge(BridgeInterface):
             "Tether Bot Commands:\n\n"
             "/status — List all sessions\n"
             "/list [page|search] — List external sessions (Claude Code, Codex)\n"
-            "/attach <number> — Attach to an external session\n"
+            "/attach <number> [force] — Attach to an external session\n"
             "/new [agent] [directory] — Start a new session\n"
             "/stop — Interrupt the session in this topic\n"
             "/usage — Show token usage and cost for this session\n"
@@ -531,15 +501,18 @@ class TelegramBridge(BridgeInterface):
         await update.message.reply_text(text, reply_markup=reply_markup)
 
     async def _cmd_attach(self, update: Any, context: Any) -> None:
-        """Handle /attach <number> — attach to an external session and create a topic."""
+        """Handle /attach <number> [force] — attach to an external session and create a topic."""
         import httpx
 
         args = context.args
         if not args:
             await update.message.reply_text(
-                "Usage: /attach <number>\n\nRun /list first."
+                "Usage: /attach <number> [force]\n\nRun /list first."
             )
             return
+
+        # Parse optional "force" flag
+        force = len(args) > 1 and args[1].lower() == "force"
 
         try:
             index = int(args[0]) - 1
@@ -585,28 +558,38 @@ class TelegramBridge(BridgeInterface):
             # Check if this session already has a topic
             existing_topic = self._state.get_topic_for_session(session_id)
             if existing_topic:
-                # Verify the topic is still usable
-                topic_ok = False
-                try:
-                    await self._app.bot.send_chat_action(
-                        chat_id=self._forum_group_id,
-                        message_thread_id=existing_topic,
-                        action="typing",
-                    )
-                    topic_ok = True
-                except Exception:
+                if force:
                     logger.info(
-                        "Existing topic is stale, will recreate",
+                        "Force-recreating topic",
                         session_id=session_id,
                         topic_id=existing_topic,
                     )
                     self._state.remove_session(session_id)
+                else:
+                    # Verify the topic is still usable by sending a test message
+                    topic_ok = False
+                    try:
+                        test_msg = await self._app.bot.send_message(
+                            chat_id=self._forum_group_id,
+                            message_thread_id=existing_topic,
+                            text="Reconnected.",
+                        )
+                        await test_msg.delete()
+                        topic_ok = True
+                    except Exception:
+                        logger.info(
+                            "Existing topic is stale, will recreate",
+                            session_id=session_id,
+                            topic_id=existing_topic,
+                        )
+                        self._state.remove_session(session_id)
 
-                if topic_ok:
-                    await update.message.reply_text(
-                        "Already attached — check the existing topic for this session."
-                    )
-                    return
+                    if topic_ok:
+                        await update.message.reply_text(
+                            "Already attached — check the existing topic.\n"
+                            "Use /attach <number> force to recreate the topic."
+                        )
+                        return
 
             # Create forum topic
             session_name = self._make_external_topic_name(
@@ -660,7 +643,7 @@ class TelegramBridge(BridgeInterface):
           - /new
           - /new <agent>
           - /new <directory-name>
-        - In the control topic:
+        - In General (or any non-session topic):
           - /new <agent> <directory>
           - /new <directory>
         """
@@ -705,7 +688,7 @@ class TelegramBridge(BridgeInterface):
                     adapter = base_adapter
                     directory_raw = token
             else:
-                # In control topic: allow /new <directory> (default adapter)
+                # Non-session topic: allow /new <directory> (default adapter)
                 if maybe_adapter:
                     await update.message.reply_text("Usage: /new <agent> <directory>")
                     return
@@ -752,12 +735,20 @@ class TelegramBridge(BridgeInterface):
             await update.message.reply_text(f"Failed to create session: {e}")
             return
 
-        # Confirm in the issuing topic/control topic.
-        agent_label = adapter or "default"
-        await update.message.reply_text(
-            f"✅ New session created ({agent_label}) in {dir_short}.\n"
-            "A new topic should appear in the forum list."
-        )
+        # Confirm in the issuing topic.
+        agent_label = self._adapter_label(adapter) or self._adapter_label(settings.adapter()) or "Claude"
+        parts = [f"✅ New {agent_label} session created in {dir_short}."]
+        if new_topic_id:
+            # Telegram deep-link to the topic
+            # Format: https://t.me/c/<chat_id_without_-100>/<topic_id>
+            chat_id_str = str(self._forum_group_id)
+            if chat_id_str.startswith("-100"):
+                chat_id_str = chat_id_str[4:]
+            link = f"https://t.me/c/{chat_id_str}/{new_topic_id}"
+            parts.append(f'<a href="{link}">Open topic →</a>')
+        else:
+            parts.append("A new topic should appear in the forum list.")
+        await update.message.reply_text("\n".join(parts), parse_mode="HTML")
 
         # Post a short intro in the new topic.
         if self._app and new_topic_id:
@@ -1130,11 +1121,24 @@ class TelegramBridge(BridgeInterface):
                 )
                 return
 
-            # Handle "Allow All (30m)" and "Allow {tool} (30m)" options
+            # Handle "Allow All (30m)", "Allow {tool} (30m)", "Allow dir (30m)"
             if option_selected == "AllowAll":
                 self.set_allow_all(session_id)
                 allow = True
                 display_option = "Allow All (30m)"
+            elif option_selected == "AllowDir":
+                from tether.store import store as _store
+
+                _sess = _store.get_session(session_id)
+                if _sess and _sess.directory:
+                    self.set_allow_directory(_sess.directory)
+                    dir_short = _sess.directory.rstrip("/").rsplit("/", 1)[-1] or "dir"
+                    display_option = f"Allow {dir_short}/ (30m)"
+                else:
+                    # Fallback to session-level allow-all
+                    self.set_allow_all(session_id)
+                    display_option = "Allow All (30m)"
+                allow = True
             elif option_selected.startswith("AllowTool:"):
                 tool_name = option_selected.split(":", 1)[1]
                 self.set_allow_tool(session_id, tool_name)
@@ -1235,6 +1239,36 @@ class TelegramBridge(BridgeInterface):
                         session_id=session_id,
                         topic_id=topic_id,
                     )
+
+    async def send_auto_approve_batch(
+        self, session_id: str, items: list[tuple[str, str]]
+    ) -> None:
+        """Send a batched auto-approve notification to Telegram."""
+        if not self._app:
+            return
+        topic_id = self._state.get_topic_for_session(session_id)
+        if not topic_id:
+            return
+
+        if len(items) == 1:
+            tool_name, reason = items[0]
+            text = f"✅ <b>{tool_name}</b> — auto-approved ({reason})"
+        else:
+            lines = [f"✅ Auto-approved {len(items)} tools:"]
+            for tool_name, _reason in items:
+                lines.append(f"  • {tool_name}")
+            lines.append(f"<i>({items[0][1]})</i>")
+            text = "\n".join(lines)
+
+        try:
+            await self._app.bot.send_message(
+                chat_id=self._forum_group_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
     def _stop_typing(self, session_id: str) -> None:
         """Cancel the background typing loop for a session."""
@@ -1341,31 +1375,12 @@ class TelegramBridge(BridgeInterface):
                 )
             return
 
-        # Auto-approve only applies to real permission prompts, not plans/tasks.
-        tool_name_norm = request.title.strip().lower()
         reason: str | None = None
-        if request.kind == "permission" and not tool_name_norm.startswith("task"):
+        if request.kind == "permission":
             reason = self.check_auto_approve(session_id, request.title)
         if reason:
             await self._auto_approve(session_id, request, reason=reason)
-            topic_id = self._state.get_topic_for_session(session_id)
-            if topic_id:
-                try:
-                    detail_html, was_truncated = self._format_tool_input_html(
-                        request.description
-                    )
-                    suffix = " <i>(truncated)</i>" if was_truncated else ""
-                    await self._app.bot.send_message(
-                        chat_id=self._forum_group_id,
-                        message_thread_id=topic_id,
-                        text=(
-                            f"✅ <b>{request.title}</b> — auto-approved ({reason})\n\n"
-                            f"{detail_html}{suffix}"
-                        ),
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
+            self.buffer_auto_approve_notification(session_id, request.title, reason)
             return
 
         topic_id = self._state.get_topic_for_session(session_id)
@@ -1383,7 +1398,8 @@ class TelegramBridge(BridgeInterface):
 
         tool_name = request.title
         rid = request.request_id
-        is_task = tool_name.strip().lower().startswith("task")
+        tool_lower = tool_name.strip().lower()
+        is_task = any(tool_lower.startswith(p) for p in self._NEVER_AUTO_APPROVE)
 
         # Cache full description for "Show All"
         if was_truncated:
@@ -1419,6 +1435,20 @@ class TelegramBridge(BridgeInterface):
                 ),
             ]
             rows.append(row_timers)
+            # Directory-scoped timer button
+            from tether.store import store as _store
+
+            _sess = _store.get_session(session_id)
+            if _sess and _sess.directory:
+                dir_short = _sess.directory.rstrip("/").rsplit("/", 1)[-1] or "dir"
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            f"Allow {dir_short}/ (30m)",
+                            callback_data=f"approval:{rid}:AllowDir",
+                        )
+                    ]
+                )
         if was_truncated:
             rows.append(
                 [

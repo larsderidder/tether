@@ -307,14 +307,17 @@ class TestExternalSessionPagination:
         # Only project2 should match
         assert len(bridge._external_view) == 1
 
-    def test_running_emoji(self) -> None:
+    def test_relative_time_shown(self) -> None:
         bridge = ConcreteBridge()
         bridge._cached_external = self._make_sessions(2)
         bridge._set_external_view(None)
         text, _, _ = bridge._format_external_page(1)
-        # Session 0 is running (even index), session 1 is not
-        assert "\U0001f7e2" in text  # green circle
-        assert "\u26aa" in text  # white circle
+        # Directory names should be shown without runner type or status emoji
+        assert "project0" in text
+        assert "project1" in text
+        # No status emojis
+        assert "\U0001f7e2" not in text
+        assert "\u26aa" not in text
 
 
 class TestOnTypingDefault:
