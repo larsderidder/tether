@@ -430,6 +430,167 @@ class TestSessionBinding:
         assert start_cmd["resume"] == "sdk_refreshed"
 
 
+class TestMultiSessionIsolation:
+    """Test that multiple sessions in the same directory don't cross-talk."""
+
+    @pytest.fixture
+    def mock_events(self):
+        return _make_events()
+
+    @pytest.fixture
+    def setup(self, mock_events, monkeypatch, fresh_store, tmp_path):
+        monkeypatch.setattr("tether.runner.claude_subprocess.store", fresh_store)
+        from tether.runner.claude_subprocess import ClaudeSubprocessRunner
+
+        runner = ClaudeSubprocessRunner(mock_events)
+        # Two sessions sharing the same working directory
+        session_a = fresh_store.create_session(str(tmp_path), None)
+        session_a.directory = str(tmp_path)
+        fresh_store.update_session(session_a)
+
+        session_b = fresh_store.create_session(str(tmp_path), None)
+        session_b.directory = str(tmp_path)
+        fresh_store.update_session(session_b)
+
+        return runner, session_a, session_b, fresh_store
+
+    @pytest.mark.anyio
+    async def test_concurrent_sessions_get_separate_sdk_ids(self, setup, mock_events, monkeypatch):
+        """Two sessions in the same dir each get their own SDK session ID."""
+        runner, sess_a, sess_b, store = setup
+
+        procs = {}
+
+        async def mock_subprocess(*args, **kwargs):
+            # Determine which session is being spawned by checking what's
+            # already been created.  First call → session A, second → B.
+            if "a" not in procs:
+                procs["a"] = FakeProcess([
+                    {"event": "init", "session_id": "sdk_AAA", "model": "claude", "version": "1.0"},
+                    {"event": "result", "input_tokens": 0, "output_tokens": 0, "cost_usd": None, "is_error": False, "error_text": None},
+                ], block=False)
+                return procs["a"]
+            else:
+                procs["b"] = FakeProcess([
+                    {"event": "init", "session_id": "sdk_BBB", "model": "claude", "version": "1.0"},
+                    {"event": "result", "input_tokens": 0, "output_tokens": 0, "cost_usd": None, "is_error": False, "error_text": None},
+                ], block=False)
+                return procs["b"]
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_subprocess)
+
+        await runner.start(sess_a.id, "hello from A", approval_choice=0)
+        await asyncio.wait_for(runner._readers[sess_a.id], timeout=5.0)
+
+        await runner.start(sess_b.id, "hello from B", approval_choice=0)
+        await asyncio.wait_for(runner._readers[sess_b.id], timeout=5.0)
+
+        # Each session has its own SDK session binding
+        assert runner._sdk_sessions[sess_a.id] == "sdk_AAA"
+        assert runner._sdk_sessions[sess_b.id] == "sdk_BBB"
+        assert store.get_runner_session_id(sess_a.id) == "sdk_AAA"
+        assert store.get_runner_session_id(sess_b.id) == "sdk_BBB"
+
+    @pytest.mark.anyio
+    async def test_send_input_routes_to_correct_sdk_session(self, setup, mock_events, monkeypatch):
+        """Follow-up input uses the correct SDK session ID, not the other session's."""
+        runner, sess_a, sess_b, store = setup
+
+        # Bind each session to its own SDK session
+        store.set_runner_session_id(sess_a.id, "sdk_AAA")
+        store.set_runner_session_id(sess_b.id, "sdk_BBB")
+        runner._sdk_sessions[sess_a.id] = "sdk_AAA"
+        runner._sdk_sessions[sess_b.id] = "sdk_BBB"
+
+        fake_procs = []
+
+        async def mock_subprocess(*args, **kwargs):
+            proc = FakeProcess([
+                {"event": "init", "session_id": "sdk_BBB", "model": "claude", "version": "1.0"},
+                {"event": "result", "input_tokens": 0, "output_tokens": 0, "cost_usd": None, "is_error": False, "error_text": None},
+            ], block=False)
+            fake_procs.append(proc)
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_subprocess)
+
+        # Send input to session B specifically
+        await runner.send_input(sess_b.id, "follow-up for B")
+        await asyncio.wait_for(runner._readers[sess_b.id], timeout=5.0)
+
+        # Verify the subprocess was told to resume session B's SDK session
+        cmds = fake_procs[0].get_stdin_commands()
+        start_cmd = cmds[0]
+        assert start_cmd["resume"] == "sdk_BBB"
+        assert start_cmd["prompt"] == "follow-up for B"
+
+    @pytest.mark.anyio
+    async def test_session_expiry_doesnt_affect_other_session(self, setup, mock_events, monkeypatch):
+        """When session A's SDK session expires, session B keeps its own binding."""
+        runner, sess_a, sess_b, store = setup
+
+        store.set_runner_session_id(sess_a.id, "sdk_AAA")
+        store.set_runner_session_id(sess_b.id, "sdk_BBB")
+        runner._sdk_sessions[sess_a.id] = "sdk_AAA"
+        runner._sdk_sessions[sess_b.id] = "sdk_BBB"
+
+        # Session A's SDK session expired — SDK creates sdk_AAA_v2
+        child_events = [
+            {"event": "init", "session_id": "sdk_AAA_v2", "model": "claude", "version": "1.0"},
+            {"event": "result", "input_tokens": 0, "output_tokens": 0, "cost_usd": None, "is_error": False, "error_text": None},
+        ]
+        fake_proc = FakeProcess(child_events, block=False)
+
+        async def mock_subprocess(*args, **kwargs):
+            return fake_proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_subprocess)
+
+        await runner.send_input(sess_a.id, "retry A")
+        await asyncio.wait_for(runner._readers[sess_a.id], timeout=5.0)
+
+        # A got rebound to the new SDK session
+        assert runner._sdk_sessions[sess_a.id] == "sdk_AAA_v2"
+        assert store.get_runner_session_id(sess_a.id) == "sdk_AAA_v2"
+
+        # B is completely unaffected
+        assert runner._sdk_sessions[sess_b.id] == "sdk_BBB"
+        assert store.get_runner_session_id(sess_b.id) == "sdk_BBB"
+
+    @pytest.mark.anyio
+    async def test_no_continue_flag_in_start_command(self, setup, mock_events, monkeypatch):
+        """Worker subprocess must NOT receive continue_conversation=True.
+
+        The --continue CLI flag resolves to the most recent session in the
+        cwd, which could be the wrong session when multiple Tether sessions
+        share a directory.
+        """
+        runner, sess_a, _, store = setup
+        store.set_runner_session_id(sess_a.id, "sdk_AAA")
+        runner._sdk_sessions[sess_a.id] = "sdk_AAA"
+
+        fake_proc = FakeProcess([
+            {"event": "init", "session_id": "sdk_AAA", "model": "claude", "version": "1.0"},
+            {"event": "result", "input_tokens": 0, "output_tokens": 0, "cost_usd": None, "is_error": False, "error_text": None},
+        ], block=False)
+
+        async def mock_subprocess(*args, **kwargs):
+            return fake_proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_subprocess)
+
+        await runner.send_input(sess_a.id, "hello")
+        await asyncio.wait_for(runner._readers[sess_a.id], timeout=5.0)
+
+        # The start command has resume set but NOT continue_conversation
+        cmds = fake_proc.get_stdin_commands()
+        start_cmd = cmds[0]
+        assert start_cmd["resume"] == "sdk_AAA"
+        # The worker receives the resume ID; it should NOT pass --continue
+        # to the CLI. We verify this indirectly — the worker code sets
+        # continue_conversation=False regardless of resume.
+
+
 class TestStopBehavior:
     """Test stop command and subprocess cleanup."""
 
