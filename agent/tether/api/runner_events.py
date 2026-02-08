@@ -13,7 +13,7 @@ from tether.api.emit import (
     emit_permission_resolved,
     emit_state,
 )
-from tether.api.state import now, transition
+from tether.api.state import now, session_lock, transition
 from tether.models import SessionState
 from tether.runner import Runner, get_runner
 from tether.store import store
@@ -93,13 +93,14 @@ class ApiRunnerEvents:
 
     async def on_error(self, session_id: str, code: str, message: str) -> None:
         """Handle runner errors by transitioning state and emitting SSE."""
-        session = store.get_session(session_id)
-        if not session:
-            return
-        if session.state != SessionState.ERROR:
-            transition(session, SessionState.ERROR, ended_at=True)
-            await emit_state(session)
-        await emit_error(session, code, message)
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                return
+            if session.state != SessionState.ERROR:
+                transition(session, SessionState.ERROR, ended_at=True)
+                await emit_state(session)
+            await emit_error(session, code, message)
 
     async def on_exit(self, session_id: str, exit_code: int | None) -> None:
         """Handle runner exit. Non-zero exits go to ERROR; clean exits are no-op.
@@ -107,30 +108,32 @@ class ApiRunnerEvents:
         Note: Clean exits (exit_code 0 or None) are typically followed by
         on_awaiting_input, or the /interrupt endpoint handles the transition.
         """
-        session = store.get_session(session_id)
-        if not session:
-            return
-        # Already in a terminal or idle state
-        if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR):
-            return
-        # Non-zero exit code indicates an error
-        if exit_code not in (0, None):
-            transition(session, SessionState.ERROR, ended_at=True, exit_code=exit_code)
-            await emit_state(session)
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                return
+            # Already in a terminal or idle state
+            if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR):
+                return
+            # Non-zero exit code indicates an error
+            if exit_code not in (0, None):
+                transition(session, SessionState.ERROR, ended_at=True, exit_code=exit_code)
+                await emit_state(session)
 
     async def on_awaiting_input(self, session_id: str) -> None:
         """Handle runner signaling it's waiting for user input."""
-        session = store.get_session(session_id)
-        if not session:
-            return
-        if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
-            return
-        transition(session, SessionState.AWAITING_INPUT)
-        await emit_state(session)
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                return
+            if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
+                return
+            transition(session, SessionState.AWAITING_INPUT)
+            await emit_state(session)
 
-        recent = store.get_recent_output(session_id)
-        last_output = recent[-1] if recent else None
-        await emit_input_required(session, last_output)
+            recent = store.get_recent_output(session_id)
+            last_output = recent[-1] if recent else None
+            await emit_input_required(session, last_output)
 
     async def on_metadata(
         self, session_id: str, key: str, value: object, raw: str

@@ -210,6 +210,7 @@ async def start_session(
 ) -> SessionResponse:
     """Start a session and launch the configured runner."""
     with _session_logging_context(session_id):
+        # Phase 1: validate and transition to RUNNING under lock
         async with session_lock(session_id):
             session = store.get_session(session_id)
             if not session:
@@ -260,6 +261,7 @@ async def start_session(
             # Get runner for this session's adapter
             runner = get_api_runner(session.adapter)
             session.runner_type = runner.runner_type
+            adapter = session.adapter
 
             if not store.get_workdir(session_id):
                 store.set_workdir(session_id, session.directory, managed=False)
@@ -269,43 +271,58 @@ async def start_session(
             transition(session, SessionState.RUNNING, started_at=True)
             await emit_state(session)
 
-            try:
-                if prompt:
-                    await emit_user_input(session, prompt)
-                await runner.start(session_id, prompt, approval_choice)
-                logger.info(
-                    "Session started",
-                    adapter=session.adapter or "default",
-                    runner_type=session.runner_type,
-                )
-            except RunnerUnavailableError as exc:
-                logger.warning(
-                    "Runner unavailable during start",
-                    session_id=session_id,
-                    error=str(exc),
-                )
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-                # Do not leak low-level connection errors to UI/bridges.
-                if (session.adapter or "").lower() == "codex_sdk_sidecar":
+            if prompt:
+                await emit_user_input(session, prompt)
+
+        # Phase 2: launch the runner with lock released.
+        # Runner callbacks (on_error, on_exit, on_awaiting_input) acquire
+        # the session lock, so we must not hold it here.
+        start_error: tuple[str, Exception] | None = None
+        try:
+            await runner.start(session_id, prompt, approval_choice)
+            logger.info(
+                "Session started",
+                adapter=adapter or "default",
+                runner_type=runner.runner_type,
+            )
+        except RunnerUnavailableError as exc:
+            start_error = ("unavailable", exc)
+        except Exception as exc:
+            start_error = ("error", exc)
+
+        # Phase 3: handle errors under lock
+        if start_error:
+            async with session_lock(session_id):
+                session = store.get_session(session_id)
+                if not session:
+                    raise_http_error("NOT_FOUND", "Session not found", 404)
+                kind, exc = start_error
+                if session.state != SessionState.ERROR:
+                    transition(session, SessionState.ERROR, ended_at=True)
+                    await emit_state(session)
+                if kind == "unavailable":
+                    logger.warning(
+                        "Runner unavailable during start",
+                        session_id=session_id,
+                        error=str(exc),
+                    )
+                    if (adapter or "").lower() == "codex_sdk_sidecar":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
-                        "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                        "Runner backend is not reachable. Check that the adapter is running and try again.",
                         503,
                     )
-                raise_http_error(
-                    "AGENT_UNAVAILABLE",
-                    "Runner backend is not reachable. Check that the adapter is running and try again.",
-                    503,
-                )
-            except Exception as exc:
-                # Revert to ERROR state if runner fails to start
-                logger.exception("Runner failed to start", session_id=session_id)
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-                raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
+                else:
+                    logger.exception("Runner failed to start", session_id=session_id)
+                    raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
 
-            return SessionResponse.from_session(session, store)
+        session = store.get_session(session_id)
+        return SessionResponse.from_session(session, store)
 
 
 @router.patch("/sessions/{session_id}/rename", response_model=SessionResponse)
@@ -335,6 +352,7 @@ async def send_input(
 ) -> SessionResponse:
     """Send input to a running or awaiting session."""
     with _session_logging_context(session_id):
+        # Phase 1: validate and transition under lock
         async with session_lock(session_id):
             text = payload.text
             session = store.get_session(session_id)
@@ -384,37 +402,54 @@ async def send_input(
                 await emit_state(session)
             maybe_set_session_name(session, text)
             await emit_user_input(session, text)
-            runner = get_api_runner(session.adapter)
-            try:
-                await runner.send_input(session_id, text)
-            except RunnerUnavailableError as exc:
-                logger.warning(
-                    "Runner unavailable during input",
-                    session_id=session_id,
-                    error=str(exc),
-                )
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-                if (session.adapter or "").lower() == "codex_sdk_sidecar":
+            adapter = session.adapter
+
+        # Phase 2: forward to runner with lock released.
+        # Runner callbacks (on_error, on_exit, on_awaiting_input) acquire
+        # the session lock, so we must not hold it here.
+        runner = get_api_runner(adapter)
+        send_error: tuple[str, Exception] | None = None
+        try:
+            await runner.send_input(session_id, text)
+        except RunnerUnavailableError as exc:
+            send_error = ("unavailable", exc)
+        except Exception as exc:
+            send_error = ("error", exc)
+
+        # Phase 3: finalize under lock
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+
+            if send_error:
+                kind, exc = send_error
+                if session.state != SessionState.ERROR:
+                    transition(session, SessionState.ERROR, ended_at=True)
+                    await emit_state(session)
+                if kind == "unavailable":
+                    logger.warning(
+                        "Runner unavailable during input",
+                        session_id=session_id,
+                        error=str(exc),
+                    )
+                    if (adapter or "").lower() == "codex_sdk_sidecar":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
-                        "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                        "Runner backend is not reachable. Check that the adapter is running and try again.",
                         503,
                     )
-                raise_http_error(
-                    "AGENT_UNAVAILABLE",
-                    "Runner backend is not reachable. Check that the adapter is running and try again.",
-                    503,
-                )
-            except Exception as exc:
-                logger.exception("Runner failed while sending input", session_id=session_id)
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-                raise_http_error("RUNNER_ERROR", f"Failed to send input: {exc}", 500)
-            session = store.get_session(session_id)
-            if session:
-                session.last_activity_at = now()
-                store.update_session(session)
+                else:
+                    logger.exception("Runner failed while sending input", session_id=session_id)
+                    raise_http_error("RUNNER_ERROR", f"Failed to send input: {exc}", 500)
+
+            session.last_activity_at = now()
+            store.update_session(session)
             logger.info("Session input forwarded")
             return SessionResponse.from_session(session, store)
 
@@ -423,6 +458,7 @@ async def send_input(
 async def interrupt_session(session_id: str, _: None = Depends(require_token)) -> SessionResponse:
     """Interrupt the current turn. Session remains active and can continue with new input."""
     with _session_logging_context(session_id):
+        # Phase 1: validate and transition to INTERRUPTING under lock
         async with session_lock(session_id):
             session = store.get_session(session_id)
             if not session:
@@ -437,36 +473,54 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
             transition(session, SessionState.INTERRUPTING)
             await emit_state(session)
             logger.info("Interrupting session")
-            runner = get_api_runner(session.adapter)
-            try:
-                await runner.stop(session_id)
-            except RunnerUnavailableError as exc:
-                logger.warning(
-                    "Runner unavailable during interrupt",
-                    session_id=session_id,
-                    error=str(exc),
-                )
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-                if (session.adapter or "").lower() == "codex_sdk_sidecar":
-                    raise_http_error(
-                        "AGENT_UNAVAILABLE",
-                        "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
-                        503,
-                    )
-                raise_http_error(
-                    "AGENT_UNAVAILABLE",
-                    "Runner backend is not reachable. Check that the adapter is running and try again.",
-                    503,
-                )
-            except Exception as exc:
-                logger.exception("Runner failed while interrupting", session_id=session_id)
-                transition(session, SessionState.ERROR, ended_at=True)
-                await emit_state(session)
-                raise_http_error("RUNNER_ERROR", f"Failed to interrupt session: {exc}", 500)
+            adapter = session.adapter
+
+        # Phase 2: stop the runner with lock released.
+        # runner.stop() awaits the query task, whose finally-block callbacks
+        # (on_exit, on_awaiting_input) acquire the session lock.  Holding the
+        # lock here would deadlock.
+        runner = get_api_runner(adapter)
+        stop_error: tuple[str, Exception] | None = None
+        try:
+            await runner.stop(session_id)
+        except RunnerUnavailableError as exc:
+            stop_error = ("unavailable", exc)
+        except Exception as exc:
+            stop_error = ("error", exc)
+
+        # Phase 3: finalize under lock
+        async with session_lock(session_id):
             session = store.get_session(session_id)
             if not session:
                 raise_http_error("NOT_FOUND", "Session not found", 404)
+
+            if stop_error:
+                kind, exc = stop_error
+                # Only transition if a callback hasn't already moved to ERROR
+                if session.state != SessionState.ERROR:
+                    transition(session, SessionState.ERROR, ended_at=True)
+                    await emit_state(session)
+                if kind == "unavailable":
+                    logger.warning(
+                        "Runner unavailable during interrupt",
+                        session_id=session_id,
+                        error=str(exc),
+                    )
+                    if (adapter or "").lower() == "codex_sdk_sidecar":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
+                            503,
+                        )
+                    raise_http_error(
+                        "AGENT_UNAVAILABLE",
+                        "Runner backend is not reachable. Check that the adapter is running and try again.",
+                        503,
+                    )
+                else:
+                    logger.exception("Runner failed while interrupting", session_id=session_id)
+                    raise_http_error("RUNNER_ERROR", f"Failed to interrupt session: {exc}", 500)
+
             # Transition to AWAITING_INPUT after interrupt completes
             if session.state == SessionState.INTERRUPTING:
                 transition(session, SessionState.AWAITING_INPUT)
