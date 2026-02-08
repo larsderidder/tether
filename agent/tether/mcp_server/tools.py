@@ -170,17 +170,30 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "request_approval":
             session_id = arguments["session_id"]
+            title = arguments["title"]
+            description = arguments["description"]
+            options = arguments["options"]
+
+            # Format as AskUserQuestion so the subscriber creates a
+            # choice request with the actual option labels instead of
+            # falling back to generic Allow/Deny.
             response = await client.post(
                 f"{base_url}/api/sessions/{session_id}/events",
                 headers=headers,
                 json={
                     "type": "permission_request",
                     "data": {
-                        "tool_name": arguments["title"],
+                        "tool_name": "AskUserQuestion",
                         "tool_input": {
-                            "description": arguments["description"],
-                            "options": arguments["options"],
-                            "timeout_s": arguments.get("timeout_s", 300),
+                            "questions": [
+                                {
+                                    "header": title,
+                                    "question": description,
+                                    "options": [
+                                        {"label": opt} for opt in options
+                                    ],
+                                }
+                            ],
                         },
                     },
                 },

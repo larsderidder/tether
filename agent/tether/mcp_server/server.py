@@ -78,6 +78,11 @@ def main() -> None:
     """
     _stderr("Starting MCP server")
 
+    # Load config from env files so the MCP server can find the token/port
+    from tether.config import load_config
+
+    load_config()
+
     try:
         import mcp  # noqa: F401
     except ImportError:

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "tether": {
+      "type": "stdio",
+      "command": "tether-mcp",
+      "env": {
+        "TETHER_AGENT_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
