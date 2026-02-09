@@ -49,6 +49,28 @@ class RunnerEvents(Protocol):
         thread_id: str | None = None,
     ) -> None: ...
 
+    async def on_permission_request(
+        self,
+        session_id: str,
+        request_id: str,
+        tool_name: str,
+        tool_input: dict,
+        suggestions: list | None = None,
+    ) -> None:
+        """Emit a permission request event to the UI."""
+        ...
+
+    async def on_permission_resolved(
+        self,
+        session_id: str,
+        request_id: str,
+        resolved_by: str,
+        allowed: bool,
+        message: str | None = None,
+    ) -> None:
+        """Emit a permission resolved event to dismiss UI dialogs."""
+        ...
+
 
 class Runner(Protocol):
     """Adapter interface for agent backends (Codex CLI, SDK sidecar, etc.)."""
