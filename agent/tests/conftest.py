@@ -46,6 +46,7 @@ def fresh_store(temp_data_dir, monkeypatch) -> Generator[SessionStore, None, Non
     import tether.api.debug
     import tether.api.events
     import tether.api.external_sessions
+    import tether.api.status
     monkeypatch.setattr(tether.store, "store", new_store)
     monkeypatch.setattr(tether.api.state, "store", new_store)
     monkeypatch.setattr(tether.api.sessions, "store", new_store)
@@ -54,6 +55,7 @@ def fresh_store(temp_data_dir, monkeypatch) -> Generator[SessionStore, None, Non
     monkeypatch.setattr(tether.api.debug, "store", new_store)
     monkeypatch.setattr(tether.api.events, "store", new_store)
     monkeypatch.setattr(tether.api.external_sessions, "store", new_store)
+    monkeypatch.setattr(tether.api.status, "store", new_store)
     yield new_store
 
 
