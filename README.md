@@ -25,10 +25,10 @@ agent needs input — from your phone, browser, or messaging platform.
 - **Local-first** — runs on your machine, your data stays yours
 - **Human-in-the-loop** — approve tool use, provide input, review diffs
 - **Observable** — live streaming output and explicit session state
-- **Multi-adapter** — Claude (local OAuth or API key) and Codex via sidecar
+- **Multi-adapter** — Claude (local OAuth or API key), Codex via sidecar, any model via LiteLLM
 - **Messaging bridges** — Telegram, Slack, and Discord with approval buttons and auto-approve
 - **External agent API** — MCP server and REST API for any agent to connect
-- **Mobile-first UI** — PWA dashboard for monitoring and controlling sessions
+- **Mobile-first UI** — PWA dashboard for monitoring and controlling sessions (experimental)
 
 ## Quick Start
 
@@ -62,6 +62,7 @@ Set `TETHER_AGENT_ADAPTER` in `.env`:
 | `claude_auto` | Auto-detect (prefer OAuth, fallback to API key) |
 | `claude_subprocess` | Claude via Agent SDK in subprocess (CLI OAuth) |
 | `claude_api` | Claude Code via API key |
+| `litellm` | Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.) — experimental |
 | `codex_sdk_sidecar` | Codex via sidecar |
 
 Sessions can override the default adapter at creation time. Multiple adapters can run simultaneously.
