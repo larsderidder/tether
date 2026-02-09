@@ -1,6 +1,6 @@
 # Web UI
 
-Vue 3 mobile-first PWA served by the agent in production. Connects via REST + SSE.
+Vue 3 mobile-first PWA served by the agent in production. Connects via REST + SSE. See [Architecture](ARCHITECTURE.md) for visual diagrams of how the web UI fits in the overall system.
 
 ## Stack
 
@@ -21,6 +21,16 @@ Vue App
          ├── REST calls to /api/*
          └── SSE stream from /api/events/sessions/{id}
 ```
+
+## Event Subscription
+
+The web UI connects to the same store subscriber queue that messaging bridges use — but consumes events differently.
+
+The SSE endpoint (`/api/events/sessions/{id}`) calls `store.new_subscriber()` to get a queue, replays historical events from the JSONL log, then streams every new event as-is. No server-side filtering or interpretation. The Vue app receives all event types (output, thinking, tool calls, permissions, state changes, heartbeats) and decides what to render.
+
+This is the opposite of bridges, which filter heavily server-side (only final output, skip intermediate steps) and format for text-based platforms. See [Session Engine > Event Distribution](SESSION_ENGINE.md#event-distribution) for the full comparison.
+
+For sending input back, the Vue app calls the same REST endpoints that bridges use internally: `POST /api/sessions/{id}/input` for user messages, `POST /api/sessions/{id}/permission` for approval responses.
 
 ## Key Views
 

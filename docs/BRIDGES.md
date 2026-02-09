@@ -2,12 +2,16 @@
 
 Bridges connect Tether's session events to messaging platforms — Telegram, Slack, Discord. Users interact with agents through chat threads.
 
+See [Architecture](ARCHITECTURE.md) for visual diagrams of where bridges fit in the overall system.
+
 ## Architecture
 
 ```
 Store events ──> BridgeSubscriber ──> BridgeManager ──> Platform Bridge
                    (per session)       (registry)         (Telegram/Slack/Discord)
 ```
+
+Bridges are one of two event consumption paths from the store subscriber queue. The other is the SSE stream that feeds the web UI. Bridges filter events server-side (only final output, permission requests, state changes) and render for text-based messaging platforms. The web UI receives all events raw and renders client-side. See [Session Engine > Event Distribution](SESSION_ENGINE.md#event-distribution) for the full picture.
 
 ### Pattern: Strategy + Registry
 - `BridgeInterface` (ABC) — shared base with abstract methods + shared helpers

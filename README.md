@@ -27,8 +27,7 @@ agent needs input — from your phone, browser, or messaging platform.
 - **Observable** — live streaming output and explicit session state
 - **Multi-adapter** — Claude (local OAuth or API key) and Codex via sidecar
 - **Messaging bridges** — Telegram, Slack, and Discord with approval buttons and auto-approve
-- **External agent API** — REST + WebSocket for any agent to connect
-- **MCP server** — expose Tether as tools for Claude Desktop and other MCP clients
+- **External agent API** — MCP server and REST API for any agent to connect
 - **Mobile-first UI** — PWA dashboard for monitoring and controlling sessions
 
 ## Quick Start
@@ -61,7 +60,7 @@ Set `TETHER_AGENT_ADAPTER` in `.env`:
 | Adapter | Description |
 |---------|-------------|
 | `claude_auto` | Auto-detect (prefer OAuth, fallback to API key) |
-| `claude_local` | Claude Code via local OAuth |
+| `claude_subprocess` | Claude via Agent SDK in subprocess (CLI OAuth) |
 | `claude_api` | Claude Code via API key |
 | `codex_sdk_sidecar` | Codex via sidecar |
 
@@ -91,33 +90,57 @@ pip install tether-ai[telegram]   # or [slack] or [discord]
 
 ## External Agent API
 
-Any AI agent can connect to Tether via REST or WebSocket:
+Any AI agent can connect to Tether to get human-in-the-loop supervision. Two interfaces
+are available — use whichever fits your agent's tooling:
 
-```bash
-# Create a session
-curl -X POST http://localhost:8787/api/agent/sessions \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "My Task", "agent_type": "custom"}'
+### MCP (recommended for Claude Code and other MCP-capable agents)
 
-# Or connect via WebSocket
-wscat -c "ws://localhost:8787/api/agent/sessions/{id}/ws?token=$TOKEN"
-```
-
-See `docs/API_REFERENCE.md` for full endpoint documentation.
-
-## MCP Server
-
-Expose Tether as MCP tools for Claude Desktop or other MCP clients:
+The MCP server exposes Tether as tools that any agent can call to register a session,
+stream output, and request human approval:
 
 ```bash
 tether-mcp
-# or: python -m tether.mcp.server
+# or: python -m tether.mcp_server.server
 ```
 
 Tools: `create_session`, `send_output`, `request_approval`, `check_input`.
 
+Add to your agent's MCP config:
+```json
+{
+  "mcpServers": {
+    "tether": {
+      "command": "tether-mcp"
+    }
+  }
+}
+```
+
 Install: `pip install tether-ai[mcp]`
+
+### REST
+
+For agents that don't support MCP, the same workflow is available via REST:
+
+```bash
+# Create a session
+curl -X POST http://localhost:8787/api/sessions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Task", "agent_type": "custom"}'
+
+# Push output
+curl -X POST http://localhost:8787/api/sessions/{id}/events \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "output", "data": {"text": "Hello from agent"}}'
+
+# Poll for human input
+curl http://localhost:8787/api/sessions/{id}/events/poll?since_seq=0 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+See `docs/API_REFERENCE.md` for full endpoint documentation.
 
 ## CLI
 
@@ -147,11 +170,6 @@ TETHER_AGENT_PORT=8787            # Port (default: 8787)
 
 See `.env.example` for the complete reference including adapter-specific settings, session
 timeouts, logging, and bridge configuration.
-
-## Docker
-
-Docker support has been removed. Tether is designed to run locally so it can
-attach to existing agent sessions and operate directly on your filesystem.
 
 ## Development
 

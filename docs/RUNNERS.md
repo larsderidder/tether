@@ -26,16 +26,19 @@ Callbacks from runner → session engine:
 | `on_awaiting_input(session_id)` | Agent needs user input |
 | `on_metadata(session_id, key, value, raw)` | Tokens, cost, model info |
 | `on_heartbeat(session_id, elapsed_s, done)` | Liveness signal |
+| `on_permission_request(session_id, request_id, ...)` | Permission request from agent |
+| `on_permission_resolved(session_id, request_id, ...)` | Permission resolved |
 
 Implemented by `ApiRunnerEvents` in `api/runner_events.py` which bridges to SSE events.
 
 ## Adapter Implementations
 
-### Claude Local (`runner/claude_local.py`)
-- Spawns `claude` CLI subprocess with agent protocol
-- Uses Claude Agent SDK (OAuth-based CLI auth)
-- Handles tool execution, message history sync
-- Adapter name: `claude_local`
+### Claude Subprocess (`runner/claude_subprocess.py`)
+- Spawns one subprocess per query turn for full process isolation
+- Child process (`claude_sdk_worker.py`) runs the Claude Agent SDK
+- JSON-line IPC over stdin/stdout
+- Uses CLI OAuth auth
+- Adapter name: `claude_subprocess`
 
 ### Claude API (`runner/claude_api.py`)
 - Direct Anthropic SDK calls (`anthropic.Anthropic`)
@@ -52,7 +55,7 @@ Implemented by `ApiRunnerEvents` in `api/runner_events.py` which bridges to SSE 
 ### Auto-detection (`runner/__init__.py`)
 `get_runner()` auto-selects adapter:
 1. If `TETHER_AGENT_ADAPTER` is set, use that
-2. If Claude CLI is available (OAuth), use `claude_local`
+2. If Claude CLI is available (OAuth) + SDK installed, use `claude_subprocess`
 3. If `ANTHROPIC_API_KEY` is set, use `claude_api`
 4. Raise error
 
@@ -65,7 +68,7 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 
 | Env Var | Description |
 |---------|-------------|
-| `TETHER_AGENT_ADAPTER` | Force adapter: `claude_local`, `claude_api`, `codex_sdk_sidecar` |
+| `TETHER_AGENT_ADAPTER` | Force adapter: `claude_subprocess`, `claude_api`, `codex_sdk_sidecar` |
 | `ANTHROPIC_API_KEY` | API key for `claude_api` adapter |
 | `TETHER_AGENT_CLAUDE_MODEL` | Model override (default: claude-sonnet-4-20250514) |
 | `TETHER_CODEX_SIDECAR_URL` | Sidecar URL (default: http://localhost:8788) |
@@ -75,7 +78,8 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 
 - `agent/tether/runner/base.py` — Protocol definitions
 - `agent/tether/runner/__init__.py` — Auto-detection + factory
-- `agent/tether/runner/claude_local.py` — Claude CLI adapter
+- `agent/tether/runner/claude_subprocess.py` — Claude subprocess adapter (parent side)
+- `agent/tether/runner/claude_sdk_worker.py` — Claude subprocess worker (child side)
 - `agent/tether/runner/claude_api.py` — Claude API adapter
 - `agent/tether/runner/codex_sdk_sidecar.py` — Codex sidecar adapter
 - `agent/tether/api/runner_events.py` — RunnerEvents → SSE bridge
@@ -84,6 +88,7 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 ## Tests
 
 - `tests/test_runner_events.py` — All RunnerEvents callbacks
-- `tests/test_claude_local.py` — Claude local adapter
+- `tests/test_claude_subprocess.py` — Claude subprocess adapter
+- `tests/test_claude_sdk_worker.py` — Claude SDK worker (child process)
 - `tests/test_runner_registry.py` — Registry caching
 - `tests/test_sidecar_unavailable_error.py` — 503 error handling

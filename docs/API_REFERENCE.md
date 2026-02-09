@@ -27,7 +27,7 @@ Request:
   "repo_id": "path",
   "base_ref": "main",
   "directory": "/path/to/project",
-  "adapter": "claude_local",
+  "adapter": "claude_subprocess",
   "agent_name": "Claude Code",
   "platform": "telegram"
 }

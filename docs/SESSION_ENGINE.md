@@ -4,6 +4,8 @@ The session engine manages the lifecycle of supervised agent runs — creation, 
 
 ## Architecture
 
+See [Architecture](ARCHITECTURE.md) for visual diagrams of the full system, event flow, and interaction loop.
+
 ```
 REST API  ──>  SessionStore  ──>  SQLite DB (sessions table)
                    |
@@ -39,6 +41,29 @@ Key rules:
    - Broadcasts to all SSE subscriber queues
    - Appends to JSONL event log on disk
 4. `BridgeSubscriber` also consumes from these queues → forwards to messaging bridges
+
+## Event Distribution
+
+`store.emit()` broadcasts every event to **all** subscriber queues for that session. Two independent consumers attach to these queues:
+
+See the [Event Flow](ARCHITECTURE.md#event-flow) and [Interaction Loop](ARCHITECTURE.md#interaction-loop) diagrams for a visual version of this.
+
+```
+                              ┌─── SSE stream ──────── Web UI (Vue)
+                              │    (raw passthrough)    renders all events client-side
+store.emit() ── subscriber ───┤
+              queues          │
+                              └─── BridgeSubscriber ── Messaging bridges
+                                   (filtered)          server-side rendering
+```
+
+**SSE (Web UI path):** The `/api/events/sessions/{id}` endpoint calls `store.new_subscriber()`, replays historical events from the JSONL log, then enters a live loop forwarding every event as-is. No filtering, no interpretation — the Vue app decides what to render. All event types are delivered: intermediate output, thinking steps, tool calls, permission requests, state changes, heartbeats.
+
+**BridgeSubscriber (Messaging path):** Also calls `store.new_subscriber()` — same mechanism. But `_consume()` applies heavy filtering before calling bridge methods: only `final=True` output is forwarded, history events are skipped, intermediate steps are dropped. The bridge base class then handles server-side formatting, auto-approve logic, and error debouncing before sending to the platform.
+
+**Why the web UI is not a bridge:** Bridges are server-side event consumers that filter, interpret, and render for text-based messaging platforms. The web UI is a raw event passthrough where all intelligence lives in the Vue frontend. The bridge abstraction (auto-approve state machines, text command parsing, thread management, platform-specific formatting) doesn't apply to a rich client that receives the full event stream. The shared layer is the store subscriber queue — and that's already cleanly abstracted.
+
+A session can be consumed by the web UI and zero or one messaging bridge simultaneously. The web UI always works regardless of platform binding. The `platform` field on a session determines which bridge (if any) subscribes.
 
 ## Session Store (`store.py`)
 

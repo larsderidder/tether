@@ -43,7 +43,7 @@ Read the relevant docs below based on what you'll be working on.
 | --- | --- | --- |
 | Session engine | `docs/SESSION_ENGINE.md` | Store, state machine, event pipeline, locking |
 | Bridges | `docs/BRIDGES.md` | Telegram/Slack/Discord, subscriber routing, auto-approve |
-| Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_local, codex, claude_api) |
+| Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_subprocess, codex, claude_api) |
 | Web UI | `docs/WEB_UI.md` | Vue 3 frontend, views, composables, dev server |
 | MCP server | `docs/MCP_SERVER.md` | MCP tools, transport, config |
 | Code standards | `docs/CODE_STANDARDS.md` | Formatting, typing, logging conventions |
@@ -64,7 +64,7 @@ Read the relevant docs below based on what you'll be working on.
 agent/                  # Python backend
   tether/
     api/                # FastAPI routes (sessions, events, directories, deps)
-    runner/             # Execution adapters (claude_local, claude_api, codex_*)
+    runner/             # Execution adapters (claude_subprocess, claude_api, codex_*)
     bridges/            # Messaging bridges (telegram, slack, discord)
     mcp/                # MCP server (tools, transport)
     cli.py              # CLI entry point (tether start, tether init)
