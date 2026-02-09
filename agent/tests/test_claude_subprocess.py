@@ -429,6 +429,37 @@ class TestSessionBinding:
         start_cmd = cmds[0]
         assert start_cmd["resume"] == "sdk_refreshed"
 
+    @pytest.mark.anyio
+    async def test_start_drops_resume_when_external_session_busy(self, runner, mock_events, monkeypatch):
+        """When the external Claude session looks busy, we don't pass --resume."""
+        runner, session, store = runner
+        store.set_runner_session_id(session.id, "sdk_busy")
+        runner._sdk_sessions[session.id] = "sdk_busy"
+
+        # Force busy detection for any session id
+        monkeypatch.setattr(
+            "tether.runner.claude_subprocess.is_claude_session_running",
+            lambda _sid: True,
+        )
+
+        child_events = [
+            {"event": "init", "session_id": "sdk_new", "model": "claude", "version": "1.0"},
+            {"event": "result", "input_tokens": 0, "output_tokens": 0, "cost_usd": None, "is_error": False, "error_text": None},
+        ]
+        fake_proc = FakeProcess(child_events, block=False)
+
+        async def mock_subprocess(*args, **kwargs):
+            return fake_proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_subprocess)
+
+        await runner.start(session.id, "hello", approval_choice=0)
+        await asyncio.wait_for(runner._readers[session.id], timeout=5.0)
+
+        cmds = fake_proc.get_stdin_commands()
+        start_cmd = cmds[0]
+        assert start_cmd["resume"] is None
+
 
 class TestMultiSessionIsolation:
     """Test that multiple sessions in the same directory don't cross-talk."""

@@ -232,7 +232,12 @@ async def _run(start_cmd: dict) -> None:
             query_done.set()
             try:
                 await query_stream.aclose()
-            except (RuntimeError, GeneratorExit):
+            except (Exception, asyncio.CancelledError, GeneratorExit):
+                # The SDK's anyio cancel scopes raise RuntimeError
+                # ("exit cancel scope in different task") during
+                # generator cleanup.  CancelledError can surface from
+                # the SDK's internal task group.  All harmless here —
+                # the query is already finished.
                 pass
     except Exception as exc:
         _write_event({"event": "error", "code": "SDK_ERROR", "message": str(exc)})
@@ -338,7 +343,30 @@ def main() -> None:
     if not start_cmd or start_cmd.get("cmd") != "start":
         _write_event({"event": "error", "code": "BAD_START", "message": "Expected start command"})
         sys.exit(1)
-    asyncio.run(_run(start_cmd))
+
+    # Manual event loop management instead of asyncio.run() to suppress
+    # noisy but harmless cleanup errors from the SDK's anyio cancel
+    # scopes and subprocess transport __del__ during shutdown.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run(start_cmd))
+    finally:
+        try:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+        except Exception:
+            pass
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
 
 
 if __name__ == "__main__":
