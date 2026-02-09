@@ -1307,6 +1307,10 @@ class TelegramBridge(BridgeInterface):
             self._typing_loop(session_id, topic_id)
         )
 
+    async def on_typing_stopped(self, session_id: str) -> None:
+        """Stop the typing indicator for the session."""
+        self._stop_typing(session_id)
+
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
     ) -> None:

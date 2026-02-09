@@ -22,12 +22,25 @@ class BridgeSubscriber:
 
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task] = {}
+        self._queues: dict[str, asyncio.Queue] = {}
 
     def subscribe(self, session_id: str, platform: str) -> None:
-        """Start consuming store events for a session and routing to a bridge."""
+        """Start consuming store events for a session and routing to a bridge.
+
+        The subscriber queue is registered synchronously so that events
+        emitted between subscribe() and the first await in _consume()
+        are not lost.
+        """
         if session_id in self._tasks:
             return
-        task = asyncio.create_task(self._consume(session_id, platform))
+
+        # Register the queue eagerly so no events are missed.
+        from tether.store import store
+
+        queue = store.new_subscriber(session_id)
+        self._queues[session_id] = queue
+
+        task = asyncio.create_task(self._consume(session_id, platform, queue))
         self._tasks[session_id] = task
         logger.info(
             "Bridge subscriber started",
@@ -38,6 +51,7 @@ class BridgeSubscriber:
     async def unsubscribe(self, session_id: str, *, platform: str | None = None) -> None:
         """Stop consuming events for a session and clean up bridge state."""
         task = self._tasks.pop(session_id, None)
+        self._queues.pop(session_id, None)
         if task:
             task.cancel()
             logger.info("Bridge subscriber stopped", session_id=session_id)
@@ -48,11 +62,8 @@ class BridgeSubscriber:
             if bridge:
                 await bridge.on_session_removed(session_id)
 
-    async def _consume(self, session_id: str, platform: str) -> None:
+    async def _consume(self, session_id: str, platform: str, queue: asyncio.Queue) -> None:
         """Background task that reads from a store subscriber and routes events."""
-        from tether.store import store
-
-        queue = store.new_subscriber(session_id)
         bridge = bridge_manager.get_bridge(platform)
         if not bridge:
             logger.warning(
@@ -145,9 +156,11 @@ class BridgeSubscriber:
                         state = data.get("state", "")
                         if state == "RUNNING":
                             await bridge.on_typing(session_id)
+                        elif state == "AWAITING_INPUT":
+                            await bridge.on_typing_stopped(session_id)
                         elif state == "ERROR":
+                            await bridge.on_typing_stopped(session_id)
                             await bridge.on_status_change(session_id, "error")
-                        # AWAITING_INPUT ("done") — no message needed
 
                     elif event_type == "error":
                         msg = data.get("message", "Unknown error")

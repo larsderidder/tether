@@ -687,6 +687,9 @@ class BridgeInterface(ABC):
     async def on_typing(self, session_id: str) -> None:
         """Show a typing indicator. Override if platform supports it."""
 
+    async def on_typing_stopped(self, session_id: str) -> None:
+        """Stop the typing indicator. Override if platform supports it."""
+
     def set_pending_permission(self, session_id: str, request: ApprovalRequest) -> None:
         """Track a pending permission request for a session."""
         self._pending_permissions[session_id] = request
