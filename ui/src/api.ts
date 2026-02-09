@@ -92,6 +92,29 @@ export type ExternalSessionDetail = ExternalSessionSummary & {
   messages: ExternalSessionMessage[];
 };
 
+export type BridgeStatusInfo = {
+  platform: string;
+  status: "running" | "error" | "not_configured";
+  initialized_at: string | null;
+  error_message: string | null;
+};
+
+export type SessionActivityInfo = {
+  session_id: string;
+  name: string;
+  state: string;
+  platform: string | null;
+  last_activity_at: string;
+  message_count: number;
+};
+
+export type SessionStats = {
+  total: number;
+  by_state: Record<string, number>;
+  by_platform: Record<string, number>;
+  recent_activity: SessionActivityInfo[];
+};
+
 const BASE_KEY = "tether_base_url";
 const TOKEN_KEY = "tether_token";
 const APPROVAL_MODE_KEY = "tether_approval_mode";
@@ -357,6 +380,14 @@ export async function respondToPermission(
     method: "POST",
     body: JSON.stringify(response),
   });
+}
+
+export async function getBridgeStatus(): Promise<{ bridges: BridgeStatusInfo[] }> {
+  return await fetchJson<{ bridges: BridgeStatusInfo[] }>("/api/status/bridges");
+}
+
+export async function getSessionStats(): Promise<SessionStats> {
+  return await fetchJson<SessionStats>("/api/status/sessions");
 }
 
 export async function openEventStream(

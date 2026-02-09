@@ -70,6 +70,15 @@
       </div>
     </div>
     <div class="space-y-2">
+      <p class="text-xs uppercase tracking-[0.4em] text-stone-500">Dashboard</p>
+      <div class="space-y-3 rounded-2xl border border-stone-800/70 bg-stone-950/40 p-4">
+        <p class="text-sm text-stone-400">
+          View system status, bridge health, and session activity.
+        </p>
+        <Button @click="dashboardOpen = true">Open Dashboard</Button>
+      </div>
+    </div>
+    <div class="space-y-2">
       <p class="text-xs uppercase tracking-[0.4em] text-stone-500">Maintenance</p>
       <div class="space-y-3 rounded-2xl border border-stone-800/70 bg-stone-950/40 p-4">
         <p class="text-sm text-stone-400">
@@ -82,6 +91,8 @@
       </div>
     </div>
   </section>
+
+  <Dashboard v-model:open="dashboardOpen" />
 </template>
 
 <script setup lang="ts">
@@ -99,12 +110,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import Dashboard from "./Dashboard.vue";
 
 const baseUrl = ref(getBaseUrl());
 const token = ref(getToken());
 const approvalMode = ref<ApprovalMode>(getApprovalMode());
 const saved = ref(false);
 const cleared = ref(false);
+const dashboardOpen = ref(false);
 
 const save = () => {
   setBaseUrl(baseUrl.value.trim());
