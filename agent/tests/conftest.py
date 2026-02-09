@@ -89,3 +89,14 @@ async def api_client(fresh_store) -> AsyncGenerator[httpx.AsyncClient, None]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(scope="session")
+def anyio_backend() -> str:
+    """Force the AnyIO pytest plugin to run tests under asyncio.
+
+    The agent is asyncio-native (FastAPI/uvicorn) and many tests use asyncio
+    primitives directly (e.g. asyncio.create_task), which are incompatible with
+    the trio backend.
+    """
+    return "asyncio"
