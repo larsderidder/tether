@@ -118,6 +118,7 @@ class Settings:
             - claude_api: Claude via Anthropic SDK (requires API key)
             - claude_subprocess: Claude via Agent SDK in subprocess (CLI OAuth)
             - claude_auto: Auto-detect (prefer OAuth, fallback to API key)
+            - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
         """
         return _get("TETHER_AGENT_ADAPTER", default="claude_auto").lower()
 
@@ -236,6 +237,29 @@ class Settings:
         Env: TETHER_CODEX_SIDECAR_TOKEN
         """
         return _get("TETHER_CODEX_SIDECAR_TOKEN")
+
+    # -------------------------------------------------------------------------
+    # LiteLLM Runner Settings
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def litellm_model() -> str:
+        """LiteLLM model identifier.
+
+        Uses LiteLLM model naming: provider/model (e.g. openrouter/deepseek/deepseek-chat,
+        deepseek/deepseek-chat, gemini/gemini-2.0-flash, etc.)
+
+        Env: TETHER_AGENT_LITELLM_MODEL (default: openrouter/deepseek/deepseek-chat)
+        """
+        return _get("TETHER_AGENT_LITELLM_MODEL", default="openrouter/deepseek/deepseek-chat")
+
+    @staticmethod
+    def litellm_max_tokens() -> int:
+        """Maximum tokens for LiteLLM responses.
+
+        Env: TETHER_AGENT_LITELLM_MAX_TOKENS (default: 4096)
+        """
+        return _get_int("TETHER_AGENT_LITELLM_MAX_TOKENS", default=4096)
 
     # -------------------------------------------------------------------------
     # Bridge Settings (Messaging Platforms)

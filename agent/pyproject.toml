@@ -68,6 +68,9 @@ slack = [
 discord = [
   "discord.py>=2.3.0",
 ]
+litellm = [
+  "litellm>=1.0",
+]
 mcp = [
   "mcp>=0.1.0",
 ]

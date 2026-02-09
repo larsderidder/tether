@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from tether.runner.claude_api import ClaudeRunner
     from tether.runner.claude_subprocess import ClaudeSubprocessRunner
     from tether.runner.codex_sdk_sidecar import SidecarRunner
+    from tether.runner.litellm_runner import LiteLLMRunner
 
 # Cache the runner type after first initialization
 _active_runner_type: str | None = None
@@ -58,6 +59,7 @@ def get_runner(events: RunnerEvents) -> Runner:
         - claude_api: Claude via Anthropic SDK (requires ANTHROPIC_API_KEY)
         - claude_subprocess: Claude via Agent SDK in subprocess (uses CLI OAuth)
         - claude_auto: Auto-detect (prefer subprocess, fallback to API key)
+        - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
 
     Runners are imported lazily to speed up agent startup.
     """
@@ -116,6 +118,21 @@ def get_runner(events: RunnerEvents) -> Runner:
             "claude_auto: No authentication available. "
             "Either log in with 'claude' CLI or set ANTHROPIC_API_KEY."
         )
+
+    if name == "litellm":
+        try:
+            import litellm as _litellm  # noqa: F401 — verify installed
+        except ImportError as e:
+            raise ValueError(
+                "litellm adapter requires litellm. "
+                "Install with: pip install tether-ai[litellm]"
+            ) from e
+
+        from tether.runner.litellm_runner import LiteLLMRunner
+
+        runner = LiteLLMRunner(events)
+        _active_runner_type = runner.runner_type
+        return runner
 
     raise ValueError(f"Unknown agent adapter: {name}")
 

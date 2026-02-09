@@ -1,4 +1,8 @@
-"""Tool definitions for Claude runner in Anthropic API format."""
+"""Tool definitions for runner adapters.
+
+TOOLS: Anthropic API format (used by Claude API runner).
+TOOLS_OPENAI: OpenAI-compatible format (used by LiteLLM runner).
+"""
 
 TOOLS = [
     {
@@ -62,4 +66,17 @@ TOOLS = [
             "required": ["command"],
         },
     },
+]
+
+# OpenAI-compatible format derived from Anthropic TOOLS
+TOOLS_OPENAI = [
+    {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    }
+    for tool in TOOLS
 ]
