@@ -109,7 +109,18 @@ class PiRpcRunner:
             # No running process — need to respawn
             session = store.get_session(session_id)
             cwd = session.directory if session and session.directory else None
+
+            # Look for session file (may have been attached externally)
             session_file = self._session_files.get(session_id)
+            if not session_file:
+                runner_sid = store.get_runner_session_id(session_id)
+                if runner_sid:
+                    from tether.discovery.pi_sessions import _find_session_file
+
+                    path = _find_session_file(runner_sid)
+                    if path:
+                        session_file = str(path)
+                        self._session_files[session_id] = session_file
 
             store.clear_stop_requested(session_id)
             await self._spawn(session_id, cwd, session_file)

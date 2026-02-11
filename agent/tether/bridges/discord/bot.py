@@ -243,18 +243,20 @@ class DiscordBridge(BridgeInterface):
             )
             content = (msg.get("content") or "").strip()
             thinking = (msg.get("thinking") or "").strip()
-            if content and len(content) > 800:
-                content = content[:800] + "..."
-            if thinking and len(thinking) > 400:
-                thinking = thinking[:400] + "..."
+            # Truncate each message more aggressively for Discord's 2000 char limit
+            if content and len(content) > 300:
+                content = content[:300] + "..."
+            if thinking and len(thinking) > 150:
+                thinking = thinking[:150] + "..."
             if content:
                 lines.append(f"{i}. {prefix}: {content}")
             if thinking:
                 lines.append(f"   {prefix} (thinking): {thinking}")
 
         text = "\n".join(lines)
-        if len(text) > _EXTERNAL_REPLAY_MAX_CHARS:
-            text = text[: _EXTERNAL_REPLAY_MAX_CHARS - 3] + "..."
+        # Discord has a 2000 char limit per message
+        if len(text) > 1900:
+            text = text[:1900] + "..."
 
         try:
             thread = self._client.get_channel(thread_id)
