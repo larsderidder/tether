@@ -90,3 +90,45 @@ def is_claude_session_running(session_id: str) -> bool:
 def is_codex_session_running(session_id: str) -> bool:
     """Check if a specific Codex CLI session is running."""
     return session_id in find_running_codex_sessions()
+
+
+def find_running_pi_sessions() -> set[str]:
+    """Return set of pi session IDs that are currently running.
+
+    Detection method: Parse ``ps`` output for ``pi`` processes with
+    ``--mode rpc`` or ``--mode interactive`` flags, and extract session
+    file names that contain UUIDs.
+    """
+    running: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return running
+
+        for line in result.stdout.splitlines():
+            if "pi-coding-agent" not in line and "/pi " not in line:
+                continue
+            # Look for session file paths containing UUIDs
+            # Pi session files look like: <timestamp>_<uuid>.jsonl
+            import re
+
+            uuid_match = re.search(
+                r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                line,
+            )
+            if uuid_match:
+                running.add(uuid_match.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    return running
+
+
+def is_pi_session_running(session_id: str) -> bool:
+    """Check if a specific pi session is running."""
+    return session_id in find_running_pi_sessions()

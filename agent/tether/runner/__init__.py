@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from tether.runner.claude_subprocess import ClaudeSubprocessRunner
     from tether.runner.codex_sdk_sidecar import SidecarRunner
     from tether.runner.litellm_runner import LiteLLMRunner
+    from tether.runner.pi_rpc import PiRpcRunner
 
 # Cache the runner type after first initialization
 _active_runner_type: str | None = None
@@ -131,6 +132,13 @@ def get_runner(events: RunnerEvents) -> Runner:
         from tether.runner.litellm_runner import LiteLLMRunner
 
         runner = LiteLLMRunner(events)
+        _active_runner_type = runner.runner_type
+        return runner
+
+    if name == "pi_rpc":
+        from tether.runner.pi_rpc import PiRpcRunner
+
+        runner = PiRpcRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 

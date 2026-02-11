@@ -46,7 +46,7 @@ Claude Code / Codex / custom agent
 2. Human in the loop: approve tool use, provide input, review diffs
 3. Observable: live streaming output and explicit session state (web and messaging)
 4. Messaging bridges: Telegram, Slack, and Discord with approvals and auto approve
-5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, plus LiteLLM (experimental)
+5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, Pi coding agent (experimental), plus LiteLLM (experimental)
 6. External agent API: MCP server and REST API for custom agents and integrations
 7. Mobile first UI: PWA dashboard for monitoring and controlling sessions (experimental)
 
@@ -143,6 +143,7 @@ Set `TETHER_AGENT_ADAPTER` in `.env`:
 3. `claude_api`: Claude Code via API key
 4. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
 5. `codex_sdk_sidecar`: Codex via sidecar
+6. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess, experimental
 
 Sessions can override the default adapter at creation time. Multiple adapters can run simultaneously.
 

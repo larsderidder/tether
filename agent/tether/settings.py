@@ -119,6 +119,7 @@ class Settings:
             - claude_subprocess: Claude via Agent SDK in subprocess (CLI OAuth)
             - claude_auto: Auto-detect (prefer OAuth, fallback to API key)
             - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
+            - pi_rpc: Pi coding agent via JSON-RPC subprocess
         """
         return _get("TETHER_AGENT_ADAPTER", default="claude_auto").lower()
 

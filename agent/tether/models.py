@@ -22,6 +22,7 @@ class ExternalRunnerType(str, Enum):
     """Types of external session sources."""
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
+    PI = "pi"
 
 
 class ExternalSessionMessage(BaseModel):
