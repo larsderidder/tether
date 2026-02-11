@@ -163,10 +163,20 @@ class ApiRunnerEvents:
         tool_input: dict,
         suggestions: list | None = None,
     ) -> None:
-        """Emit a permission request event to the UI."""
+        """Emit a permission request event to the UI, or auto-approve if configured."""
         session = store.get_session(session_id)
         if not session:
             return
+
+        # Auto-approve if session has approval_mode=0
+        if session.approval_mode == 0:
+            store.resolve_pending_permission(
+                session_id,
+                request_id,
+                {"behavior": "allow"},
+            )
+            return
+
         await emit_permission_request(
             session,
             request_id=request_id,

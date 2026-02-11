@@ -234,6 +234,8 @@ async def attach_to_external_session(
 
     # Start in AWAITING_INPUT state (ready to receive input that will resume)
     session.state = SessionState.AWAITING_INPUT
+    # Default to auto-approve for attached external sessions (bridges expect this)
+    session.approval_mode = 0
     store.update_session(session)
 
     await emit_state(session)
