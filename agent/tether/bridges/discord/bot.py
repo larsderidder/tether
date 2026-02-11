@@ -237,9 +237,9 @@ class DiscordBridge(BridgeInterface):
         for i, msg in enumerate(messages, 1):
             role = str(msg.get("role") or "").lower()
             prefix = (
-                "U"
+                "👤"
                 if role == "user"
-                else ("A" if role == "assistant" else role[:1].upper() or "?")
+                else ("🤖" if role == "assistant" else role[:1].upper() or "?")
             )
             content = (msg.get("content") or "").strip()
             thinking = (msg.get("thinking") or "").strip()
