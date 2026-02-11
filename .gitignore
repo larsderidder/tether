@@ -32,6 +32,7 @@ tether.log
 docker.env
 .idea
 .run/
+.pi/
 
 # Reference data
 codex-src

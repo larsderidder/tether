@@ -8,7 +8,9 @@ the session file path.
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
+import os
 import shutil
 import time
 import uuid
@@ -35,8 +37,6 @@ def _find_pi_binary() -> str | None:
 
     # Check common nvm/node locations when PATH doesn't include them
     # (e.g. when Tether is launched from an IDE or systemd)
-    import glob
-
     candidates = [
         os.path.expanduser("~/.nvm/versions/node/*/bin/pi"),
         "/usr/local/bin/pi",
@@ -181,6 +181,7 @@ class PiRpcRunner:
             session_id=session_id,
             args=args,
             cwd=cwd,
+            session_file=session_file,
         )
 
         proc = await asyncio.create_subprocess_exec(
