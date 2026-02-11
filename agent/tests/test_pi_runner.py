@@ -72,6 +72,7 @@ class FakeRunnerEvents:
         self.permission_resolved.append({
             "session_id": session_id,
             "request_id": request_id,
+            "resolved_by": resolved_by,
             "allowed": allowed,
         })
 
@@ -149,10 +150,12 @@ class TestPiRpcEventHandling:
         # Should emit output for the tool start
         assert any("[tool: bash]" in o["text"] for o in events.outputs)
 
-        # Should emit a permission request for bash
-        assert len(events.permissions) == 1
-        assert events.permissions[0]["tool_name"] == "bash"
-        assert events.permissions[0]["tool_input"] == {"command": "ls -la"}
+        # Pi auto-approves tools, so no permission request should be emitted
+        # Instead, should directly emit permission_resolved
+        assert len(events.permissions) == 0
+        assert len(events.permission_resolved) == 1
+        assert events.permission_resolved[0]["allowed"] is True
+        assert events.permission_resolved[0]["resolved_by"] == "auto"
 
     @pytest.mark.anyio
     async def test_handle_tool_execution_start_read_no_permission(self, runner_and_events):

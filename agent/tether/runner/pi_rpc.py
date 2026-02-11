@@ -233,6 +233,7 @@ class PiRpcRunner:
             logger.warning("No pi process to send prompt to", session_id=session_id)
             return
 
+        logger.info("Sending prompt to pi", session_id=session_id, text_length=len(text))
         self._write_cmd(proc, {
             "type": "prompt",
             "message": text,
@@ -307,11 +308,13 @@ class PiRpcRunner:
         """Read JSON-line events from pi's stdout and dispatch them."""
         start_time = time.monotonic()
 
+        logger.info("Starting pi event reader", session_id=session_id)
         try:
             assert proc.stdout is not None
             while True:
                 raw = await proc.stdout.readline()
                 if not raw:
+                    logger.info("Pi stdout EOF", session_id=session_id)
                     break
                 try:
                     event = json.loads(raw)
@@ -465,34 +468,25 @@ class PiRpcRunner:
                 loop = asyncio.get_running_loop()
                 future: asyncio.Future = loop.create_future()
 
+                # NOTE: Pi auto-approves tools by default (like the TUI does).
+                # The requiresApproval flag is informational only.
+                # We auto-resolve immediately without showing UI prompts.
                 store.add_pending_permission(
                     session_id, request_id, tool_name, args, future
                 )
-
-                await self._events.on_permission_request(
+                
+                # Auto-resolve immediately (don't emit permission_request to UI)
+                store.resolve_pending_permission(
+                    session_id, request_id, {"behavior": "allow"}
+                )
+                
+                # Emit resolved event for logging/tracking
+                await self._events.on_permission_resolved(
                     session_id,
                     request_id=request_id,
-                    tool_name=tool_name,
-                    tool_input=args,
-                    suggestions=None,
+                    resolved_by="auto",
+                    allowed=True,
                 )
-
-                # NOTE: Pi auto-approves tools by default (like the TUI does).
-                # The requiresApproval flag is informational only.
-                # We skip Tether's approval flow and just let pi execute.
-                async def _auto_approve(rid: str = request_id) -> None:
-                    # Auto-resolve immediately (pi auto-approves by default)
-                    store.resolve_pending_permission(
-                        session_id, rid, {"behavior": "allow"}
-                    )
-                    await self._events.on_permission_resolved(
-                        session_id,
-                        request_id=rid,
-                        resolved_by="auto",
-                        allowed=True,
-                    )
-
-                asyncio.create_task(_auto_approve())
 
         elif etype == "tool_execution_update":
             tool_name = event.get("toolName", "unknown")
