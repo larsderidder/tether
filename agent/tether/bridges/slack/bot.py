@@ -492,7 +492,7 @@ class SlackBridge(BridgeInterface):
             # Check if already has a thread
             if session_id in self._thread_ts:
                 await self._reply(
-                    event, "Already attached — check the existing thread."
+                    event, "Already attached, check the existing thread."
                 )
                 return
 
@@ -533,7 +533,7 @@ class SlackBridge(BridgeInterface):
             await self._reply(
                 event,
                 f"✅ Attached to {external['runner_type']} session in {dir_short}\n\n"
-                f"A new thread has been created — send messages there to interact.",
+                f"A new thread has been created. Send messages there to interact.",
             )
 
         except httpx.HTTPStatusError as e:
@@ -685,7 +685,7 @@ class SlackBridge(BridgeInterface):
             else:
                 await self._reply(event, f"❌ {message}")
         else:
-            await self._reply(event, "❌ Failed — request may have expired.")
+            await self._reply(event, "❌ Failed. Request may have expired.")
 
     # ------------------------------------------------------------------
     # Bridge interface (outgoing events)

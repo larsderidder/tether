@@ -584,7 +584,7 @@ class TelegramBridge(BridgeInterface):
 
                     if topic_ok:
                         await update.message.reply_text(
-                            "Already attached — check the existing topic.\n"
+                            "Already attached, check the existing topic.\n"
                             "Use /attach <number> force to recreate the topic."
                         )
                         return
@@ -624,7 +624,7 @@ class TelegramBridge(BridgeInterface):
             dir_short = external.get("directory", "").rsplit("/", 1)[-1]
             await update.message.reply_text(
                 f"✅ Attached to {external['runner_type']} session in {dir_short}\n\n"
-                f"A new topic has been created — send messages there to interact."
+                f"A new topic has been created. Send messages there to interact."
             )
 
         except httpx.HTTPStatusError as e:
@@ -925,7 +925,7 @@ class TelegramBridge(BridgeInterface):
         if not topic_id:
             await update.message.reply_text(
                 "💡 Send messages in a session topic to interact with that agent. "
-                "This is the General topic — messages here aren't routed to any session."
+                "This is the General topic. Messages here aren't routed to any session."
             )
             return
 
@@ -954,7 +954,7 @@ class TelegramBridge(BridgeInterface):
                 await update.message.reply_text(f"❌ {message}")
             else:
                 await update.message.reply_text(
-                    "❌ Failed to deny — request may have expired."
+                    "❌ Failed to deny. Request may have expired."
                 )
             return
 

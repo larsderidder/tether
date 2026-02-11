@@ -363,7 +363,7 @@ class DiscordBridge(BridgeInterface):
             "Tether Commands:\n\n"
             "!status — List all sessions\n"
             "!list [page|search] — List external sessions (Claude Code, Codex)\n"
-            "!attach <number> — Attach to an external session\n"
+            "!attach <number> [force] — Attach to an external session\n"
             "!new [agent] [directory] — Start a new session\n"
             "!stop — Interrupt the session in this thread\n"
             "!usage — Show token usage and cost for this session\n"
@@ -624,11 +624,14 @@ class DiscordBridge(BridgeInterface):
         import httpx
 
         if not args:
-            await message.channel.send("Usage: !attach <number>\n\nRun !list first.")
+            await message.channel.send("Usage: !attach <number> [force]\n\nRun !list first.")
             return
 
+        parts = args.split()
+        force = len(parts) > 1 and parts[-1].lower() == "force"
+
         try:
-            index = int(args.split()[0]) - 1
+            index = int(parts[0]) - 1
         except ValueError:
             await message.channel.send("Please provide a session number.")
             return
@@ -664,11 +667,46 @@ class DiscordBridge(BridgeInterface):
             session_id = session["id"]
 
             # Check if already has a thread
-            if session_id in self._thread_ids:
-                await message.channel.send(
-                    "Already attached — check the existing thread."
-                )
-                return
+            existing_thread_id = self._thread_ids.get(session_id)
+            if existing_thread_id:
+                if force:
+                    logger.info(
+                        "Force-recreating thread",
+                        session_id=session_id,
+                        thread_id=existing_thread_id,
+                    )
+                    self._thread_ids.pop(session_id, None)
+                    name = self._thread_names.pop(session_id, None)
+                    if name:
+                        self._used_thread_names.discard(name)
+                        save_mapping(path=self._thread_name_path, mapping=self._thread_names)
+                else:
+                    # Verify the thread is still accessible
+                    thread_ok = False
+                    try:
+                        thread = self._client.get_channel(existing_thread_id)
+                        if thread is not None:
+                            thread_ok = True
+                    except Exception:
+                        pass
+
+                    if thread_ok:
+                        await message.channel.send(
+                            f"Already attached. Open thread: <#{existing_thread_id}>\n"
+                            "Use `!attach <number> force` to recreate the thread."
+                        )
+                        return
+                    else:
+                        logger.info(
+                            "Existing thread is stale, will recreate",
+                            session_id=session_id,
+                            thread_id=existing_thread_id,
+                        )
+                        self._thread_ids.pop(session_id, None)
+                        name = self._thread_names.pop(session_id, None)
+                        if name:
+                            self._used_thread_names.discard(name)
+                            save_mapping(path=self._thread_name_path, mapping=self._thread_names)
 
             # Create thread
             session_name = self._make_external_thread_name(
@@ -870,7 +908,7 @@ class DiscordBridge(BridgeInterface):
             else:
                 await message.channel.send(f"❌ {msg}")
         else:
-            await message.channel.send("❌ Failed — request may have expired.")
+            await message.channel.send("❌ Failed. Request may have expired.")
 
     # ------------------------------------------------------------------
     # Bridge interface (outgoing events)
