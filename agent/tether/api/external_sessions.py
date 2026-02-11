@@ -84,6 +84,7 @@ async def list_external_sessions(
             runner_type=s.runner_type,
             directory=s.directory,
             first_prompt=s.first_prompt,
+            last_prompt=s.last_prompt,
             last_activity=s.last_activity,
             message_count=s.message_count,
             is_running=s.is_running,

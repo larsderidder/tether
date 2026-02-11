@@ -13,6 +13,7 @@ def _mk_sessions(n: int) -> list[dict]:
                 "runner_type": "codex" if i % 2 else "claude_code",
                 "directory": f"/tmp/repo-{i}",
                 "first_prompt": f"prompt-{i}",
+                "last_prompt": f"prompt-{i}",
                 "is_running": bool(i % 2),
             }
         )
@@ -29,7 +30,7 @@ def test_slack_list_search_filters_and_numbers_match_view() -> None:
     assert total_pages == 2
     assert "[search: repo-1]" in text
     # "repo-1" and "repo-10" etc can match, but numbering must be 1..N for the view.
-    assert "  1." in text
+    assert "1. `repo-1`" in text
 
 
 def test_discord_list_page_2_starts_at_11() -> None:
@@ -40,6 +41,6 @@ def test_discord_list_page_2_starts_at_11() -> None:
 
     assert page == 2
     assert total_pages == 3
-    assert "  11." in text
-    assert "  20." in text
-    assert "  21." not in text
+    assert "11. `repo-10`" in text
+    assert "20. `repo-19`" in text
+    assert "21. " not in text

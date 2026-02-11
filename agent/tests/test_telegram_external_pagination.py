@@ -21,6 +21,7 @@ def _mk_sessions(n: int) -> list[dict]:
                 "runner_type": "codex" if i % 2 else "claude_code",
                 "directory": f"/tmp/repo-{i}",
                 "first_prompt": f"prompt-{i}",
+                "last_prompt": f"prompt-{i}",
                 "is_running": bool(i % 2),
             }
         )
@@ -38,9 +39,9 @@ async def test_external_page_numbers_are_global(tmp_path: Path) -> None:
     assert page == 2
     assert total_pages == 3
     # Page size is 10, so page 2 starts at item 11.
-    assert "  11." in text
-    assert "  20." in text
-    assert "  21." not in text
+    assert "11. `repo-10`" in text
+    assert "20. `repo-19`" in text
+    assert "21. " not in text
 
 
 @pytest.mark.anyio

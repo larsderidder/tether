@@ -118,6 +118,7 @@ def _parse_session_summary(
     """Parse a pi session JSONL file and return summary info."""
     session_id: str | None = None
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str | None = None
     directory: str | None = None
     message_count = 0
@@ -152,10 +153,12 @@ def _parse_session_summary(
                     role = message.get("role")
                     if role in ("user", "assistant"):
                         message_count += 1
-                    if role == "user" and first_prompt is None:
+                    if role == "user":
                         text = _extract_user_text(message.get("content"))
                         if text:
-                            first_prompt = text[:200]
+                            if first_prompt is None:
+                                first_prompt = text[:200]
+                            last_prompt = text[:200]
 
         # Fallback: decode directory from folder name
         if directory is None:
@@ -181,6 +184,7 @@ def _parse_session_summary(
             runner_type=ExternalRunnerType.PI,
             directory=directory,
             first_prompt=first_prompt,
+            last_prompt=last_prompt,
             last_activity=last_activity,
             message_count=message_count,
             is_running=session_id in running_sessions,
@@ -289,6 +293,7 @@ def get_pi_session_detail(
 
     running_sessions = find_running_pi_sessions()
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str | None = None
     directory: str | None = None
     messages: list[ExternalSessionMessage] = []
@@ -324,6 +329,7 @@ def get_pi_session_detail(
                         if text:
                             if first_prompt is None:
                                 first_prompt = text[:200]
+                            last_prompt = text[:200]
                             messages.append(
                                 ExternalSessionMessage(
                                     role="user",
@@ -365,6 +371,7 @@ def get_pi_session_detail(
             runner_type=ExternalRunnerType.PI,
             directory=directory,
             first_prompt=first_prompt,
+            last_prompt=last_prompt,
             last_activity=last_activity,
             message_count=len(messages),
             is_running=session_id in running_sessions,

@@ -39,6 +39,7 @@ class ExternalSessionSummary(BaseModel):
     runner_type: ExternalRunnerType
     directory: str
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str
     message_count: int
     is_running: bool

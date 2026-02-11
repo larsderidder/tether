@@ -439,15 +439,16 @@ class BridgeInterface(ABC):
             directory = s.get("directory", "")
             dir_short = directory.rsplit("/", 1)[-1] if directory else "?"
             age = _relative_time(s.get("last_activity", ""))
-            prompt = s.get("first_prompt") or ""
+            # Use last_prompt if available, fallback to first_prompt
+            prompt = s.get("last_prompt") or s.get("first_prompt") or ""
             prompt_short = (prompt[:50] + "…") if len(prompt) > 50 else prompt
-            # Compact: "1. tether — 2h ago"
-            header = f"  {n}. {dir_short}"
+            # Format: "1. `workspace` • 9m ago"
+            header = f"{n}. `{dir_short}`"
             if age:
-                header += f" — {age}"
+                header += f" • {age}"
             lines.append(header)
             if prompt_short:
-                lines.append(f"      {prompt_short}")
+                lines.append(f"   {prompt_short}")
 
         if (
             not self._external_query

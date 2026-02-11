@@ -67,6 +67,7 @@ def _parse_session_summary(
 ) -> ExternalSessionSummary | None:
     session_id: str | None = None
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str | None = None
     directory: str | None = None
     message_count = 0
@@ -102,9 +103,11 @@ def _parse_session_summary(
                         text = _extract_text(content)
                         if role in ("user", "assistant"):
                             message_count += 1
-                        if role == "user" and first_prompt is None and text:
+                        if role == "user" and text:
                             if not _is_environment_context(text):
-                                first_prompt = text[:200]
+                                if first_prompt is None:
+                                    first_prompt = text[:200]
+                                last_prompt = text[:200]
 
         if session_id is None:
             session_id = _infer_session_id(session_file)
@@ -122,6 +125,7 @@ def _parse_session_summary(
             runner_type=ExternalRunnerType.CODEX,
             directory=directory,
             first_prompt=first_prompt,
+            last_prompt=last_prompt,
             last_activity=last_activity,
             message_count=message_count,
             is_running=(session_id or "") in running_sessions,
@@ -195,6 +199,7 @@ def get_codex_session_detail(
 
     running_sessions = find_running_codex_sessions()
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str | None = None
     directory: str | None = None
     messages: list[ExternalSessionMessage] = []
@@ -230,9 +235,11 @@ def get_codex_session_detail(
                         continue
                     content = payload.get("content")
                     text = _extract_text(content)
-                    if role == "user" and first_prompt is None and text:
+                    if role == "user" and text:
                         if not _is_environment_context(text):
-                            first_prompt = text[:200]
+                            if first_prompt is None:
+                                first_prompt = text[:200]
+                            last_prompt = text[:200]
                     messages.append(
                         ExternalSessionMessage(
                             role=role,
@@ -257,6 +264,7 @@ def get_codex_session_detail(
             runner_type=ExternalRunnerType.CODEX,
             directory=directory,
             first_prompt=first_prompt,
+            last_prompt=last_prompt,
             last_activity=last_activity,
             message_count=len(messages),
             is_running=session_id in running_sessions,

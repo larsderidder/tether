@@ -90,6 +90,7 @@ def _parse_session_summary(
     session_id = session_file.stem
 
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str | None = None
     directory: str | None = None
     message_count = 0
@@ -119,21 +120,22 @@ def _parse_session_summary(
 
                 if record_type == "user":
                     message_count += 1
-                    # Extract first prompt (skip tool results and system messages)
-                    if first_prompt is None:
-                        message = record.get("message", {})
-                        # Skip tool_result records — they are user-role but not prompts
-                        if message.get("role") == "user" and any(
-                            isinstance(b, dict) and b.get("type") == "tool_result"
-                            for b in (message.get("content") or [])
-                            if isinstance(message.get("content"), list)
-                        ):
-                            pass  # skip tool_result messages
-                        else:
-                            content = message.get("content")
-                            text = _extract_user_prompt(content)
-                            if text:
+                    # Extract first and last prompt (skip tool results and system messages)
+                    message = record.get("message", {})
+                    # Skip tool_result records — they are user-role but not prompts
+                    if message.get("role") == "user" and any(
+                        isinstance(b, dict) and b.get("type") == "tool_result"
+                        for b in (message.get("content") or [])
+                        if isinstance(message.get("content"), list)
+                    ):
+                        pass  # skip tool_result messages
+                    else:
+                        content = message.get("content")
+                        text = _extract_user_prompt(content)
+                        if text:
+                            if first_prompt is None:
                                 first_prompt = text[:200]
+                            last_prompt = text[:200]
 
                 elif record_type == "assistant":
                     message_count += 1
@@ -154,6 +156,7 @@ def _parse_session_summary(
             runner_type=ExternalRunnerType.CLAUDE_CODE,
             directory=directory,
             first_prompt=first_prompt,
+            last_prompt=last_prompt,
             last_activity=last_activity,
             message_count=message_count,
             is_running=session_id in running_sessions,
@@ -232,6 +235,7 @@ def get_claude_session_detail(
 
     running_sessions = find_running_claude_sessions()
     first_prompt: str | None = None
+    last_prompt: str | None = None
     last_activity: str | None = None
     directory: str | None = None
     messages: list[ExternalSessionMessage] = []
@@ -264,10 +268,11 @@ def get_claude_session_detail(
                     content = message.get("content")
                     text, _ = _extract_text_content(content, role="user")
                     if text:
-                        if first_prompt is None:
-                            candidate = _extract_user_prompt(content)
-                            if candidate:
+                        candidate = _extract_user_prompt(content)
+                        if candidate:
+                            if first_prompt is None:
                                 first_prompt = candidate[:200]
+                            last_prompt = candidate[:200]
                         messages.append(ExternalSessionMessage(
                             role="user",
                             content=text,
@@ -304,6 +309,7 @@ def get_claude_session_detail(
             runner_type=ExternalRunnerType.CLAUDE_CODE,
             directory=directory,
             first_prompt=first_prompt,
+            last_prompt=last_prompt,
             last_activity=last_activity,
             message_count=len(messages),
             is_running=session_id in running_sessions,
