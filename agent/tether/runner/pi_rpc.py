@@ -201,6 +201,7 @@ class PiRpcRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            limit=10 * 1024 * 1024,  # 10MB buffer for large tool outputs
         )
         self._processes[session_id] = proc
         self._is_streaming[session_id] = False
@@ -476,39 +477,22 @@ class PiRpcRunner:
                     suggestions=None,
                 )
 
-                # Wait for approval (pi doesn't block on permissions itself,
-                # but we expose them to Tether's approval UI)
-                async def _wait_for_approval(rid: str = request_id) -> None:
-                    try:
-                        result = await asyncio.wait_for(
-                            future, timeout=PERMISSION_TIMEOUT
-                        )
-                        allowed = result.get("behavior") != "deny"
-                        await self._events.on_permission_resolved(
-                            session_id,
-                            request_id=rid,
-                            resolved_by="user",
-                            allowed=allowed,
-                        )
-                        if not allowed:
-                            # Abort the pi session if denied
-                            self._write_cmd(proc, {"type": "abort"})
-                    except asyncio.TimeoutError:
-                        store.resolve_pending_permission(
-                            session_id,
-                            rid,
-                            {"behavior": "deny", "message": "Timeout"},
-                        )
-                        await self._events.on_permission_resolved(
-                            session_id,
-                            request_id=rid,
-                            resolved_by="timeout",
-                            allowed=False,
-                        )
-                    except asyncio.CancelledError:
-                        pass
+                # NOTE: Pi auto-approves tools by default (like the TUI does).
+                # The requiresApproval flag is informational only.
+                # We skip Tether's approval flow and just let pi execute.
+                async def _auto_approve(rid: str = request_id) -> None:
+                    # Auto-resolve immediately (pi auto-approves by default)
+                    store.resolve_pending_permission(
+                        session_id, rid, {"behavior": "allow"}
+                    )
+                    await self._events.on_permission_resolved(
+                        session_id,
+                        request_id=rid,
+                        resolved_by="auto",
+                        allowed=True,
+                    )
 
-                asyncio.create_task(_wait_for_approval())
+                asyncio.create_task(_auto_approve())
 
         elif etype == "tool_execution_update":
             tool_name = event.get("toolName", "unknown")
