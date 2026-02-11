@@ -234,21 +234,29 @@ class PiRpcRunner:
             return
 
         logger.info("Sending prompt to pi", session_id=session_id, text_length=len(text))
-        self._write_cmd(proc, {
+        await self._write_cmd_async(proc, {
             "type": "prompt",
             "message": text,
         })
 
     def _write_cmd(self, proc: asyncio.subprocess.Process, cmd: dict) -> None:
-        """Write a JSON-line command to the subprocess stdin."""
+        """Write a JSON-line command to the subprocess stdin (sync version)."""
+        if proc.stdin is None:
+            return
+        line = json.dumps(cmd, separators=(",", ":")) + "\n"
+        proc.stdin.write(line.encode())
+        # Note: This doesn't await drain(). Use _write_cmd_async for async contexts.
+    
+    async def _write_cmd_async(self, proc: asyncio.subprocess.Process, cmd: dict) -> None:
+        """Write a JSON-line command to the subprocess stdin and await flush."""
         if proc.stdin is None:
             return
         line = json.dumps(cmd, separators=(",", ":")) + "\n"
         proc.stdin.write(line.encode())
         try:
-            asyncio.ensure_future(proc.stdin.drain())
+            await proc.stdin.drain()
         except Exception:
-            pass
+            logger.debug("Failed to drain stdin", exc_info=True)
 
     def _get_pi_binary(self) -> str:
         """Find the pi binary, raising if not available."""
@@ -316,8 +324,18 @@ class PiRpcRunner:
                 if not raw:
                     logger.info("Pi stdout EOF", session_id=session_id)
                     break
+                
+                # Strip terminal escape sequences (e.g., ]777;notify;...)
+                # Pi emits OSC notifications before agent_end JSON
+                line = raw.decode() if isinstance(raw, bytes) else raw
+                if ']777;notify;' in line:
+                    # Find the start of JSON (after the notification)
+                    json_start = line.find('{"type":')
+                    if json_start > 0:
+                        line = line[json_start:]
+                
                 try:
-                    event = json.loads(raw)
+                    event = json.loads(line)
                 except json.JSONDecodeError:
                     logger.debug(
                         "Non-JSON output from pi",

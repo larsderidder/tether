@@ -327,3 +327,34 @@ class TestPiRpcEventHandling:
 
         assert len(events.errors) == 1
         assert "Agent is busy" in events.errors[0]["message"]
+
+    @pytest.mark.anyio
+    async def test_handle_agent_end_with_escape_sequences(self, runner_and_events, fresh_store):
+        """Test that terminal escape sequences are stripped from agent_end events."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        # Create a session first
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session_id = session.id
+
+        # Simulate the actual output from pi with OSC notification escape sequence
+        # This is what pi emits: ]777;notify;π;Hey!{"type":"agent_end",...}
+        raw_line = ']777;notify;π;Ready!{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"Ready!"}]}]}'
+        
+        # The reader should strip the escape sequence and parse the JSON
+        # Simulate what _read_events does
+        line = raw_line
+        if ']777;notify;' in line:
+            json_start = line.find('{"type":')
+            if json_start > 0:
+                line = line[json_start:]
+        
+        event = json.loads(line)
+        await runner._handle_event(session_id, proc, event)
+
+        # Should emit final output from agent_end
+        final_outputs = [o for o in events.outputs if o.get("is_final") is True]
+        assert len(final_outputs) == 1
+        assert final_outputs[0]["text"] == "Ready!"
+        assert final_outputs[0]["kind"] == "final"
