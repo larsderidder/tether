@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import structlog
 from fastapi import APIRouter, Depends, Query
 
@@ -76,6 +78,11 @@ async def list_external_sessions(
         runner_type=parsed_runner_type,
         limit=limit,
     )
+
+    # Hide Codex sessions when the sidecar is not configured
+    codex_enabled = bool(os.environ.get("TETHER_CODEX_SIDECAR_URL"))
+    if not codex_enabled:
+        sessions = [s for s in sessions if s.runner_type != ExternalRunnerType.CODEX]
 
     logger.info("Found external sessions", count=len(sessions))
     return [
@@ -218,8 +225,6 @@ async def attach_to_external_session(
     if parsed_runner_type == ExternalRunnerType.CLAUDE_CODE:
         session.runner_type = "claude-local"
     elif parsed_runner_type == ExternalRunnerType.CODEX:
-        import os
-
         if not os.environ.get("TETHER_CODEX_SIDECAR_URL"):
             raise_http_error(
                 "CODEX_SIDECAR_REQUIRED",
