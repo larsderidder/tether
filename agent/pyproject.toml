@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tether-ai"
-version = "0.2.4"
+version = "0.2.5"
 description = "Control your AI coding agents from your phone when you're away from your desk"
 readme = "README.md"
 license = "MIT"
