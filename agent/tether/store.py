@@ -265,12 +265,14 @@ class SessionStore:
         """
         runtime = self._runtime.get(session_id)
         subscribers = runtime.subscribers if runtime else []
-        logger.debug(
-            "Broadcasting event",
-            session_id=session_id,
-            event_type=event.get("type"),
-            subscriber_count=len(subscribers),
-        )
+        event_type = event.get("type")
+        if event_type != "heartbeat":
+            logger.debug(
+                "Broadcasting event",
+                session_id=session_id,
+                event_type=event_type,
+                subscriber_count=len(subscribers),
+            )
         for queue in list(subscribers):
             await queue.put(event)
         self._append_event_log(session_id, event)
