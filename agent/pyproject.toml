@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tether-ai"
-version = "0.2.2"
+version = "0.2.3"
 description = "Control your AI coding agents from your phone when you're away from your desk"
 readme = "README.md"
 license = "MIT"
@@ -40,10 +40,10 @@ classifiers = [
 dependencies = [
   "agent-tether[all]>=0.4.0",
   "agent-sessions>=0.1.0",
-  "fastapi==0.110.0",
-  "uvicorn==0.27.1",
-  "pydantic==2.7.4",
-  "structlog==24.4.0",
+  "fastapi>=0.110.0",
+  "uvicorn>=0.27.0",
+  "pydantic>=2.7.0",
+  "structlog>=24.4.0",
   "payload-redactor>=0.3.0",
   "anthropic>=0.39.0",
   "sqlmodel>=0.0.22",
