@@ -45,3 +45,4 @@ background
 # Ignore historical docs that may reappear locally
 EXTERNAL_AGENT_IMPLEMENTATION.md
 AGENT_TETHER_EXTRACTION.md
+agent/build/
