@@ -61,6 +61,7 @@ async def test_attach_codex_session(
 ) -> None:
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("TETHER_CODEX_SIDECAR_URL", "http://localhost:8788")
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
     rollout_path = codex_home / "sessions" / "2026" / "02" / "06" / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
@@ -100,6 +101,42 @@ async def test_attach_codex_session(
 
 
 @pytest.mark.anyio
+async def test_attach_codex_without_sidecar_url_returns_400(
+    api_client: httpx.AsyncClient,
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Attaching to Codex sessions without TETHER_CODEX_SIDECAR_URL should fail."""
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
+
+    session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
+    rollout_path = codex_home / "sessions" / "2026" / "02" / "06" / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    _write_rollout(rollout_path, session_id)
+
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+
+    import tether.api.external_sessions as external_sessions
+    monkeypatch.setattr(external_sessions, "store", fresh_store)
+
+    response = await api_client.post(
+        "/api/sessions/attach",
+        json={
+            "external_id": session_id,
+            "runner_type": "codex",
+            "directory": str(workdir),
+        },
+    )
+
+    assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
+    body = response.json()
+    assert "sidecar" in str(body).lower(), f"Expected 'sidecar' in response: {body}"
+
+
+@pytest.mark.anyio
 async def test_sync_after_restart_does_not_duplicate(
     api_client: httpx.AsyncClient,
     fresh_store: SessionStore,
@@ -109,6 +146,7 @@ async def test_sync_after_restart_does_not_duplicate(
     """Sync after agent restart (lost synced_count) must not re-emit history."""
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("TETHER_CODEX_SIDECAR_URL", "http://localhost:8788")
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
     rollout_path = (

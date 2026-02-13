@@ -140,7 +140,14 @@ async def _init_bridges() -> None:
             await bridge.start()
             bridge.restore_thread_mappings(sessions)
             bridge_manager.register_bridge("discord", bridge)
-            logger.info("Discord bridge registered and started")
+            if not discord_channel:
+                pairing_code = settings.discord_pairing_code() or bridge._pairing_code
+                logger.info(
+                    "Discord bridge started. Run !setup in your Discord channel to configure it.",
+                    code=pairing_code,
+                )
+            else:
+                logger.info("Discord bridge registered and started")
         except Exception:
             logger.exception("Failed to initialize Discord bridge")
 

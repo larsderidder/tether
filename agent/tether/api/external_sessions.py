@@ -218,6 +218,15 @@ async def attach_to_external_session(
     if parsed_runner_type == ExternalRunnerType.CLAUDE_CODE:
         session.runner_type = "claude-local"
     elif parsed_runner_type == ExternalRunnerType.CODEX:
+        import os
+
+        if not os.environ.get("TETHER_CODEX_SIDECAR_URL"):
+            raise_http_error(
+                "CODEX_SIDECAR_REQUIRED",
+                "Attaching to Codex sessions requires the Codex sidecar. "
+                "Set TETHER_CODEX_SIDECAR_URL to enable this feature.",
+                400,
+            )
         session.runner_type = "codex"
         session.adapter = "codex_sdk_sidecar"
     elif parsed_runner_type == ExternalRunnerType.PI:
