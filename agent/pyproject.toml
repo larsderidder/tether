@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Control your AI coding agents from your phone when you're away from your desk"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
   { name = "Lars de Ridder", email = "lars@xithing.io" },
 ]
