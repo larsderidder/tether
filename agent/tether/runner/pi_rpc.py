@@ -68,6 +68,8 @@ class PiRpcRunner:
         self._session_files: dict[str, str] = {}  # tether session_id -> pi session file
         self._pending_inputs: dict[str, list[str]] = {}
         self._is_streaming: dict[str, bool] = {}
+        self._streamed_text: dict[str, bool] = {}  # True if text_delta events were received
+        self._tool_had_updates: dict[str, set[str]] = {}  # tool_call_ids with streamed output
         self._pi_binary: str | None = None
 
     # ------------------------------------------------------------------
@@ -286,6 +288,8 @@ class PiRpcRunner:
         self._processes.pop(session_id, None)
         self._pending_inputs.pop(session_id, None)
         self._is_streaming.pop(session_id, False)
+        self._streamed_text.pop(session_id, False)
+        self._tool_had_updates.pop(session_id, None)
         store.clear_process(session_id)
 
     # ------------------------------------------------------------------
@@ -410,25 +414,29 @@ class PiRpcRunner:
         # -- Agent lifecycle --
         if etype == "agent_start":
             self._is_streaming[session_id] = True
+            self._streamed_text[session_id] = False
 
         elif etype == "agent_end":
-            self._is_streaming[session_id] = False
-            # Emit final accumulated text from agent_end messages if available
-            messages = event.get("messages", [])
-            for msg in messages:
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    content = msg.get("content", [])
-                    for block in content if isinstance(content, list) else []:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            if text:
-                                await self._events.on_output(
-                                    session_id,
-                                    "combined",
-                                    text,
-                                    kind="final",
-                                    is_final=True,
-                                )
+            self._is_streaming.pop(session_id, False)
+            streamed = self._streamed_text.pop(session_id, False)
+            # Only emit the final accumulated text if we did NOT already
+            # stream it via text_delta events (avoids double messages).
+            if not streamed:
+                messages = event.get("messages", [])
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("role") == "assistant":
+                        content = msg.get("content", [])
+                        for block in content if isinstance(content, list) else []:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text", "")
+                                if text:
+                                    await self._events.on_output(
+                                        session_id,
+                                        "combined",
+                                        text,
+                                        kind="final",
+                                        is_final=True,
+                                    )
             # Agent finished its turn; signal waiting for input.
             # The pi process stays alive between turns, so the finally
             # block in _read_events won't fire until the process exits.
@@ -442,6 +450,7 @@ class PiRpcRunner:
             if delta_type == "text_delta":
                 delta = delta_event.get("delta", "")
                 if delta:
+                    self._streamed_text[session_id] = True
                     await self._events.on_output(
                         session_id,
                         "combined",
@@ -512,6 +521,8 @@ class PiRpcRunner:
                 )
 
         elif etype == "tool_execution_update":
+            # Track that this tool streamed partial output so we can
+            # skip the duplicate in tool_execution_end.
             tool_name = event.get("toolName", "unknown")
             partial = event.get("partialResult", {})
             content = partial.get("content", [])
@@ -519,6 +530,9 @@ class PiRpcRunner:
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block.get("text", "")
                     if text:
+                        self._tool_had_updates.setdefault(session_id, set()).add(
+                            event.get("toolCallId", "")
+                        )
                         await self._events.on_output(
                             session_id,
                             "combined",
@@ -528,6 +542,14 @@ class PiRpcRunner:
                         )
 
         elif etype == "tool_execution_end":
+            tool_call_id = event.get("toolCallId", "")
+            already_streamed = tool_call_id in self._tool_had_updates.get(
+                session_id, set()
+            )
+            # Clean up tracking
+            if session_id in self._tool_had_updates:
+                self._tool_had_updates[session_id].discard(tool_call_id)
+
             tool_name = event.get("toolName", "unknown")
             is_error = event.get("isError", False)
             result = event.get("result", {})
@@ -538,7 +560,7 @@ class PiRpcRunner:
                     text_parts.append(block.get("text", ""))
             text = "\n".join(text_parts)
 
-            if text:
+            if text and (is_error or not already_streamed):
                 truncated = text[:500] + "..." if len(text) > 500 else text
                 prefix = "[error] " if is_error else "[result] "
                 await self._events.on_output(
