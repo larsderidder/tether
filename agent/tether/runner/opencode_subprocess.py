@@ -56,6 +56,7 @@ class OpencodeSubprocessRunner(Runner):
     def __init__(self, events: RunnerEvents):
         self.events = events
         self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._pending_inputs: dict[str, list[str]] = {}
         self._opencode_bin = _find_opencode_bin()
         if not self._opencode_bin:
             raise ValueError(
@@ -75,6 +76,23 @@ class OpencodeSubprocessRunner(Runner):
             prompt: User message
             approval_choice: Permission mode (not used by OpenCode)
         """
+        if not prompt.strip():
+            return
+
+        # If a process is already running, queue the input
+        proc = self._processes.get(session_id)
+        if proc and proc.returncode is None:
+            logger.warning(
+                "OpenCode input received while process running; queueing",
+                session_id=session_id,
+            )
+            self._pending_inputs.setdefault(session_id, []).append(prompt)
+            return
+
+        await self._run_turn(session_id, prompt)
+
+    async def _run_turn(self, session_id: str, prompt: str) -> None:
+        """Run a single OpenCode turn for the given prompt."""
         from tether.store import store
 
         # Get the OpenCode session ID from the store
@@ -158,6 +176,14 @@ class OpencodeSubprocessRunner(Runner):
             await self.events.on_exit(session_id, 1)
         finally:
             self._processes.pop(session_id, None)
+
+            # Process queued inputs sequentially
+            pending = self._pending_inputs.get(session_id)
+            if pending:
+                next_prompt = pending.pop(0)
+                if not pending:
+                    self._pending_inputs.pop(session_id, None)
+                await self._run_turn(session_id, next_prompt)
 
     async def _read_output(
         self, session_id: str, proc: asyncio.subprocess.Process
@@ -275,14 +301,9 @@ class OpencodeSubprocessRunner(Runner):
     async def send_input(self, session_id: str, text: str) -> None:
         """Send input to OpenCode.
 
-        OpenCode run mode doesn't support interactive input within a turn.
-        Input is only accepted at the start of a new turn via `start()`.
+        OpenCode run mode is one-shot, so each input spawns a new process.
         """
-        await self.events.on_error(
-            session_id,
-            "RUNNER_ERROR",
-            "OpenCode does not support mid-turn input. Send input as a new message.",
-        )
+        await self.start(session_id, text, approval_choice="auto")
 
     async def stop(self, session_id: str) -> int | None:
         """Stop the OpenCode subprocess for a session."""
