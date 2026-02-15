@@ -57,6 +57,7 @@ class OpencodeSubprocessRunner(Runner):
         self.events = events
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._pending_inputs: dict[str, list[str]] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
         self._opencode_bin = _find_opencode_bin()
         if not self._opencode_bin:
             raise ValueError(
@@ -89,7 +90,17 @@ class OpencodeSubprocessRunner(Runner):
             self._pending_inputs.setdefault(session_id, []).append(prompt)
             return
 
-        await self._run_turn(session_id, prompt)
+        self._spawn_task(session_id, prompt)
+
+    def _spawn_task(self, session_id: str, prompt: str) -> None:
+        """Spawn a background task to run a turn."""
+        task = asyncio.create_task(self._run_turn(session_id, prompt))
+        self._tasks[session_id] = task
+
+        def _cleanup(_task: asyncio.Task) -> None:
+            self._tasks.pop(session_id, None)
+
+        task.add_done_callback(_cleanup)
 
     async def _run_turn(self, session_id: str, prompt: str) -> None:
         """Run a single OpenCode turn for the given prompt."""
@@ -183,7 +194,7 @@ class OpencodeSubprocessRunner(Runner):
                 next_prompt = pending.pop(0)
                 if not pending:
                     self._pending_inputs.pop(session_id, None)
-                await self._run_turn(session_id, next_prompt)
+                self._spawn_task(session_id, next_prompt)
 
     async def _read_output(
         self, session_id: str, proc: asyncio.subprocess.Process
@@ -323,6 +334,15 @@ class OpencodeSubprocessRunner(Runner):
 
         exit_code = proc.returncode
         self._processes.pop(session_id, None)
+
+        task = self._tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         return exit_code
 
     def update_permission_mode(self, session_id: str, approval_choice: str) -> None:
