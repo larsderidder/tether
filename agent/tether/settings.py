@@ -240,6 +240,20 @@ class Settings:
         return _get("TETHER_CODEX_SIDECAR_TOKEN")
 
     # -------------------------------------------------------------------------
+    # OpenCode Runner Settings
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def opencode_bin() -> str:
+        """Path to the OpenCode binary.
+
+        Env: OPENCODE_BIN
+
+        If not set, auto-detects from ~/.opencode/bin/opencode or PATH.
+        """
+        return _get("OPENCODE_BIN")
+
+    # -------------------------------------------------------------------------
     # LiteLLM Runner Settings
     # -------------------------------------------------------------------------
 
@@ -252,7 +266,9 @@ class Settings:
 
         Env: TETHER_AGENT_LITELLM_MODEL (default: openrouter/deepseek/deepseek-chat)
         """
-        return _get("TETHER_AGENT_LITELLM_MODEL", default="openrouter/deepseek/deepseek-chat")
+        return _get(
+            "TETHER_AGENT_LITELLM_MODEL", default="openrouter/deepseek/deepseek-chat"
+        )
 
     @staticmethod
     def litellm_max_tokens() -> int:
@@ -280,9 +296,10 @@ class Settings:
 
         Env: TELEGRAM_FORUM_GROUP_ID (preferred), TELEGRAM_GROUP_ID (legacy)
         """
-        value = os.environ.get("TELEGRAM_FORUM_GROUP_ID", "").strip() or os.environ.get(
-            "TELEGRAM_GROUP_ID", ""
-        ).strip()
+        value = (
+            os.environ.get("TELEGRAM_FORUM_GROUP_ID", "").strip()
+            or os.environ.get("TELEGRAM_GROUP_ID", "").strip()
+        )
         if not value:
             return 0
         try:

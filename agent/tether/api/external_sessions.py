@@ -239,6 +239,7 @@ async def attach_to_external_session(
         session.adapter = "codex_sdk_sidecar"
     elif parsed_runner_type == ExternalRunnerType.OPENCODE:
         session.runner_type = "opencode"
+        session.adapter = "opencode"
     elif parsed_runner_type == ExternalRunnerType.PI:
         session.runner_type = "pi"
         session.adapter = "pi_rpc"
@@ -253,9 +254,32 @@ async def attach_to_external_session(
     store.set_runner_session_id(session.id, external_id)
     store.set_workdir(session.id, normalized_directory, managed=False)
 
+    # Platform binding: create messaging thread if requested
+    if payload.platform:
+        session.platform = payload.platform
+        store.update_session(session)
+        try:
+            from tether.bridges.glue import bridge_manager
+
+            thread_info = await bridge_manager.create_thread(
+                session.id,
+                session.name or "Attached session",
+                platform=payload.platform,
+            )
+            session.platform_thread_id = thread_info.get("thread_id")
+        except (ValueError, RuntimeError) as exc:
+            store.delete_session(session.id)
+            raise_http_error("VALIDATION_ERROR", str(exc), 400)
+
     # Start in AWAITING_INPUT state (ready to receive input that will resume)
     session.state = SessionState.AWAITING_INPUT
     store.update_session(session)
+
+    # Subscribe bridge if platform is bound
+    if session.platform:
+        from tether.bridges.glue import bridge_subscriber
+
+        bridge_subscriber.subscribe(session.id, session.platform)
 
     await emit_state(session)
 

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from tether.runner.claude_subprocess import ClaudeSubprocessRunner
     from tether.runner.codex_sdk_sidecar import SidecarRunner
     from tether.runner.litellm_runner import LiteLLMRunner
+    from tether.runner.opencode_subprocess import OpencodeSubprocessRunner
     from tether.runner.pi_rpc import PiRpcRunner
 
 # Cache the runner type after first initialization
@@ -132,6 +133,13 @@ def get_runner(events: RunnerEvents) -> Runner:
         from tether.runner.litellm_runner import LiteLLMRunner
 
         runner = LiteLLMRunner(events)
+        _active_runner_type = runner.runner_type
+        return runner
+
+    if name == "opencode":
+        from tether.runner.opencode_subprocess import OpencodeSubprocessRunner
+
+        runner = OpencodeSubprocessRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 
