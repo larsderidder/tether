@@ -11,11 +11,11 @@ Tether runs on your machine and turns agent runs into something you can *supervi
 a mobile friendly web UI plus messaging bridges (Telegram, Slack, Discord) with approvals, input
 prompts, and live output streaming.
 
-If you're running Claude Code / Codex locally and you want supervision (logs, state, diffs, approvals) in the places you
+If you're running Claude Code / Codex / OpenCode locally and you want supervision (logs, state, diffs, approvals) in the places you
 already work, this is that layer.
 
 ```
-Claude Code / Codex / custom agent
+Claude Code / Codex / OpenCode / custom agent
           |   (adapter, MCP, or REST)
           v
       Tether (local control plane)
@@ -47,7 +47,7 @@ Claude Code / Codex / custom agent
 2. Human in the loop: approve tool use, provide input, review diffs
 3. Observable: live streaming output and explicit session state (web and messaging)
 4. Messaging bridges: Telegram, Slack, and Discord with approvals and auto approve
-5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, Pi coding agent (experimental), plus LiteLLM (experimental)
+5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, OpenCode, Pi coding agent (experimental), plus LiteLLM (experimental)
 6. External agent API: MCP server and REST API for custom agents and integrations
 7. Mobile first UI: PWA dashboard for monitoring and controlling sessions (experimental)
 
@@ -181,11 +181,34 @@ pip install tether-ai[telegram]   # or [slack] or [discord]
 ## CLI
 
 ```
-tether init          # Interactive setup wizard
-tether start         # Start the server
-tether start --dev   # Dev mode (no auth required)
+tether init                          # Interactive setup wizard
+tether start                         # Start the server
+tether start --dev                   # Dev mode (no auth required)
 tether start --port 9000 --host 127.0.0.1
+
+tether status                        # Server health + session summary
+tether list                          # List Tether sessions
+tether list --external               # Discover Claude Code / Codex / OpenCode / Pi sessions
+tether attach <external-id>          # Attach an external session to Tether
+tether input <session-id> "message"  # Send input to a session
+tether interrupt <session-id>        # Interrupt a running session
 ```
+
+Session IDs accept short prefixes (first few characters are enough as long as they are unique).
+
+### Running in the background
+
+Tether does not have a built in daemon mode. To run it in the background:
+
+```bash
+nohup tether start > ~/.local/share/tether/tether.log 2>&1 &
+echo $! > ~/.local/share/tether/tether.pid
+
+# Later, to stop it:
+kill $(cat ~/.local/share/tether/tether.pid)
+```
+
+Or use your system's service manager (systemd, launchd, etc.).
 
 ## Configuration
 

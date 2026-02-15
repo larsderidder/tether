@@ -93,9 +93,9 @@ Event types: `output`, `output_final`, `session_state`, `metadata`, `heartbeat`,
 
 ## External Session Models (Pydantic, not persisted)
 
-- `ExternalSessionSummary` - Discovered Claude Code/Codex session (id, directory, first_prompt, is_running)
+- `ExternalSessionSummary` - Discovered external session (id, directory, first_prompt, is_running)
 - `ExternalSessionDetail` - Full history with messages
-- `ExternalRunnerType` - `CLAUDE_CODE` or `CODEX`
+- `ExternalRunnerType` - `CLAUDE_CODE`, `CODEX`, `OPENCODE`, or `PI`
 
 ## Key Files
 

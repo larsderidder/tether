@@ -98,8 +98,8 @@ Poll for events (user_input, approval_response). Params: `since_seq`.
 ## External Session Discovery (`/api/external-sessions`)
 
 ### `GET /api/external-sessions`
-List discoverable Claude Code and Codex sessions on the local machine.
-Params: `limit`, `runner_type`, `directory`.
+List discoverable Claude Code, Codex, OpenCode, and Pi sessions on the local machine.
+Params: `limit`, `runner_type` (`claude_code`, `codex`, `opencode`, `pi`), `directory`.
 
 ### `GET /api/external-sessions/{id}/history`
 Get message history for an external session.
