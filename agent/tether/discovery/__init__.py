@@ -2,6 +2,7 @@
 
 Maps Tether's External* naming to agent_sessions' naming convention.
 """
+
 # ruff: noqa: F401
 
 from agent_sessions import (
@@ -15,6 +16,8 @@ from agent_sessions import (
     get_claude_session_detail,
     list_codex_sessions,
     get_codex_session_detail,
+    list_opencode_sessions,
+    get_opencode_session_detail,
     list_pi_sessions,
     get_pi_session_detail,
 )

@@ -64,7 +64,7 @@ async def list_external_sessions(
         except ValueError:
             raise_http_error(
                 "VALIDATION_ERROR",
-                f"Invalid runner_type: {runner_type}. Must be 'claude_code', 'codex', or 'pi'.",
+                f"Invalid runner_type: {runner_type}. Must be 'claude_code', 'codex', 'opencode', or 'pi'.",
                 422,
             )
 
@@ -100,7 +100,10 @@ async def list_external_sessions(
     ]
 
 
-@router.get("/external-sessions/{external_id}/history", response_model=ExternalSessionDetailResponse)
+@router.get(
+    "/external-sessions/{external_id}/history",
+    response_model=ExternalSessionDetailResponse,
+)
 async def get_external_session_history(
     external_id: str,
     runner_type: str = Query(...),
@@ -130,7 +133,7 @@ async def get_external_session_history(
     except ValueError:
         raise_http_error(
             "VALIDATION_ERROR",
-            f"Invalid runner_type: {runner_type}. Must be 'claude_code', 'codex', or 'pi'.",
+            f"Invalid runner_type: {runner_type}. Must be 'claude_code', 'codex', 'opencode', or 'pi'.",
             422,
         )
 
@@ -234,6 +237,8 @@ async def attach_to_external_session(
             )
         session.runner_type = "codex"
         session.adapter = "codex_sdk_sidecar"
+    elif parsed_runner_type == ExternalRunnerType.OPENCODE:
+        session.runner_type = "opencode"
     elif parsed_runner_type == ExternalRunnerType.PI:
         session.runner_type = "pi"
         session.adapter = "pi_rpc"
@@ -321,6 +326,8 @@ async def sync_external_session(
     # Determine external runner type based on session's runner_type
     if session.runner_type == "codex":
         runner_type = ExternalRunnerType.CODEX
+    elif session.runner_type == "opencode":
+        runner_type = ExternalRunnerType.OPENCODE
     elif session.runner_type == "pi":
         runner_type = ExternalRunnerType.PI
     else:
