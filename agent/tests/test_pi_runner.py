@@ -230,7 +230,7 @@ class TestPiRpcEventHandling:
                 "content": [{"type": "text", "text": "Final answer"}],
             }],
         })
-        assert runner._is_streaming.get("sess1") is False
+        assert not runner._is_streaming.get("sess1")
 
         # Should have emitted the final text
         final_outputs = [o for o in events.outputs if o["is_final"] is True]
