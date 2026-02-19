@@ -1,6 +1,6 @@
 {
-  "name": "codex-sdk-sidecar",
-  "version": "0.2.0",
+  "name": "opencode-sdk-sidecar",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@tether/sidecar-common": "*",
+    "@opencode-ai/sdk": "file:/home/lars/.opencode/node_modules/@opencode-ai/sdk",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "pino": "^9.4.0",

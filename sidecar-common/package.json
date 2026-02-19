@@ -1,0 +1,23 @@
+{
+  "name": "@tether/sidecar-common",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./logger": "./src/logger.ts",
+    "./session": "./src/session.ts",
+    "./workdir": "./src/workdir.ts",
+    "./routes": "./src/routes.ts",
+    "./server": "./src/server.ts",
+    "./types": "./src/types.ts"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}

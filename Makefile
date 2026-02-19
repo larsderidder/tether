@@ -9,9 +9,11 @@ install:
 	cd agent && pip install -e ".[dev]"
 	cd ui && npm ci
 
-install-codex:
+install-sidecars:
 	cd codex-src/sdk/typescript && npm install --ignore-scripts
-	cd codex-sdk-sidecar && npm ci
+	npm install --workspaces
+
+install-codex: install-sidecars
 
 # Build UI for production
 build-ui:

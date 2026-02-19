@@ -1,0 +1,9 @@
+{
+  "name": "tether-root",
+  "private": true,
+  "workspaces": [
+    "sidecar-common",
+    "codex-sdk-sidecar",
+    "opencode-sdk-sidecar"
+  ]
+}

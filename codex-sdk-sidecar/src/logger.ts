@@ -1,24 +1,4 @@
-import pino from "pino";
+import { createLogger } from "@tether/sidecar-common/logger";
 import { settings } from "./settings.js";
 
-const level = settings.logLevel();
-const pretty = settings.logPretty();
-
-export const logger = pino(
-  {
-    level,
-    name: "codex-sdk-sidecar",
-    base: undefined,
-    timestamp: pino.stdTimeFunctions.isoTime,
-  },
-  pretty
-    ? pino.transport({
-        target: "pino-pretty",
-        options: {
-          colorize: true,
-          translateTime: "SYS:standard",
-          ignore: "pid,hostname",
-        },
-      })
-    : undefined,
-);
+export const logger = createLogger("codex-sdk-sidecar", settings.logLevel(), settings.logPretty());
