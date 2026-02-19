@@ -47,8 +47,8 @@ class RunnerRegistry:
 
         # Temporarily set adapter in settings for get_runner()
         import os
-        old_value = os.environ.get("TETHER_AGENT_ADAPTER")
-        os.environ["TETHER_AGENT_ADAPTER"] = name
+        old_value = os.environ.get("TETHER_DEFAULT_AGENT_ADAPTER")
+        os.environ["TETHER_DEFAULT_AGENT_ADAPTER"] = name
 
         try:
             runner = get_runner(self._events)
@@ -62,9 +62,9 @@ class RunnerRegistry:
         finally:
             # Restore original value
             if old_value is not None:
-                os.environ["TETHER_AGENT_ADAPTER"] = old_value
+                os.environ["TETHER_DEFAULT_AGENT_ADAPTER"] = old_value
             else:
-                os.environ.pop("TETHER_AGENT_ADAPTER", None)
+                os.environ.pop("TETHER_DEFAULT_AGENT_ADAPTER", None)
 
     def get_default_adapter(self) -> str:
         """Get the default adapter name from environment."""

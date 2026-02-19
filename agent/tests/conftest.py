@@ -8,7 +8,7 @@ import pytest
 
 # Set dev mode before importing app to avoid auth requirement
 os.environ["TETHER_AGENT_DEV_MODE"] = "1"
-os.environ["TETHER_AGENT_ADAPTER"] = "codex_sdk_sidecar"
+os.environ["TETHER_DEFAULT_AGENT_ADAPTER"] = "codex_sdk_sidecar"
 
 # Ensure host machine credentials do not affect test results. These settings are
 # intentionally unprefixed and may exist in a developer/CI environment.

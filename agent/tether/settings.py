@@ -111,17 +111,20 @@ class Settings:
     def adapter() -> str:
         """Runner adapter selection.
 
-        Env: TETHER_AGENT_ADAPTER (default: claude_auto)
+        Env: TETHER_DEFAULT_AGENT_ADAPTER (default: claude_auto)
+        Backwards compat: TETHER_AGENT_ADAPTER is still accepted if the new name is not set.
 
         Options:
             - codex_sdk_sidecar: Codex SDK sidecar
-            - claude_api: Claude via Anthropic SDK (requires API key)
-            - claude_subprocess: Claude via Agent SDK in subprocess (CLI OAuth)
-            - claude_auto: Auto-detect (prefer OAuth, fallback to API key)
+            - opencode: OpenCode sidecar
+            - claude_subprocess: Claude via Agent SDK in subprocess (OAuth or API key)
+            - claude_auto: Auto-detect (requires OAuth or ANTHROPIC_API_KEY)
             - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
             - pi_rpc: Pi coding agent via JSON-RPC subprocess
         """
-        return _get("TETHER_AGENT_ADAPTER", default="claude_auto").lower()
+        # Fall back to old name for backwards compatibility
+        value = _get("TETHER_DEFAULT_AGENT_ADAPTER") or _get("TETHER_AGENT_ADAPTER")
+        return (value or "claude_auto").lower()
 
     # -------------------------------------------------------------------------
     # Logging Settings
@@ -239,19 +242,45 @@ class Settings:
         """
         return _get("TETHER_CODEX_SIDECAR_TOKEN")
 
-    # -------------------------------------------------------------------------
-    # OpenCode Runner Settings
-    # -------------------------------------------------------------------------
+    @staticmethod
+    def opencode_sidecar_url() -> str:
+        """Base URL for the OpenCode sidecar service.
+
+        Env: TETHER_OPENCODE_SIDECAR_URL (default: http://localhost:8790)
+        """
+        return _get("TETHER_OPENCODE_SIDECAR_URL", default="http://localhost:8790")
 
     @staticmethod
-    def opencode_bin() -> str:
-        """Path to the OpenCode binary.
+    def opencode_sidecar_token() -> str:
+        """Authentication token for the OpenCode sidecar service.
 
-        Env: OPENCODE_BIN
-
-        If not set, auto-detects from ~/.opencode/bin/opencode or PATH.
+        Env: TETHER_OPENCODE_SIDECAR_TOKEN
         """
-        return _get("OPENCODE_BIN")
+        return _get("TETHER_OPENCODE_SIDECAR_TOKEN")
+
+    @staticmethod
+    def opencode_sidecar_managed() -> bool:
+        """Whether Tether should auto-manage the OpenCode sidecar process.
+
+        Env: TETHER_OPENCODE_SIDECAR_MANAGED (default: 1)
+        """
+        return _get_bool("TETHER_OPENCODE_SIDECAR_MANAGED", default=True)
+
+    @staticmethod
+    def opencode_sidecar_cmd() -> str:
+        """Command used when managed OpenCode sidecar is enabled.
+
+        Env: TETHER_OPENCODE_SIDECAR_CMD (default: "opencode serve")
+        """
+        return _get("TETHER_OPENCODE_SIDECAR_CMD", default="opencode serve")
+
+    @staticmethod
+    def opencode_sidecar_startup_timeout_seconds() -> int:
+        """Seconds to wait for managed OpenCode sidecar health.
+
+        Env: TETHER_OPENCODE_SIDECAR_STARTUP_TIMEOUT_SECONDS (default: 15)
+        """
+        return _get_int("TETHER_OPENCODE_SIDECAR_STARTUP_TIMEOUT_SECONDS", default=15)
 
     # -------------------------------------------------------------------------
     # LiteLLM Runner Settings

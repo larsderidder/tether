@@ -8,9 +8,9 @@ from tether.settings import Settings
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    """Remove all TETHER_AGENT_ env vars for clean tests."""
+    """Remove all TETHER_ env vars for clean tests."""
     for key in list(os.environ.keys()):
-        if key.startswith("TETHER_AGENT_") or key == "ANTHROPIC_API_KEY":
+        if key.startswith("TETHER_") or key == "ANTHROPIC_API_KEY":
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
 
@@ -104,8 +104,8 @@ class TestStringSettings:
 
     def test_adapter_custom(self, clean_env) -> None:
         """Adapter can be customized."""
-        clean_env.setenv("TETHER_AGENT_ADAPTER", "CLAUDE_API")
-        assert Settings.adapter() == "claude_api"  # lowercased
+        clean_env.setenv("TETHER_DEFAULT_AGENT_ADAPTER", "CLAUDE_SUBPROCESS")
+        assert Settings.adapter() == "claude_subprocess"  # lowercased
 
     def test_log_level_default(self, clean_env) -> None:
         """Log level defaults to INFO."""
@@ -150,6 +150,26 @@ class TestStringSettings:
         clean_env.setenv("TETHER_CODEX_SIDECAR_TOKEN", "token123")
         assert Settings.codex_sidecar_token() == "token123"
 
+    def test_opencode_sidecar_settings(self, clean_env) -> None:
+        """OpenCode sidecar settings have expected defaults and overrides."""
+        assert Settings.opencode_sidecar_url() == "http://localhost:8790"
+        assert Settings.opencode_sidecar_token() == ""
+        assert Settings.opencode_sidecar_managed() is True
+        assert Settings.opencode_sidecar_cmd() == "opencode serve"
+        assert Settings.opencode_sidecar_startup_timeout_seconds() == 15
+
+        clean_env.setenv("TETHER_OPENCODE_SIDECAR_URL", "http://127.0.0.1:9000")
+        clean_env.setenv("TETHER_OPENCODE_SIDECAR_TOKEN", "tok")
+        clean_env.setenv("TETHER_OPENCODE_SIDECAR_MANAGED", "0")
+        clean_env.setenv("TETHER_OPENCODE_SIDECAR_CMD", "my-opencode-sidecar --x")
+        clean_env.setenv("TETHER_OPENCODE_SIDECAR_STARTUP_TIMEOUT_SECONDS", "30")
+
+        assert Settings.opencode_sidecar_url() == "http://127.0.0.1:9000"
+        assert Settings.opencode_sidecar_token() == "tok"
+        assert Settings.opencode_sidecar_managed() is False
+        assert Settings.opencode_sidecar_cmd() == "my-opencode-sidecar --x"
+        assert Settings.opencode_sidecar_startup_timeout_seconds() == 30
+
 
 class TestDataDir:
     """Test data directory setting."""
@@ -172,12 +192,16 @@ class TestDataDir:
         assert os.path.isabs(result)
         assert result.endswith("relative/path")
 
-    def test_data_dir_installed_package_default(self, clean_env, tmp_path, monkeypatch) -> None:
+    def test_data_dir_installed_package_default(
+        self, clean_env, tmp_path, monkeypatch
+    ) -> None:
         """When no pyproject.toml exists (installed package), use XDG data dir."""
         # Point __file__ parent to a directory without pyproject.toml
         import tether.settings as settings_mod
 
-        monkeypatch.setattr(settings_mod, "__file__", str(tmp_path / "tether" / "settings.py"))
+        monkeypatch.setattr(
+            settings_mod, "__file__", str(tmp_path / "tether" / "settings.py")
+        )
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
 
         result = Settings.data_dir()

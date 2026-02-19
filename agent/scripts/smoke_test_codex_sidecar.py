@@ -20,7 +20,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TETHER_AGENT_DEV_MODE", "1")
-os.environ.setdefault("TETHER_AGENT_ADAPTER", "codex_sdk_sidecar")
+os.environ.setdefault("TETHER_DEFAULT_AGENT_ADAPTER", "codex_sdk_sidecar")
 
 from tether import store as store_module
 from tether.settings import settings

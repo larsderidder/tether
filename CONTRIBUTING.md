@@ -54,8 +54,8 @@ npm test         # Run tests
 make install-codex
 cd codex-sdk-sidecar && DOTENV_CONFIG_PATH=../.env npm run start
 
-# Terminal 2: Run agent with TETHER_AGENT_ADAPTER=codex_sdk_sidecar
-TETHER_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
+# Terminal 2: Run agent with TETHER_DEFAULT_AGENT_ADAPTER=codex_sdk_sidecar
+TETHER_DEFAULT_AGENT_ADAPTER=codex_sdk_sidecar python -m tether.main
 ```
 
 ## Commands

@@ -137,14 +137,13 @@ See `docs/API_REFERENCE.md` for full endpoint documentation.
 
 ## Adapters (built in runners)
 
-Set `TETHER_AGENT_ADAPTER` in `.env`:
+Set `TETHER_DEFAULT_AGENT_ADAPTER` in `.env`:
 
 1. `claude_auto`: Auto detect (prefer OAuth, fallback to API key)
-2. `claude_subprocess`: Claude via Agent SDK in subprocess (CLI OAuth)
-3. `claude_api`: Claude Code via API key
-4. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
-5. `codex_sdk_sidecar`: Codex via sidecar
-6. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess, experimental
+2. `claude_subprocess`: Claude via Agent SDK in subprocess (OAuth or API key)
+3. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
+4. `codex_sdk_sidecar`: Codex via sidecar
+5. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess, experimental
 
 Sessions can override the default adapter at creation time. Multiple adapters can run simultaneously.
 
@@ -187,11 +186,17 @@ tether start --dev                   # Dev mode (no auth required)
 tether start --port 9000 --host 127.0.0.1
 
 tether status                        # Server health + session summary
+tether open                          # Open web UI in browser
 tether list                          # List Tether sessions
-tether list --external               # Discover Claude Code / Codex / OpenCode / Pi sessions
+tether list -s running               # Filter by state
+tether list -d .                     # Filter by directory
+tether list --external               # Discover Claude Code / Codex / Pi sessions
 tether attach <external-id>          # Attach an external session to Tether
+tether attach                        # Pick from external sessions in current dir
+tether attach <id> -p discord        # Attach and create a Discord thread
 tether input <session-id> "message"  # Send input to a session
 tether interrupt <session-id>        # Interrupt a running session
+tether delete <session-id>           # Delete a session
 ```
 
 Session IDs accept short prefixes (first few characters are enough as long as they are unique).
@@ -221,7 +226,7 @@ Tether loads config from layered sources (highest precedence first):
 Key settings:
 
 ```bash
-TETHER_AGENT_ADAPTER=claude_auto  # Agent adapter
+TETHER_DEFAULT_AGENT_ADAPTER=claude_auto  # Agent adapter
 TETHER_AGENT_TOKEN=               # Protect the API/UI with bearer auth
 TETHER_AGENT_HOST=0.0.0.0         # Bind address (default: 0.0.0.0)
 TETHER_AGENT_PORT=8787            # Port (default: 8787)

@@ -30,7 +30,7 @@ def run_wizard() -> None:
     # 2. Adapter detection
     adapter = _detect_adapter()
     if adapter:
-        config["TETHER_AGENT_ADAPTER"] = adapter
+        config["TETHER_DEFAULT_AGENT_ADAPTER"] = adapter
 
     # 3. Bridge setup
     _configure_bridge(config)
@@ -57,9 +57,9 @@ def _detect_adapter() -> str | None:
         print("Detected `claude` CLI on PATH — using claude_auto adapter.")
         return "claude_auto"
 
-    print("No `claude` CLI detected. Defaulting to claude_api adapter.")
-    print("You will need to set ANTHROPIC_API_KEY in your config.")
-    return "claude_api"
+    print("No `claude` CLI detected. Defaulting to claude_auto adapter.")
+    print("You will need the `claude` CLI or ANTHROPIC_API_KEY set in your config.")
+    return "claude_auto"
 
 
 def _detect_claude_cli() -> bool:

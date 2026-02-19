@@ -79,7 +79,7 @@ Set environment variables to configure:
 | `TETHER_AGENT_PORT` | Port to listen on | `8787` |
 | `TETHER_AGENT_TOKEN` | Auth token (optional; if set, API/UI/MCP require bearer auth) | — |
 | `TETHER_AGENT_DEV_MODE` | Enable dev mode (no token required) | `0` |
-| `TETHER_AGENT_ADAPTER` | AI adapter to use | `claude_auto` |
+| `TETHER_DEFAULT_AGENT_ADAPTER` | AI adapter to use | `claude_auto` |
 | `TETHER_AGENT_DATA_DIR` | Data storage directory | `./data` |
 
 ### AI Adapters
@@ -90,6 +90,7 @@ Set environment variables to configure:
 | `claude_subprocess` | Claude via Agent SDK in subprocess (CLI OAuth) |
 | `claude_api` | Claude via API key (set `ANTHROPIC_API_KEY`) |
 | `codex_sdk_sidecar` | Codex via sidecar |
+| `opencode` | OpenCode via auto-managed sidecar |
 
 ### Messaging Platform Bridges
 

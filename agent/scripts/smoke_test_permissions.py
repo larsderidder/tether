@@ -17,7 +17,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TETHER_AGENT_DEV_MODE", "1")
-os.environ.setdefault("TETHER_AGENT_ADAPTER", "claude_subprocess")
+os.environ.setdefault("TETHER_DEFAULT_AGENT_ADAPTER", "claude_subprocess")
 
 try:
     import claude_agent_sdk  # noqa: F401

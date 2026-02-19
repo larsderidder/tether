@@ -21,7 +21,7 @@ def setup_test_env():
         os.environ,
         {
             "TETHER_AGENT_TOKEN": "test-token",
-            "TETHER_AGENT_ADAPTER": "codex_sdk_sidecar",
+            "TETHER_DEFAULT_AGENT_ADAPTER": "codex_sdk_sidecar",
         },
     ):
         yield
@@ -43,7 +43,7 @@ def mock_runner():
 def mock_claude_runner():
     """Create a mock Claude runner."""
     runner = MagicMock()
-    runner.runner_type = "claude_api"
+    runner.runner_type = "claude-subprocess"
     runner.start = AsyncMock()
     runner.stop = AsyncMock()
     runner.send_input = AsyncMock()
@@ -57,17 +57,17 @@ async def test_create_session_with_adapter(api_client, tmpdir):
 
     with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
         mock_runner = MagicMock()
-        mock_runner.runner_type = "claude_api"
+        mock_runner.runner_type = "claude-subprocess"
         mock_get_runner.return_value = mock_runner
 
         response = await api_client.post(
             "/api/sessions",
-            json={"directory": test_dir, "adapter": "claude_api"},
+            json={"directory": test_dir, "adapter": "claude_subprocess"},
         )
 
         assert response.status_code == 201
         data = response.json()
-        assert data["adapter"] == "claude_api"
+        assert data["adapter"] == "claude_subprocess"
         assert data["directory"] == test_dir
 
 
@@ -116,7 +116,7 @@ async def test_session_adapter_routing_on_start(
 
         # Set up registry to return different runners
         def get_runner_side_effect(adapter_name):
-            if adapter_name == "claude_api":
+            if adapter_name == "claude_subprocess":
                 return mock_claude_runner
             return mock_runner
 
@@ -133,7 +133,7 @@ async def test_session_adapter_routing_on_start(
 
         response2 = await api_client.post(
             "/api/sessions",
-            json={"directory": test_dir2, "adapter": "claude_api"},
+            json={"directory": test_dir2, "adapter": "claude_subprocess"},
         )
         session2_id = response2.json()["id"]
 

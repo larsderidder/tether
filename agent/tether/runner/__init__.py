@@ -12,11 +12,10 @@ from tether.settings import settings
 
 # Lazy imports - these SDKs are heavy and slow down startup
 if TYPE_CHECKING:
-    from tether.runner.claude_api import ClaudeRunner
     from tether.runner.claude_subprocess import ClaudeSubprocessRunner
     from tether.runner.codex_sdk_sidecar import SidecarRunner
     from tether.runner.litellm_runner import LiteLLMRunner
-    from tether.runner.opencode_subprocess import OpencodeSubprocessRunner
+    from tether.runner.opencode_sdk_sidecar import OpenCodeSidecarRunner
     from tether.runner.pi_rpc import PiRpcRunner
 
 # Cache the runner type after first initialization
@@ -50,18 +49,30 @@ def _has_claude_oauth() -> bool:
         return False
 
 
+def _require_claude_sdk() -> None:
+    """Verify the Claude Agent SDK is installed."""
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ImportError as e:
+        raise ValueError(
+            "Claude adapter requires claude-agent-sdk. "
+            "Install it with: pip install claude-agent-sdk"
+        ) from e
+
+
 def get_runner(events: RunnerEvents) -> Runner:
     """Return the configured runner adapter based on environment settings.
 
     Args:
         events: RunnerEvents callback sink.
 
-    Uses TETHER_AGENT_ADAPTER to select runner. Options:
+    Uses TETHER_DEFAULT_AGENT_ADAPTER to select runner. Options:
         - codex_sdk_sidecar: Codex SDK sidecar
-        - claude_api: Claude via Anthropic SDK (requires ANTHROPIC_API_KEY)
-        - claude_subprocess: Claude via Agent SDK in subprocess (uses CLI OAuth)
-        - claude_auto: Auto-detect (prefer subprocess, fallback to API key)
+        - claude_subprocess: Claude via Agent SDK in subprocess (OAuth or API key)
+        - claude_auto: Auto-detect (requires OAuth or ANTHROPIC_API_KEY)
         - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
+        - opencode: OpenCode sidecar
+        - pi_rpc: Pi coding agent via JSON-RPC subprocess
 
     Runners are imported lazily to speed up agent startup.
     """
@@ -75,22 +86,9 @@ def get_runner(events: RunnerEvents) -> Runner:
         _active_runner_type = runner.runner_type
         return runner
 
-    if name == "claude_api":
-        from tether.runner.claude_api import ClaudeRunner
-
-        runner = ClaudeRunner(events)
-        _active_runner_type = runner.runner_type
-        return runner
-
-    if name == "claude_subprocess":
-        try:
-            import claude_agent_sdk  # noqa: F401 — verify SDK available
-        except ImportError as e:
-            raise ValueError(
-                "claude_subprocess adapter requires claude_agent_sdk. "
-                "Install it with: pip install claude-agent-sdk"
-            ) from e
-
+    if name in ("claude_subprocess", "claude_api"):
+        # claude_api is accepted as an alias for backwards compatibility
+        _require_claude_sdk()
         from tether.runner.claude_subprocess import ClaudeSubprocessRunner
 
         runner = ClaudeSubprocessRunner(events)
@@ -98,22 +96,12 @@ def get_runner(events: RunnerEvents) -> Runner:
         return runner
 
     if name == "claude_auto":
-        # Auto-detect: prefer OAuth (no cost to user), fallback to API key
-        # When SDK is available, prefer subprocess runner for process isolation
-        if _has_claude_oauth():
-            try:
-                import claude_agent_sdk  # noqa: F401
-                from tether.runner.claude_subprocess import ClaudeSubprocessRunner
+        # Auto-detect: need either OAuth or API key, plus the SDK
+        if _has_claude_oauth() or _has_anthropic_api_key():
+            _require_claude_sdk()
+            from tether.runner.claude_subprocess import ClaudeSubprocessRunner
 
-                runner = ClaudeSubprocessRunner(events)
-                _active_runner_type = runner.runner_type
-                return runner
-            except ImportError:
-                pass  # Fall through to API key check
-        if _has_anthropic_api_key():
-            from tether.runner.claude_api import ClaudeRunner
-
-            runner = ClaudeRunner(events)
+            runner = ClaudeSubprocessRunner(events)
             _active_runner_type = runner.runner_type
             return runner
         raise ValueError(
@@ -137,9 +125,9 @@ def get_runner(events: RunnerEvents) -> Runner:
         return runner
 
     if name == "opencode":
-        from tether.runner.opencode_subprocess import OpencodeSubprocessRunner
+        from tether.runner.opencode_sdk_sidecar import OpenCodeSidecarRunner
 
-        runner = OpencodeSubprocessRunner(events)
+        runner = OpenCodeSidecarRunner(events)
         _active_runner_type = runner.runner_type
         return runner
 
