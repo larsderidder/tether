@@ -38,7 +38,6 @@ from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import SessionState
-from tether.runner import get_runner_type
 from tether.runner.base import RunnerUnavailableError
 from tether.store import store
 

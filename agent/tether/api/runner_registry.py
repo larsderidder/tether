@@ -44,27 +44,14 @@ class RunnerRegistry:
 
         # Create new runner (validates adapter name and credentials)
         logger.info("Creating new runner", adapter=name)
-
-        # Temporarily set adapter in settings for get_runner()
-        import os
-        old_value = os.environ.get("TETHER_DEFAULT_AGENT_ADAPTER")
-        os.environ["TETHER_DEFAULT_AGENT_ADAPTER"] = name
-
-        try:
-            runner = get_runner(self._events)
-            self._runners[name] = runner
-            logger.info(
-                "Runner created",
-                adapter=name,
-                runner_type=runner.runner_type,
-            )
-            return runner
-        finally:
-            # Restore original value
-            if old_value is not None:
-                os.environ["TETHER_DEFAULT_AGENT_ADAPTER"] = old_value
-            else:
-                os.environ.pop("TETHER_DEFAULT_AGENT_ADAPTER", None)
+        runner = get_runner(self._events, name=name)
+        self._runners[name] = runner
+        logger.info(
+            "Runner created",
+            adapter=name,
+            runner_type=runner.runner_type,
+        )
+        return runner
 
     def get_default_adapter(self) -> str:
         """Get the default adapter name from environment."""

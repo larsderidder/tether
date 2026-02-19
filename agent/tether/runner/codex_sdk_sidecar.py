@@ -95,6 +95,10 @@ class SidecarRunner:
             task.cancel()
         return None
 
+    def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
+        """Codex sidecar owns the approval policy; nothing to do here."""
+        pass
+
     def _ensure_stream(self, session_id: str) -> None:
         """Start SSE consumption for a session if not already running."""
         existing = self._streams.get(session_id)

@@ -69,6 +69,10 @@ class ApiRunnerBase(ABC):
         store.clear_stop_requested(session_id)
         return 0
 
+    def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
+        """Permission mode is read at start time from the session; no-op here."""
+        pass
+
     # ------------------------------------------------------------------
     # Conversation loop (shared)
     # ------------------------------------------------------------------

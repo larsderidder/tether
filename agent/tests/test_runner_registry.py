@@ -126,39 +126,18 @@ def test_registry_uses_default_adapter(registry, mock_events):
 def test_registry_multiple_adapters(registry, mock_events):
     """Test that registry can manage multiple runners simultaneously."""
     with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
-        # Create different mock runners for different adapters
-        def create_runner(events):
+        # create_runner now receives name= as a keyword argument
+        def create_runner(events, name=None):
             mock_runner = MagicMock()
-            adapter = os.environ.get("TETHER_DEFAULT_AGENT_ADAPTER")
-            mock_runner.runner_type = adapter
+            mock_runner.runner_type = name
             return mock_runner
 
         mock_get_runner.side_effect = create_runner
 
-        # Get runners for different adapters
-        with patch.dict(os.environ, {"TETHER_DEFAULT_AGENT_ADAPTER": "codex_sdk_sidecar"}):
-            runner1 = registry.get_runner("codex_sdk_sidecar")
-
-        with patch.dict(os.environ, {"TETHER_DEFAULT_AGENT_ADAPTER": "claude_subprocess"}):
-            runner2 = registry.get_runner("claude_subprocess")
+        runner1 = registry.get_runner("codex_sdk_sidecar")
+        runner2 = registry.get_runner("claude_subprocess")
 
         # Should have two different runners
         assert runner1 is not runner2
         assert len(registry._runners) == 2
-
-
-def test_registry_restores_env_on_error(registry):
-    """Test that registry restores environment on error."""
-    original_value = os.environ.get("TETHER_DEFAULT_AGENT_ADAPTER")
-
-    with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
-        mock_get_runner.side_effect = ValueError("Test error")
-
-        try:
-            registry.get_runner("invalid")
-        except ValueError:
-            pass
-
-        # Environment should be restored
-        current_value = os.environ.get("TETHER_DEFAULT_AGENT_ADAPTER")
-        assert current_value == original_value
+        assert mock_get_runner.call_count == 2

@@ -18,9 +18,6 @@ if TYPE_CHECKING:
     from tether.runner.opencode_sdk_sidecar import OpenCodeSidecarRunner
     from tether.runner.pi_rpc import PiRpcRunner
 
-# Cache the runner type after first initialization
-_active_runner_type: str | None = None
-
 
 def _has_anthropic_api_key() -> bool:
     """Check if ANTHROPIC_API_KEY is set."""
@@ -60,11 +57,12 @@ def _require_claude_sdk() -> None:
         ) from e
 
 
-def get_runner(events: RunnerEvents) -> Runner:
+def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
     """Return the configured runner adapter based on environment settings.
 
     Args:
         events: RunnerEvents callback sink.
+        name: Adapter name override. Falls back to TETHER_DEFAULT_AGENT_ADAPTER.
 
     Uses TETHER_DEFAULT_AGENT_ADAPTER to select runner. Options:
         - codex_sdk_sidecar: Codex SDK sidecar
@@ -76,24 +74,20 @@ def get_runner(events: RunnerEvents) -> Runner:
 
     Runners are imported lazily to speed up agent startup.
     """
-    global _active_runner_type
-    name = settings.adapter()
+    if name is None:
+        name = settings.adapter()
 
     if name == "codex_sdk_sidecar":
         from tether.runner.codex_sdk_sidecar import SidecarRunner
 
-        runner = SidecarRunner(events)
-        _active_runner_type = runner.runner_type
-        return runner
+        return SidecarRunner(events)
 
     if name in ("claude_subprocess", "claude_api"):
         # claude_api is accepted as an alias for backwards compatibility
         _require_claude_sdk()
         from tether.runner.claude_subprocess import ClaudeSubprocessRunner
 
-        runner = ClaudeSubprocessRunner(events)
-        _active_runner_type = runner.runner_type
-        return runner
+        return ClaudeSubprocessRunner(events)
 
     if name == "claude_auto":
         # Auto-detect: need either OAuth or API key, plus the SDK
@@ -101,9 +95,7 @@ def get_runner(events: RunnerEvents) -> Runner:
             _require_claude_sdk()
             from tether.runner.claude_subprocess import ClaudeSubprocessRunner
 
-            runner = ClaudeSubprocessRunner(events)
-            _active_runner_type = runner.runner_type
-            return runner
+            return ClaudeSubprocessRunner(events)
         raise ValueError(
             "claude_auto: No authentication available. "
             "Either log in with 'claude' CLI or set ANTHROPIC_API_KEY."
@@ -120,30 +112,19 @@ def get_runner(events: RunnerEvents) -> Runner:
 
         from tether.runner.litellm_runner import LiteLLMRunner
 
-        runner = LiteLLMRunner(events)
-        _active_runner_type = runner.runner_type
-        return runner
+        return LiteLLMRunner(events)
 
     if name == "opencode":
         from tether.runner.opencode_sdk_sidecar import OpenCodeSidecarRunner
 
-        runner = OpenCodeSidecarRunner(events)
-        _active_runner_type = runner.runner_type
-        return runner
+        return OpenCodeSidecarRunner(events)
 
     if name == "pi_rpc":
         from tether.runner.pi_rpc import PiRpcRunner
 
-        runner = PiRpcRunner(events)
-        _active_runner_type = runner.runner_type
-        return runner
+        return PiRpcRunner(events)
 
     raise ValueError(f"Unknown agent adapter: {name}")
 
 
-def get_runner_type() -> str | None:
-    """Return the runner type of the active runner, or None if not initialized."""
-    return _active_runner_type
-
-
-__all__ = ["get_runner", "get_runner_type", "Runner", "RunnerEvents"]
+__all__ = ["get_runner", "Runner", "RunnerEvents"]
