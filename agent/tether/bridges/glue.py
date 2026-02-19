@@ -14,6 +14,7 @@ import structlog
 
 from agent_tether import BridgeCallbacks, BridgeConfig, BridgeManager
 from agent_tether.subscriber import BridgeSubscriber
+from agent_tether.thread_naming import format_thread_name
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -49,6 +50,7 @@ def get_session_info(session_id: str) -> dict | None:
         "id": session.id,
         "directory": session.directory,
         "adapter": session.adapter,
+        "runner_type": session.runner_type,
         "state": session.state,
         "platform": session.platform,
         "platform_thread_id": session.platform_thread_id,
@@ -66,6 +68,24 @@ async def on_session_bound(session_id: str, platform: str, thread_id: str | None
         store.update_session(db_session)
 
     bridge_subscriber.subscribe(session_id, platform)
+
+def make_thread_name(
+    *,
+    directory: str | None = None,
+    runner_type: str | None = None,
+    adapter: str | None = None,
+) -> str:
+    """Generate a thread/topic name from directory and runner info.
+
+    Format: ``"Runner / dirname"`` (or just ``"Dirname"`` if the runner
+    is unknown). Bridges handle uniqueness (appending numbers) themselves.
+    """
+    return format_thread_name(
+        directory=directory,
+        runner_type=runner_type,
+        adapter=adapter,
+        max_len=64,
+    )
 
 
 def get_sessions_for_restore() -> list[dict]:
@@ -115,15 +135,23 @@ async def _send_input(session_id: str, text: str) -> None:
             r.raise_for_status()
         return
     except httpx.HTTPStatusError as e:
-        if e.response.status_code != 409:
-            raise
+        status = e.response.status_code
         try:
             data = e.response.json()
         except Exception:
             data = {}
-        code = (data.get("error") or {}).get("code")
-        if code != "INVALID_STATE":
-            raise
+        code = (data.get("error") or {}).get("code", "")
+        message = (data.get("error") or {}).get("message", "")
+
+        if status == 409 and code == "INVALID_STATE":
+            # Session not yet started; fall through to /start below.
+            pass
+        else:
+            # Surface the server's error message as a plain RuntimeError so
+            # bridge handlers can relay it to the user instead of crashing.
+            raise RuntimeError(
+                message or f"Agent request failed ({status})"
+            ) from e
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
@@ -132,7 +160,17 @@ async def _send_input(session_id: str, text: str) -> None:
             headers=_api_headers(),
             timeout=30.0,
         )
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            try:
+                data = e.response.json()
+                message = (data.get("error") or {}).get("message", "")
+            except Exception:
+                message = ""
+            raise RuntimeError(
+                message or f"Agent request failed ({e.response.status_code})"
+            ) from e
 
 
 async def _stop_session(session_id: str) -> None:
@@ -237,6 +275,19 @@ async def _get_external_history(
     return response.json()
 
 
+async def _sync_session(session_id: str) -> dict:
+    """Pull new messages from an attached external session."""
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/sync",
+            headers=_api_headers(),
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
 async def _attach_external(**kwargs) -> dict:
     """Attach to an external session."""
 
@@ -279,6 +330,7 @@ def make_bridge_callbacks() -> BridgeCallbacks:
         list_external_sessions=_list_external_sessions,
         get_external_history=_get_external_history,
         attach_external=_attach_external,
+        sync_session=_sync_session,
     )
 
 
