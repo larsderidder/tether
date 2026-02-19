@@ -22,9 +22,9 @@ async def test_opencode_sidecar_post_json_raises_unavailable(monkeypatch):
     monkeypatch.setattr(runner, "_post_once", _fail)
 
     with pytest.raises(
-        RunnerUnavailableError, match="OpenCode backend is not reachable"
+        RunnerUnavailableError, match="OpenCode is not reachable"
     ):
-        await runner._post_json("/sessions/start", {"session_id": "sess_1"})
+        await runner._post_json("/session/prompt_async", {"parts": []})
 
 
 @pytest.mark.anyio
