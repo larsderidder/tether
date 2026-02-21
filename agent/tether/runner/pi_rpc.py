@@ -132,7 +132,7 @@ class PiRpcRunner:
 
         if self._is_streaming.get(session_id):
             # Agent is busy — queue as follow-up
-            self._write_cmd(proc, {
+            await self._write_cmd_async(proc, {
                 "type": "follow_up",
                 "message": text,
             })
@@ -227,7 +227,7 @@ class PiRpcRunner:
         )
 
         # Fetch initial state for model info
-        self._write_cmd(proc, {"type": "get_state"})
+        await self._write_cmd_async(proc, {"type": "get_state"})
 
     async def _send_prompt(self, session_id: str, text: str) -> None:
         """Send a prompt to the pi process."""
