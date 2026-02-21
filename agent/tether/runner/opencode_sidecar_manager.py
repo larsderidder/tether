@@ -70,7 +70,7 @@ async def _spawn_locked() -> None:
     env["XDG_DATA_HOME"] = str(xdg_data_home)
 
     # Run from the sidecar directory so `npm start` resolves package.json.
-    sidecar_dir = Path(__file__).parents[4] / "opencode-sdk-sidecar"
+    sidecar_dir = Path(__file__).parents[3] / "opencode-sdk-sidecar"
     cwd = str(sidecar_dir) if sidecar_dir.is_dir() else None
 
     logger.info("Starting managed OpenCode sidecar", cmd=parts, cwd=cwd)
