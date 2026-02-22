@@ -70,8 +70,7 @@ async def _spawn_locked() -> None:
     env["XDG_DATA_HOME"] = str(xdg_data_home)
 
     # Run from the sidecar directory so `npm start` resolves package.json.
-    sidecar_dir = Path(__file__).parents[3] / "opencode-sdk-sidecar"
-    cwd = str(sidecar_dir) if sidecar_dir.is_dir() else None
+    cwd = _find_sidecar_dir()
 
     logger.info("Starting managed OpenCode sidecar", cmd=parts, cwd=cwd)
     try:
@@ -174,6 +173,39 @@ def _check_health_sync() -> bool:
         return False
     finally:
         conn.close()
+
+
+def _find_sidecar_dir() -> str | None:
+    """Locate the opencode-sdk-sidecar directory.
+
+    Checks (in order):
+    1. TETHER_OPENCODE_SIDECAR_DIR env var — explicit override.
+    2. Walk up from this file looking for a parent that contains
+       ``opencode-sdk-sidecar/package.json``. Robust against the file
+       being moved within the repo and against pip installs.
+
+    Returns the absolute path as a string, or None if not found.
+    """
+    override = os.environ.get("TETHER_OPENCODE_SIDECAR_DIR", "").strip()
+    if override:
+        p = Path(override)
+        if p.is_dir():
+            return str(p)
+        logger.warning(
+            "TETHER_OPENCODE_SIDECAR_DIR is set but not a directory; ignoring",
+            path=override,
+        )
+
+    # Walk up the directory tree from this file.
+    for ancestor in Path(__file__).parents:
+        candidate = ancestor / "opencode-sdk-sidecar"
+        if (candidate / "package.json").exists():
+            return str(candidate)
+
+    logger.warning(
+        "opencode-sdk-sidecar directory not found; npm start will run without cwd"
+    )
+    return None
 
 
 def _build_sidecar_command(cmd: str) -> list[str]:
