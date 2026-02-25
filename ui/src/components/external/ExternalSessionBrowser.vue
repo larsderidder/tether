@@ -107,9 +107,11 @@
                       class="mt-0.5 flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium"
                       :class="session.runner_type === 'claude_code'
                         ? 'bg-violet-500/20 text-violet-300'
-                        : 'bg-blue-500/20 text-blue-300'"
+                        : session.runner_type === 'pi'
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-blue-500/20 text-blue-300'"
                     >
-                      {{ session.runner_type === 'claude_code' ? 'Claude' : 'Codex' }}
+                      {{ session.runner_type === 'claude_code' ? 'Claude' : session.runner_type === 'pi' ? 'Pi' : 'Codex' }}
                     </div>
 
                     <div class="min-w-0 flex-1">
@@ -159,8 +161,8 @@
                       </div>
                     </div>
 
-                    <!-- History -->
-                    <div v-else-if="sessionDetail" class="max-h-64 overflow-y-auto px-3 py-2">
+                    <!-- History: last 3 exchanges shown in full -->
+                    <div v-else-if="sessionDetail" class="max-h-80 overflow-y-auto px-3 py-2">
                       <div class="space-y-2">
                         <template v-for="(msg, i) in sessionDetail.messages" :key="i">
                           <div
@@ -178,7 +180,7 @@
                                 {{ formatTime(msg.timestamp) }}
                               </span>
                             </div>
-                            <p class="line-clamp-4 whitespace-pre-wrap break-words text-stone-300">{{ msg.content }}</p>
+                            <p class="whitespace-pre-wrap break-words text-stone-300">{{ msg.content }}</p>
                           </div>
                         </template>
                       </div>
@@ -256,6 +258,7 @@ const runnerTypes = [
   { value: "all" as const, label: "All" },
   { value: "claude_code" as const, label: "Claude" },
   { value: "codex" as const, label: "Codex" },
+  { value: "pi" as const, label: "Pi" },
 ];
 
 // Computed
@@ -311,9 +314,12 @@ const directoryGroups = computed((): DirectoryGroup[] => {
   });
 });
 
-const assistantLabel = computed(() =>
-  sessionDetail.value?.runner_type === "codex" ? "Codex" : "Claude"
-);
+const assistantLabel = computed(() => {
+  const rt = sessionDetail.value?.runner_type;
+  if (rt === "codex") return "Codex";
+  if (rt === "pi") return "Pi";
+  return "Claude";
+});
 
 const isDirectoryGroupExpanded = (key: string) => {
   return expandedDirectoryGroups.value.has(key);
@@ -365,7 +371,7 @@ async function toggleSession(session: ExternalSessionSummary) {
     sessionDetail.value = await getExternalSessionHistory(
       session.id,
       session.runner_type,
-      20
+      6  // last 3 exchanges (user + assistant pairs) shown in full
     );
   } catch (err) {
     console.error("Failed to load session history:", err);
@@ -375,7 +381,7 @@ async function toggleSession(session: ExternalSessionSummary) {
 }
 
 async function attachToSession(session: ExternalSessionSummary) {
-  if (session.runner_type !== "claude_code") {
+  if (!["claude_code", "pi"].includes(session.runner_type)) {
     return;
   }
 
