@@ -15,9 +15,11 @@ import re
 import shutil
 import time
 import uuid
+from pathlib import Path
 
 import structlog
 
+from tether.discovery.pi_sessions import _find_session_file, get_pi_session_model
 from tether.runner.base import RunnerEvents, RunnerUnavailableError
 from tether.store import store
 
@@ -93,8 +95,6 @@ class PiRpcRunner:
             runner_sid = store.get_runner_session_id(session_id)
             if runner_sid:
                 # runner_session_id stores the pi session UUID; find the file
-                from tether.discovery.pi_sessions import _find_session_file
-
                 path = _find_session_file(runner_sid)
                 if path:
                     session_file = str(path)
@@ -118,8 +118,6 @@ class PiRpcRunner:
             if not session_file:
                 runner_sid = store.get_runner_session_id(session_id)
                 if runner_sid:
-                    from tether.discovery.pi_sessions import _find_session_file
-
                     path = _find_session_file(runner_sid)
                     if path:
                         session_file = str(path)
@@ -187,6 +185,21 @@ class PiRpcRunner:
         args = [pi_bin, "--mode", "rpc"]
         if session_file:
             args.extend(["--session", session_file])
+            # Pass the session's model explicitly so pi uses it regardless of
+            # any scoped models (--models / enabledModels) configured in the
+            # user's pi settings.  Without this, pi's buildSessionOptions picks
+            # the first scoped model as the default, overriding the session's
+            # model before sdk.js gets a chance to restore it.
+            session_model = get_pi_session_model(Path(session_file))
+            if session_model:
+                provider, model_id = session_model
+                args.extend(["--model", f"{provider}/{model_id}"])
+                logger.info(
+                    "Passing session model to pi",
+                    session_id=session_id,
+                    provider=provider,
+                    model_id=model_id,
+                )
         else:
             args.append("--no-session")
 

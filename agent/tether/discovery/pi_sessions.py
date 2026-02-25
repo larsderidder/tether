@@ -3,6 +3,7 @@
 from agent_sessions.providers.pi import (
     list_pi_sessions,
     get_pi_session_detail,
+    get_pi_session_model,
     _decode_directory_name,
     _encode_directory_name,
     _find_session_file,
