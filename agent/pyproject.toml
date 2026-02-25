@@ -38,8 +38,8 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "agent-tether[all]>=0.4.0",
-  "agent-sessions>=0.1.0",
+  "agent-tether[all]>=0.4.2",
+  "agent-sessions>=0.2.0",
   "fastapi>=0.110.0",
   "uvicorn>=0.27.0",
   "pydantic>=2.7.0",
@@ -91,7 +91,7 @@ tether-mcp = "tether.mcp_server.server:main"
 include = ["tether*"]
 
 [tool.setuptools.package-data]
-tether = ["static_ui/**/*", "py.typed"]
+tether = ["static_ui/**/*", "sidecars/*.mjs", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
