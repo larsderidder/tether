@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI):
         maintenance_task.cancel()
         with suppress(asyncio.CancelledError):
             await maintenance_task
+        await _stop_bridges()
         if settings.opencode_sidecar_managed():
             from tether.runner.opencode_sidecar_manager import (
                 stop_managed_opencode_sidecar,
@@ -165,6 +166,17 @@ async def _init_bridges() -> None:
                 logger.info("Discord bridge registered and started")
         except Exception:
             logger.exception("Failed to initialize Discord bridge")
+
+
+async def _stop_bridges() -> None:
+    """Stop all registered messaging bridges."""
+    for platform in bridge_manager.list_bridges():
+        bridge = bridge_manager.get_bridge(platform)
+        if bridge and hasattr(bridge, "stop"):
+            try:
+                await bridge.stop()
+            except Exception:
+                logger.exception("Failed to stop bridge", platform=platform)
 
 
 def _subscribe_existing_sessions() -> None:
