@@ -11,11 +11,11 @@ Tether runs on your machine and turns agent runs into something you can *supervi
 a mobile friendly web UI plus messaging bridges (Telegram, Slack, Discord) with approvals, input
 prompts, and live output streaming.
 
-If you're running Claude Code / Codex / OpenCode locally and you want supervision (logs, state, diffs, approvals) in the places you
+If you're running Claude Code, Codex, OpenCode, or Pi locally and you want supervision (logs, state, diffs, approvals) in the places you
 already work, this is that layer.
 
 ```
-Claude Code / Codex / OpenCode / custom agent
+Claude Code / Codex / OpenCode / Pi / custom agent
           |   (adapter, MCP, or REST)
           v
       Tether (local control plane)
@@ -47,9 +47,10 @@ Claude Code / Codex / OpenCode / custom agent
 2. Human in the loop: approve tool use, provide input, review diffs
 3. Observable: live streaming output and explicit session state (web and messaging)
 4. Messaging bridges: Telegram, Slack, and Discord with approvals and auto approve
-5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, OpenCode, Pi coding agent (experimental), plus LiteLLM (experimental)
+5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, OpenCode via sidecar, Pi coding agent, plus LiteLLM (experimental)
 6. External agent API: MCP server and REST API for custom agents and integrations
 7. Mobile first UI: PWA dashboard for monitoring and controlling sessions (experimental)
+8. CLI client: manage sessions, attach external agents, and send input from your terminal
 
 ## Quick Start
 
@@ -141,11 +142,20 @@ Set `TETHER_DEFAULT_AGENT_ADAPTER` in `.env`:
 
 1. `claude_auto`: Auto detect (prefer OAuth, fallback to API key)
 2. `claude_subprocess`: Claude via Agent SDK in subprocess (OAuth or API key)
-3. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
-4. `codex_sdk_sidecar`: Codex via sidecar
-5. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess, experimental
+3. `codex_sdk_sidecar`: Codex via TypeScript sidecar
+4. `opencode`: OpenCode via TypeScript sidecar (auto-managed, uses the OpenCode SDK)
+5. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess
+6. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
 
 Sessions can override the default adapter at creation time. Multiple adapters can run simultaneously.
+
+The Codex and OpenCode sidecars share a common infrastructure layer (`sidecar-common`) and are built as
+npm workspace packages. When using managed mode (the default for OpenCode), Tether starts and stops the
+sidecar process automatically.
+
+> **Note:** The Codex and OpenCode adapters require Node.js and their TypeScript sidecars. If you
+> installed via `pipx install tether-ai`, also clone the repo and run `make install-sidecars`.
+> The Claude adapter works out of the box with just the PyPI install.
 
 ## Messaging Bridges
 
@@ -185,18 +195,20 @@ tether start                         # Start the server
 tether start --dev                   # Dev mode (no auth required)
 tether start --port 9000 --host 127.0.0.1
 
+# Client commands (talk to a running server)
 tether status                        # Server health + session summary
 tether open                          # Open web UI in browser
 tether list                          # List Tether sessions
 tether list -s running               # Filter by state
 tether list -d .                     # Filter by directory
-tether list --external               # Discover Claude Code / Codex / Pi sessions
+tether list --external               # Discover Claude Code / Codex / OpenCode / Pi sessions
 tether attach <external-id>          # Attach an external session to Tether
 tether attach                        # Pick from external sessions in current dir
 tether attach <id> -p discord        # Attach and create a Discord thread
 tether input <session-id> "message"  # Send input to a session
 tether interrupt <session-id>        # Interrupt a running session
 tether delete <session-id>           # Delete a session
+tether sync <session-id>             # Pull new messages from an attached external session
 ```
 
 Session IDs accept short prefixes (first few characters are enough as long as they are unique).
