@@ -84,7 +84,7 @@ async def emit_output(
     store.append_output(session.id, text)
     if not store.should_emit_output(session.id, text):
         return
-    logger.info("Emitting output", session_id=session.id, text=text[:200])
+    logger.debug("Emitting output", session_id=session.id, text=text[:200])
     await store.emit(
         session.id,
         {

@@ -1420,6 +1420,10 @@ body {
   max-height: 16rem;
 }
 
+.max-h-80 {
+  max-height: 20rem;
+}
+
 .max-h-\[90vh\] {
   max-height: 90vh;
 }
@@ -1997,6 +2001,10 @@ body {
 .bg-emerald-500 {
   --tw-bg-opacity: 1;
   background-color: rgb(16 185 129 / var(--tw-bg-opacity, 1));
+}
+
+.bg-emerald-500\/20 {
+  background-color: rgb(16 185 129 / 0.2);
 }
 
 .bg-emerald-600 {

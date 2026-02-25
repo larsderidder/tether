@@ -123,6 +123,22 @@ def configure_logging() -> None:
                     "level": logging.WARNING,
                     "propagate": False,
                 },
+                # Suppress noisy HTTP client internals (httpx/httpcore).
+                "httpcore": {
+                    "handlers": handler_names,
+                    "level": logging.WARNING,
+                    "propagate": False,
+                },
+                "httpx": {
+                    "handlers": handler_names,
+                    "level": logging.WARNING,
+                    "propagate": False,
+                },
+                "telegram": {
+                    "handlers": handler_names,
+                    "level": logging.WARNING,
+                    "propagate": False,
+                },
             },
         }
     )

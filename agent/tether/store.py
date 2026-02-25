@@ -266,7 +266,7 @@ class SessionStore:
         runtime = self._runtime.get(session_id)
         subscribers = runtime.subscribers if runtime else []
         event_type = event.get("type")
-        if event_type != "heartbeat":
+        if event_type not in ("heartbeat", "output"):
             logger.debug(
                 "Broadcasting event",
                 session_id=session_id,

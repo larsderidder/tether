@@ -244,7 +244,7 @@ class TestCmdInput:
             ("POST", "/api/sessions/abcd1234-full/input"): input_resp,
         }):
             cli_client.cmd_input("abcd", "do the thing")
-        assert "Input sent" in capsys.readouterr().out
+        assert "Sent to" in capsys.readouterr().out
 
     def test_no_match(self, capsys):
         with _patch_client({("GET", "/api/sessions"): _mock_response(200, [])}):

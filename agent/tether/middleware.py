@@ -15,6 +15,21 @@ from tether.models import ErrorDetail, ErrorResponse
 logger = structlog.get_logger(__name__)
 
 
+# Paths that generate high-frequency requests during streaming.
+# Log these at debug instead of info to keep production logs clean.
+_QUIET_PATHS = frozenset({"/api/sessions/events", "/health"})
+
+
+def _is_quiet_path(path: str) -> bool:
+    """True for high-frequency endpoints that should log at debug level."""
+    if path in _QUIET_PATHS:
+        return True
+    # Per-session event and input endpoints fire on every token.
+    if "/events" in path or "/input" in path:
+        return True
+    return False
+
+
 async def request_logging_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
     structlog.contextvars.bind_contextvars(
@@ -23,7 +38,11 @@ async def request_logging_middleware(request: Request, call_next):
         path=request.url.path,
     )
     start_time = time.monotonic()
-    logger.info("Request started")
+    quiet = _is_quiet_path(request.url.path)
+    if quiet:
+        logger.debug("Request started")
+    else:
+        logger.info("Request started")
     try:
         response = await call_next(request)
     except Exception:
@@ -32,11 +51,18 @@ async def request_logging_middleware(request: Request, call_next):
         structlog.contextvars.clear_contextvars()
         raise
     duration_ms = (time.monotonic() - start_time) * 1000
-    logger.info(
-        "Request completed",
-        status_code=response.status_code,
-        duration_ms=round(duration_ms, 2),
-    )
+    if quiet:
+        logger.debug(
+            "Request completed",
+            status_code=response.status_code,
+            duration_ms=round(duration_ms, 2),
+        )
+    else:
+        logger.info(
+            "Request completed",
+            status_code=response.status_code,
+            duration_ms=round(duration_ms, 2),
+        )
     structlog.contextvars.clear_contextvars()
     return response
 
