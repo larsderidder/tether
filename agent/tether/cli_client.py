@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import webbrowser
+from itertools import groupby
 from typing import Callable
 
 import httpx
@@ -127,9 +128,27 @@ def cmd_status() -> None:
         by_state[state] = by_state.get(state, 0) + 1
     if by_state:
         parts = [
-            f"{count} {state.lower()}" for state, count in sorted(by_state.items())
+            f"{count} {_format_state(state)}" for state, count in sorted(by_state.items())
         ]
         print(f"          {', '.join(parts)}")
+
+    # Bridge status (optional endpoint, may not exist)
+    try:
+        with _client() as c:
+            resp = c.get("/api/bridges")
+            if resp.status_code == 200:
+                data = resp.json()
+                active = [
+                    b["platform"]
+                    for b in data.get("bridges", [])
+                    if b.get("status") == "running"
+                ]
+                if active:
+                    print(f"Bridges:  {', '.join(active)}")
+                else:
+                    print("Bridges:  none connected")
+    except Exception:
+        pass
 
 
 def cmd_list(
@@ -210,7 +229,7 @@ def cmd_attach(
                 rtype = s.get("runner_type", "?")
                 running = " (running)" if s.get("is_running") else ""
                 prompt = _truncate(s.get("first_prompt") or s.get("last_prompt"), 50)
-                print(f"  {i}) [{rtype}]{running} {prompt}")
+                print(f"  {i}) {_short_id(s['id'])}  [{rtype}]{running}  {prompt}")
 
             print()
             try:
@@ -271,8 +290,10 @@ def cmd_attach(
 
     print(f"Attached session {session['id']}")
     print(f"  Name:      {session.get('name') or '(unnamed)'}")
-    print(f"  State:     {session['state']}")
+    print(f"  State:     {_format_state(session['state'])}")
     print(f"  Directory: {session.get('directory') or '?'}")
+    if session.get("platform"):
+        print(f"  Platform:  {session['platform']}")
 
 
 def cmd_delete(session_id: str) -> None:
@@ -305,11 +326,12 @@ def cmd_input(session_id: str, text: str) -> None:
                 json={"text": text},
             )
             _check_response(resp)
+            session = resp.json()
     except (httpx.ConnectError, httpx.ConnectTimeout):
         _handle_connection_error()
         return
 
-    print("Input sent.")
+    print(f"Sent to {_short_id(session_id)} ({_format_state(session.get('state', '?'))})")
 
 
 def cmd_sync(session_id: str) -> None:
@@ -330,9 +352,9 @@ def cmd_sync(session_id: str) -> None:
     synced = result.get("synced", 0)
     total = result.get("total", 0)
     if synced == 0:
-        print(f"No new messages (total: {total})")
+        print(f"Already up to date ({total} message{'s' if total != 1 else ''} total)")
     else:
-        print(f"Synced {synced} new message{'s' if synced != 1 else ''} (total: {total})")
+        print(f"Synced {synced} new message{'s' if synced != 1 else ''} ({total} total)")
 
 
 def cmd_interrupt(session_id: str) -> None:
@@ -442,9 +464,18 @@ def _short_id(full_id: str) -> str:
     return full_id[:12]
 
 
+_STATE_LABELS: dict[str, str] = {
+    "CREATED": "created",
+    "RUNNING": "running",
+    "AWAITING_INPUT": "awaiting input",
+    "INTERRUPTING": "stopping",
+    "ERROR": "error",
+}
+
+
 def _format_state(state: str) -> str:
     """Format a session state for display."""
-    return state.lower()
+    return _STATE_LABELS.get(state.upper(), state.lower())
 
 
 def _print_table(headers: list[str], widths: list[int], rows: list[list[str]]) -> None:
@@ -460,7 +491,6 @@ def _print_table(headers: list[str], widths: list[int], rows: list[list[str]]) -
 
 def _print_sessions_table(items: list[dict]) -> None:
     """Print a formatted table of Tether sessions."""
-    # Sort: running/awaiting first, then by last activity
     state_order = {
         "RUNNING": 0,
         "AWAITING_INPUT": 1,
@@ -468,11 +498,23 @@ def _print_sessions_table(items: list[dict]) -> None:
         "CREATED": 3,
         "ERROR": 4,
     }
+    # Sort by state priority, then most recent activity first within each state
     items.sort(
-        key=lambda s: (state_order.get(s["state"], 9), s.get("last_activity_at", ""))
+        key=lambda s: (state_order.get(s["state"], 9), s.get("last_activity_at") or ""),
+        reverse=False,
     )
-    items.reverse()
-    items.sort(key=lambda s: state_order.get(s["state"], 9))
+    # Within each state group, reverse activity order so newest is first
+    sorted_items: list[dict] = []
+    for _, group in groupby(items, key=lambda s: state_order.get(s["state"], 9)):
+        sorted_items.extend(sorted(group, key=lambda s: s.get("last_activity_at") or "", reverse=True))
+    items = sorted_items
+
+    # Use terminal width for directory column, minimum 30, maximum 50
+    try:
+        term_width = os.get_terminal_size().columns
+    except OSError:
+        term_width = 80
+    dir_width = max(30, min(50, term_width - 12 - 16 - 32 - 6))
 
     rows: list[list[str]] = []
     for s in items:
@@ -481,11 +523,11 @@ def _print_sessions_table(items: list[dict]) -> None:
                 _short_id(s["id"]),
                 _format_state(s["state"]),
                 _truncate(s.get("name"), 30),
-                _truncate(s.get("directory"), 30),
+                _truncate(s.get("directory"), dir_width),
             ]
         )
 
-    _print_table(["ID", "STATE", "NAME", "DIRECTORY"], [12, 16, 30, 30], rows)
+    _print_table(["ID", "STATE", "NAME", "DIRECTORY"], [12, 16, 30, dir_width], rows)
 
 
 def _print_external_sessions_table(items: list[dict]) -> None:

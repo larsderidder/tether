@@ -102,28 +102,34 @@
         </DialogHeader>
         <div v-if="permissionRequest" class="space-y-4">
           <p class="text-sm text-zinc-300">
-            Claude wants to use the <span class="font-mono font-semibold text-amber-400">{{ permissionRequest.tool_name }}</span> tool.
+            <span class="font-medium text-zinc-100">{{ agentLabel }}</span> wants to use the <span class="font-mono font-semibold text-amber-400">{{ permissionRequest.tool_name }}</span> tool.
           </p>
           <div class="rounded bg-zinc-800 p-3 text-xs font-mono overflow-x-auto max-h-48 overflow-y-auto">
             <pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(permissionRequest.tool_input, null, 2) }}</pre>
           </div>
-          <input
-            v-model="permissionDenyReason"
-            type="text"
-            placeholder="Reason for denial (optional)"
-            class="w-full rounded bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
-            @keydown.enter="handlePermissionDeny"
-          />
+          <!-- Deny reason: only shown after clicking Deny -->
+          <div v-if="showDenyReason" class="space-y-2">
+            <p class="text-xs text-zinc-400">Reason for denial (optional):</p>
+            <input
+              v-model="permissionDenyReason"
+              type="text"
+              placeholder="Explain why…"
+              class="w-full rounded bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+              @keydown.enter="handlePermissionDeny"
+              autofocus
+            />
+          </div>
           <div class="flex items-center justify-end gap-2">
             <Button
               variant="ghost"
               class="h-10"
-              @click="handlePermissionDeny"
+              @click="showDenyReason ? handlePermissionDeny() : (showDenyReason = true)"
               :disabled="permissionResponding"
             >
-              Deny
+              {{ showDenyReason ? 'Confirm deny' : 'Deny' }}
             </Button>
             <Button
+              v-if="!showDenyReason"
               variant="default"
               class="h-10 bg-emerald-600 hover:bg-emerald-700"
               @click="handlePermissionAllow"
@@ -212,6 +218,19 @@ const permissionRequest = ref<PermissionRequestData | null>(null)
 const permissionSessionId = ref<string | null>(null)  // Track which session the permission is for
 const permissionResponding = ref(false)
 const permissionDenyReason = ref("")
+const showDenyReason = ref(false)
+
+const agentLabel = computed(() => {
+  const title = headerData.value?.title
+  if (title && title !== "Unknown") return title
+  const rt = session.value?.runner_type
+  if (!rt) return "Agent"
+  if (rt.includes("claude")) return "Claude"
+  if (rt === "codex") return "Codex"
+  if (rt === "opencode") return "OpenCode"
+  if (rt === "pi") return "Pi"
+  return "Agent"
+})
 
 // Directory warning state
 const directoryMissing = ref(false)
@@ -533,6 +552,8 @@ const onEvent = (event: EventEnvelope) => {
     // Only dismiss if it matches the current request
     if (permissionRequest.value?.request_id === payload.request_id) {
       permissionRequest.value = null
+      showDenyReason.value = false
+      permissionDenyReason.value = ""
       permissionSessionId.value = null
       // Show a brief message if resolved by timeout or cancellation
       if (payload.resolved_by !== "user" && payload.message) {
@@ -662,9 +683,10 @@ const handlePermissionAllow = async () => {
   } finally {
     // Always dismiss dialog, even on error (permission no longer exists on backend)
     permissionRequest.value = null
+    showDenyReason.value = false
+    permissionDenyReason.value = ""
     permissionSessionId.value = null
     permissionResponding.value = false
-    permissionDenyReason.value = ""
   }
 }
 
@@ -686,8 +708,9 @@ const handlePermissionDeny = async () => {
   } finally {
     // Always dismiss dialog, even on error (permission no longer exists on backend)
     permissionRequest.value = null
-    permissionSessionId.value = null
+    showDenyReason.value = false
     permissionDenyReason.value = ""
+    permissionSessionId.value = null
     permissionResponding.value = false
   }
 }
@@ -738,6 +761,8 @@ watch(activeSessionId, async (newId, oldId) => {
   infoOpen.value = false
   renameMessage.value = ""
   permissionRequest.value = null
+  showDenyReason.value = false
+  permissionDenyReason.value = ""
   permissionSessionId.value = null
   session.value = null
   initialLoad.value = false

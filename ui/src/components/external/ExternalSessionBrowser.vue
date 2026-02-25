@@ -97,58 +97,71 @@
                 class="rounded-xl border border-stone-800/50 bg-stone-800/30 transition hover:bg-stone-800/50"
               >
                 <!-- Session card header -->
-                <button
-                  class="w-full px-3 py-3 text-left"
-                  @click="toggleSession(session)"
-                >
-                  <div class="flex items-start gap-3">
-                    <!-- Runner type badge -->
-                    <div
-                      class="mt-0.5 flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium"
-                      :class="session.runner_type === 'claude_code'
-                        ? 'bg-violet-500/20 text-violet-300'
-                        : session.runner_type === 'pi'
-                          ? 'bg-emerald-500/20 text-emerald-300'
-                          : 'bg-blue-500/20 text-blue-300'"
-                    >
-                      {{ session.runner_type === 'claude_code' ? 'Claude' : session.runner_type === 'pi' ? 'Pi' : 'Codex' }}
-                    </div>
-
-                    <div class="min-w-0 flex-1">
-                      <!-- First prompt preview -->
-                      <p class="line-clamp-2 text-sm text-stone-200">
-                        {{ session.first_prompt || 'No prompt recorded' }}
-                      </p>
-                      <!-- Metadata row -->
-                      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
-                        <span class="font-mono text-stone-600" :title="session.id">
-                          {{ formatSessionId(session.id) }}
-                        </span>
-                        <span class="flex items-center gap-1">
-                          <Clock class="h-3 w-3" />
-                          {{ formatTime(session.last_activity) }}
-                        </span>
-                        <span class="flex items-center gap-1">
-                          <MessageSquare class="h-3 w-3" />
-                          {{ session.message_count }}
-                        </span>
-                        <span
-                          v-if="session.is_running"
-                          class="flex items-center gap-1 text-emerald-400"
-                        >
-                          <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
-                          Busy
-                        </span>
+                <div class="flex items-start gap-1 px-3 py-3">
+                  <button
+                    class="min-w-0 flex-1 text-left"
+                    @click="toggleSession(session)"
+                  >
+                    <div class="flex items-start gap-3">
+                      <!-- Runner type badge -->
+                      <div
+                        class="mt-0.5 flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium"
+                        :class="session.runner_type === 'claude_code'
+                          ? 'bg-violet-500/20 text-violet-300'
+                          : session.runner_type === 'pi'
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-blue-500/20 text-blue-300'"
+                      >
+                        {{ session.runner_type === 'claude_code' ? 'Claude' : session.runner_type === 'pi' ? 'Pi' : 'Codex' }}
                       </div>
-                    </div>
 
-                    <!-- Expand chevron -->
-                    <ChevronDown
-                      class="h-4 w-4 shrink-0 text-stone-500 transition"
-                      :class="{ 'rotate-180': expandedSession === session.id }"
-                    />
-                  </div>
-                </button>
+                      <div class="min-w-0 flex-1">
+                        <!-- First prompt preview -->
+                        <p class="line-clamp-2 text-sm text-stone-200">
+                          {{ session.first_prompt || 'No prompt recorded' }}
+                        </p>
+                        <!-- Metadata row -->
+                        <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
+                          <span class="font-mono text-stone-600" :title="session.id">
+                            {{ formatSessionId(session.id) }}
+                          </span>
+                          <span class="flex items-center gap-1">
+                            <Clock class="h-3 w-3" />
+                            {{ formatTime(session.last_activity) }}
+                          </span>
+                          <span class="flex items-center gap-1">
+                            <MessageSquare class="h-3 w-3" />
+                            {{ session.message_count }}
+                          </span>
+                          <span
+                            v-if="session.is_running"
+                            class="flex items-center gap-1 text-emerald-400"
+                          >
+                            <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
+                            Busy
+                          </span>
+                        </div>
+                      </div>
+
+                      <!-- Expand chevron -->
+                      <ChevronDown
+                        class="h-4 w-4 shrink-0 text-stone-500 transition"
+                        :class="{ 'rotate-180': expandedSession === session.id }"
+                      />
+                    </div>
+                  </button>
+
+                  <!-- Quick attach button (always visible for attachable sessions) -->
+                  <button
+                    v-if="['claude_code', 'pi'].includes(session.runner_type)"
+                    class="ml-1 mt-0.5 flex h-7 shrink-0 items-center rounded-md bg-emerald-600/20 px-2 text-xs font-medium text-emerald-400 transition hover:bg-emerald-600/40 active:scale-95"
+                    :disabled="attaching"
+                    @click.stop="attachToSession(session)"
+                    title="Attach to this session"
+                  >
+                    {{ attaching ? '…' : 'Attach' }}
+                  </button>
+                </div>
 
                 <!-- Expanded content -->
                 <transition name="slide">
