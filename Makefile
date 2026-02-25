@@ -21,8 +21,12 @@ build-ui:
 	rm -rf agent/tether/static_ui
 	cp -r ui/dist agent/tether/static_ui
 
+# Build TypeScript sidecars into bundled JS for the Python package
+build-sidecars:
+	./scripts/build-sidecars.sh
+
 # Start agent natively (Claude auto-detect works out of the box)
-start: build-ui
+start: build-ui build-sidecars
 	cd agent && python -m tether.main
 
 # Start agent + Codex sidecar locally (recommended)

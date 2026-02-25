@@ -155,7 +155,7 @@ class TestStringSettings:
         assert Settings.opencode_sidecar_url() == "http://localhost:8790"
         assert Settings.opencode_sidecar_token() == ""
         assert Settings.opencode_sidecar_managed() is True
-        assert Settings.opencode_sidecar_cmd() == "npm start"
+        assert Settings.opencode_sidecar_cmd() == ""
         assert Settings.opencode_sidecar_startup_timeout_seconds() == 15
 
         clean_env.setenv("TETHER_OPENCODE_SIDECAR_URL", "http://127.0.0.1:9000")

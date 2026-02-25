@@ -1,3 +1,4 @@
 include README.md
 recursive-include tether/static_ui *
+recursive-include tether/sidecars *.mjs
 include tether/py.typed

@@ -153,9 +153,8 @@ The Codex and OpenCode sidecars share a common infrastructure layer (`sidecar-co
 npm workspace packages. When using managed mode (the default for OpenCode), Tether starts and stops the
 sidecar process automatically.
 
-> **Note:** The Codex and OpenCode adapters require Node.js and their TypeScript sidecars. If you
-> installed via `pipx install tether-ai`, also clone the repo and run `make install-sidecars`.
-> The Claude adapter works out of the box with just the PyPI install.
+> **Note:** The Codex and OpenCode adapters require Node.js on your PATH. The sidecar bundles
+> are included in the PyPI package and started automatically.
 
 ## Messaging Bridges
 

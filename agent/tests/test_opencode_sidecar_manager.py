@@ -2,57 +2,80 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
+import shutil
+from unittest.mock import patch
+
+import pytest
+
+from tether.runner.base import RunnerUnavailableError
 
 
-def test_build_sidecar_command_parses_string() -> None:
-    from tether.runner.opencode_sidecar_manager import _build_sidecar_command
+def test_resolve_uses_custom_cmd_when_set(monkeypatch):
+    from tether.runner.opencode_sidecar_manager import _resolve_sidecar_command
 
-    assert _build_sidecar_command("npm start") == ["npm", "start"]
-
-
-def test_build_sidecar_command_parses_complex() -> None:
-    from tether.runner.opencode_sidecar_manager import _build_sidecar_command
-
-    assert _build_sidecar_command("tsx src/index.ts --flag value") == [
-        "tsx",
-        "src/index.ts",
-        "--flag",
-        "value",
-    ]
+    monkeypatch.setattr(
+        "tether.settings.settings.opencode_sidecar_cmd",
+        staticmethod(lambda: "my-cmd --flag"),
+    )
+    assert _resolve_sidecar_command() == ["my-cmd", "--flag"]
 
 
-def test_build_sidecar_command_empty() -> None:
-    from tether.runner.opencode_sidecar_manager import _build_sidecar_command
+def test_resolve_uses_bundled_mjs_when_no_custom_cmd(monkeypatch, tmp_path):
+    from tether.runner.opencode_sidecar_manager import _resolve_sidecar_command
 
-    assert _build_sidecar_command("") == []
-    assert _build_sidecar_command("   ") == []
+    monkeypatch.setattr(
+        "tether.settings.settings.opencode_sidecar_cmd",
+        staticmethod(lambda: ""),
+    )
 
+    fake_mjs = tmp_path / "opencode-sidecar.mjs"
+    fake_mjs.write_text("// fake")
 
-def test_find_sidecar_dir_returns_path_containing_package_json() -> None:
-    from tether.runner.opencode_sidecar_manager import _find_sidecar_dir
+    with patch(
+        "tether.runner.opencode_sidecar_manager.bundle_path",
+        return_value=fake_mjs,
+    ):
+        result = _resolve_sidecar_command()
 
-    result = _find_sidecar_dir()
-    # In the development layout the sidecar dir exists alongside the agent.
-    if result is not None:
-        assert Path(result, "package.json").exists()
-
-
-def test_find_sidecar_dir_env_override(tmp_path, monkeypatch) -> None:
-    from tether.runner.opencode_sidecar_manager import _find_sidecar_dir
-
-    # Valid directory override.
-    monkeypatch.setenv("TETHER_OPENCODE_SIDECAR_DIR", str(tmp_path))
-    result = _find_sidecar_dir()
-    assert result == str(tmp_path)
+    node = shutil.which("node")
+    assert result == [node, str(fake_mjs)]
 
 
-def test_find_sidecar_dir_invalid_env_override_falls_through(monkeypatch) -> None:
-    from tether.runner.opencode_sidecar_manager import _find_sidecar_dir
+def test_resolve_raises_when_no_node(monkeypatch, tmp_path):
+    from tether.runner.opencode_sidecar_manager import _resolve_sidecar_command
 
-    # Non-existent override falls through to the walk-up logic.
-    monkeypatch.setenv("TETHER_OPENCODE_SIDECAR_DIR", "/nonexistent/path/xyz")
-    result = _find_sidecar_dir()
-    # Either finds the real dir via walk-up or returns None — never the bad path.
-    assert result != "/nonexistent/path/xyz"
+    monkeypatch.setattr(
+        "tether.settings.settings.opencode_sidecar_cmd",
+        staticmethod(lambda: ""),
+    )
+
+    fake_mjs = tmp_path / "opencode-sidecar.mjs"
+    fake_mjs.write_text("// fake")
+
+    with patch(
+        "tether.runner.opencode_sidecar_manager.bundle_path",
+        return_value=fake_mjs,
+    ), patch("tether.runner.opencode_sidecar_manager.shutil") as mock_shutil:
+        mock_shutil.which.return_value = None
+        with pytest.raises(RunnerUnavailableError, match="Node.js is required"):
+            _resolve_sidecar_command()
+
+
+def test_resolve_falls_back_to_source_tree(monkeypatch):
+    from tether.runner.opencode_sidecar_manager import _resolve_sidecar_command
+
+    monkeypatch.setattr(
+        "tether.settings.settings.opencode_sidecar_cmd",
+        staticmethod(lambda: ""),
+    )
+
+    # No bundle available, fall back to source tree walk.
+    with patch(
+        "tether.runner.opencode_sidecar_manager.bundle_path",
+        side_effect=FileNotFoundError,
+    ):
+        result = _resolve_sidecar_command()
+
+    # In the dev layout, opencode-sdk-sidecar/ exists in the repo.
+    assert "--prefix" in result
+    assert "start" in result

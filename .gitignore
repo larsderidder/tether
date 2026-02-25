@@ -18,6 +18,7 @@ ui/dev-dist/
 
 # Built stuff
 agent/tether/static_ui/
+agent/tether/sidecars/*.mjs
 agent/dist/
 
 # Agent data

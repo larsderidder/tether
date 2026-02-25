@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import os
+import shutil
 import shlex
 import socket
 import urllib.parse
@@ -17,6 +18,7 @@ from pathlib import Path
 import structlog
 
 from tether.runner.base import RunnerUnavailableError
+from tether.sidecars import bundle_path
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -50,12 +52,8 @@ async def stop_managed_opencode_sidecar() -> None:
 async def _spawn_locked() -> None:
     """Spawn sidecar process under lock."""
     global _proc, _stdout_task, _stderr_task
-    cmd = settings.opencode_sidecar_cmd().strip() or "opencode serve"
-    parts = _build_sidecar_command(cmd)
-    if not parts:
-        raise RunnerUnavailableError(
-            "Invalid OpenCode sidecar command. Set TETHER_OPENCODE_SIDECAR_CMD."
-        )
+
+    parts = _resolve_sidecar_command()
 
     # Pass host/port from settings so the sidecar binds the expected address.
     url = urllib.parse.urlparse(settings.opencode_sidecar_url())
@@ -69,22 +67,18 @@ async def _spawn_locked() -> None:
     xdg_data_home.mkdir(parents=True, exist_ok=True)
     env["XDG_DATA_HOME"] = str(xdg_data_home)
 
-    # Run from the sidecar directory so `npm start` resolves package.json.
-    cwd = _find_sidecar_dir()
-
-    logger.info("Starting managed OpenCode sidecar", cmd=parts, cwd=cwd)
+    logger.info("Starting managed OpenCode sidecar", cmd=parts)
     try:
         _proc = await asyncio.create_subprocess_exec(
             *parts,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
-            cwd=cwd,
         )
     except FileNotFoundError as exc:
         raise RunnerUnavailableError(
             "OpenCode sidecar command not found. "
-            "Set TETHER_OPENCODE_SIDECAR_CMD or install the sidecar."
+            "Ensure Node.js is installed and on PATH."
         ) from exc
     except OSError as exc:
         raise RunnerUnavailableError(
@@ -175,39 +169,43 @@ def _check_health_sync() -> bool:
         conn.close()
 
 
-def _find_sidecar_dir() -> str | None:
-    """Locate the opencode-sdk-sidecar directory.
+def _resolve_sidecar_command() -> list[str]:
+    """Build the argv to start the OpenCode sidecar.
 
-    Checks (in order):
-    1. TETHER_OPENCODE_SIDECAR_DIR env var — explicit override.
-    2. Walk up from this file looking for a parent that contains
-       ``opencode-sdk-sidecar/package.json``. Robust against the file
-       being moved within the repo and against pip installs.
-
-    Returns the absolute path as a string, or None if not found.
+    Resolution order:
+    1. ``TETHER_OPENCODE_SIDECAR_CMD`` env/setting: run as-is (for dev or
+       custom setups).
+    2. Bundled ``opencode-sidecar.mjs`` shipped inside the Python package:
+       run with ``node <path>``.
+    3. Fall back to ``npm start`` in the ``opencode-sdk-sidecar/`` source
+       directory (from-source development).
     """
-    override = os.environ.get("TETHER_OPENCODE_SIDECAR_DIR", "").strip()
-    if override:
-        p = Path(override)
-        if p.is_dir():
-            return str(p)
-        logger.warning(
-            "TETHER_OPENCODE_SIDECAR_DIR is set but not a directory; ignoring",
-            path=override,
-        )
+    custom_cmd = settings.opencode_sidecar_cmd().strip()
+    if custom_cmd:
+        return shlex.split(custom_cmd)
 
-    # Walk up the directory tree from this file.
+    # Try the bundled single-file sidecar.
+    try:
+        mjs = bundle_path("opencode-sidecar")
+        node = shutil.which("node")
+        if not node:
+            raise RunnerUnavailableError(
+                "Node.js is required to run the OpenCode sidecar but 'node' "
+                "was not found on PATH."
+            )
+        return [node, str(mjs)]
+    except FileNotFoundError:
+        pass
+
+    # Fall back to npm start in the source tree (dev workflow).
     for ancestor in Path(__file__).parents:
         candidate = ancestor / "opencode-sdk-sidecar"
         if (candidate / "package.json").exists():
-            return str(candidate)
+            npm = shutil.which("npm")
+            if npm:
+                return [npm, "start", "--prefix", str(candidate)]
 
-    logger.warning(
-        "opencode-sdk-sidecar directory not found; npm start will run without cwd"
+    raise RunnerUnavailableError(
+        "Could not find OpenCode sidecar bundle or source directory. "
+        "Run scripts/build-sidecars.sh or set TETHER_OPENCODE_SIDECAR_CMD."
     )
-    return None
-
-
-def _build_sidecar_command(cmd: str) -> list[str]:
-    """Parse the sidecar command string into argv."""
-    return shlex.split(cmd)

@@ -270,11 +270,12 @@ class Settings:
     def opencode_sidecar_cmd() -> str:
         """Command used when managed OpenCode sidecar is enabled.
 
-        Env: TETHER_OPENCODE_SIDECAR_CMD (default: "npm start")
-        The default runs opencode-sdk-sidecar/ via npm start.
-        Override if you run the sidecar from a different path or with a wrapper.
+        Env: TETHER_OPENCODE_SIDECAR_CMD (default: "")
+        When empty (the default), the manager uses the bundled sidecar JS
+        shipped with the package, falling back to the source tree for dev.
+        Set this to override with a custom command.
         """
-        return _get("TETHER_OPENCODE_SIDECAR_CMD", default="npm start")
+        return _get("TETHER_OPENCODE_SIDECAR_CMD", default="")
 
     @staticmethod
     def opencode_sidecar_startup_timeout_seconds() -> int:
