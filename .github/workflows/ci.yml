@@ -76,6 +76,11 @@ jobs:
       - name: Build sidecar bundles
         run: ./scripts/build-sidecars.sh
 
+      - name: Sync README for PyPI
+        run: |
+          cp README.md agent/README.md
+          sed -i 's|src="tether_compact_logo.png"|src="https://raw.githubusercontent.com/larsderidder/tether/main/tether_compact_logo.png"|' agent/README.md
+
       - name: Build package
         working-directory: agent
         run: python -m build
