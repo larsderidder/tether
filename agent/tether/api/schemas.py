@@ -83,6 +83,7 @@ class AttachSessionRequest(BaseModel):
     external_id: str
     runner_type: ExternalRunnerType
     directory: str
+    platform: str | None = None  # "telegram", "slack", "discord"
 
 
 class UpdateApprovalModeRequest(BaseModel):

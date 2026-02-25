@@ -203,6 +203,33 @@ async def attach_to_external_session(
                 external_id=external_id,
                 existing_session_id=existing_session_id,
             )
+            # Handle platform binding if requested
+            if payload.platform and existing_session.platform != payload.platform:
+                existing_session.platform = payload.platform
+                store.update_session(existing_session)
+                try:
+                    from tether.bridges.glue import bridge_manager, make_thread_name
+
+                    thread_label = make_thread_name(
+                        directory=existing_session.directory or "",
+                        runner_type=existing_session.runner_type or "",
+                    )
+                    thread_info = await bridge_manager.create_thread(
+                        existing_session.id,
+                        thread_label,
+                        platform=payload.platform,
+                    )
+                    existing_session.platform_thread_id = thread_info.get("thread_id")
+                    store.update_session(existing_session)
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning("Failed to create platform thread", error=str(exc))
+            # Subscribe bridge if platform is bound
+            if existing_session.platform:
+                from tether.bridges.glue import bridge_subscriber
+
+                bridge_subscriber.subscribe(
+                    existing_session.id, existing_session.platform
+                )
             # Return the existing session instead of creating a duplicate
             return SessionResponse.from_session(existing_session, store)
 
@@ -259,11 +286,15 @@ async def attach_to_external_session(
         session.platform = payload.platform
         store.update_session(session)
         try:
-            from tether.bridges.glue import bridge_manager
+            from tether.bridges.glue import bridge_manager, make_thread_name
 
+            thread_label = make_thread_name(
+                directory=normalized_directory,
+                runner_type=session.runner_type,
+            )
             thread_info = await bridge_manager.create_thread(
                 session.id,
-                session.name or "Attached session",
+                thread_label,
                 platform=payload.platform,
             )
             session.platform_thread_id = thread_info.get("thread_id")

@@ -32,8 +32,14 @@ from tether.api.schemas import (
     StartSessionRequest,
     UpdateApprovalModeRequest,
 )
-from tether.api.state import maybe_set_session_name, now, remove_session_lock, session_lock, transition
-from tether.bridges.glue import bridge_manager
+from tether.api.state import (
+    maybe_set_session_name,
+    now,
+    remove_session_lock,
+    session_lock,
+    transition,
+)
+from tether.bridges.glue import bridge_manager, make_thread_name
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
@@ -80,7 +86,9 @@ async def create_session(
     if payload.directory:
         candidate = Path(payload.directory).expanduser()
         if not candidate.is_dir():
-            raise_http_error("VALIDATION_ERROR", "directory must be an existing folder", 422)
+            raise_http_error(
+                "VALIDATION_ERROR", "directory must be an existing folder", 422
+            )
         normalized_directory = normalize_directory_path(payload.directory)
     # Default repo_id to "external" for external agents
     if payload.agent_name and not payload.repo_id and not normalized_directory:
@@ -100,9 +108,7 @@ async def create_session(
             # Clean up session before returning error
             store.delete_session(session.id)
             raise_http_error(
-                "VALIDATION_ERROR",
-                f"Invalid adapter '{payload.adapter}': {e}",
-                422
+                "VALIDATION_ERROR", f"Invalid adapter '{payload.adapter}': {e}", 422
             )
 
     # Populate external agent metadata if provided
@@ -122,8 +128,12 @@ async def create_session(
         session.platform = payload.platform
         store.update_session(session)
         try:
+            thread_label = make_thread_name(
+                directory=normalized_directory,
+                adapter=payload.adapter,
+            )
             thread_info = await bridge_manager.create_thread(
-                session.id, session.name or "New session", platform=payload.platform
+                session.id, thread_label, platform=payload.platform
             )
             session.platform_thread_id = thread_info.get("thread_id")
         except (ValueError, RuntimeError) as e:
@@ -157,7 +167,9 @@ async def create_session(
 
 
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str, _: None = Depends(require_token)) -> SessionResponse:
+async def get_session(
+    session_id: str, _: None = Depends(require_token)
+) -> SessionResponse:
     """Fetch a single session by id."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
@@ -168,7 +180,9 @@ async def get_session(session_id: str, _: None = Depends(require_token)) -> Sess
 
 
 @router.delete("/sessions/{session_id}", response_model=OkResponse)
-async def delete_session(session_id: str, _: None = Depends(require_token)) -> OkResponse:
+async def delete_session(
+    session_id: str, _: None = Depends(require_token)
+) -> OkResponse:
     """Delete a session if it is not running."""
     with _session_logging_context(session_id):
         session = store.get_session(session_id)
@@ -214,12 +228,18 @@ async def start_session(
             session = store.get_session(session_id)
             if not session:
                 raise_http_error("NOT_FOUND", "Session not found", 404)
-            if session.state not in (SessionState.CREATED, SessionState.AWAITING_INPUT, SessionState.ERROR):
+            if session.state not in (
+                SessionState.CREATED,
+                SessionState.AWAITING_INPUT,
+                SessionState.ERROR,
+            ):
                 raise_http_error("INVALID_STATE", "Session not ready to start", 409)
 
             # Validate inputs BEFORE state transition
             if not session.directory:
-                raise_http_error("VALIDATION_ERROR", "Session has no directory assigned", 422)
+                raise_http_error(
+                    "VALIDATION_ERROR", "Session has no directory assigned", 422
+                )
             prompt = payload.prompt
             approval_choice = payload.approval_choice
 
@@ -311,6 +331,12 @@ async def start_session(
                             "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
                             503,
                         )
+                    if (adapter or "").lower() == "opencode":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            f"OpenCode sidecar is not reachable: {exc}",
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
                         "Runner backend is not reachable. Check that the adapter is running and try again.",
@@ -318,7 +344,9 @@ async def start_session(
                     )
                 else:
                     logger.exception("Runner failed to start", session_id=session_id)
-                    raise_http_error("RUNNER_ERROR", f"Failed to start runner: {exc}", 500)
+                    raise_http_error(
+                        "RUNNER_ERROR", f"Failed to start runner: {exc}", 500
+                    )
 
         session = store.get_session(session_id)
         return SessionResponse.from_session(session, store)
@@ -438,14 +466,24 @@ async def send_input(
                             "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
                             503,
                         )
+                    if (adapter or "").lower() == "opencode":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            f"OpenCode sidecar is not reachable: {exc}",
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
                         "Runner backend is not reachable. Check that the adapter is running and try again.",
                         503,
                     )
                 else:
-                    logger.exception("Runner failed while sending input", session_id=session_id)
-                    raise_http_error("RUNNER_ERROR", f"Failed to send input: {exc}", 500)
+                    logger.exception(
+                        "Runner failed while sending input", session_id=session_id
+                    )
+                    raise_http_error(
+                        "RUNNER_ERROR", f"Failed to send input: {exc}", 500
+                    )
 
             session.last_activity_at = now()
             store.update_session(session)
@@ -454,7 +492,9 @@ async def send_input(
 
 
 @router.post("/sessions/{session_id}/interrupt", response_model=SessionResponse)
-async def interrupt_session(session_id: str, _: None = Depends(require_token)) -> SessionResponse:
+async def interrupt_session(
+    session_id: str, _: None = Depends(require_token)
+) -> SessionResponse:
     """Interrupt the current turn. Session remains active and can continue with new input."""
     with _session_logging_context(session_id):
         # Phase 1: validate and transition to INTERRUPTING under lock
@@ -463,7 +503,10 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
             if not session:
                 raise_http_error("NOT_FOUND", "Session not found", 404)
             # Idempotent: already awaiting input or interrupting
-            if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING):
+            if session.state in (
+                SessionState.AWAITING_INPUT,
+                SessionState.INTERRUPTING,
+            ):
                 logger.info("Session interrupt requested but already idle/interrupting")
                 return SessionResponse.from_session(session, store)
             if session.state in (SessionState.CREATED, SessionState.ERROR):
@@ -511,14 +554,24 @@ async def interrupt_session(session_id: str, _: None = Depends(require_token)) -
                             "Codex sidecar is not reachable. Start `codex-sdk-sidecar` and try again.",
                             503,
                         )
+                    if (adapter or "").lower() == "opencode":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            f"OpenCode sidecar is not reachable: {exc}",
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
                         "Runner backend is not reachable. Check that the adapter is running and try again.",
                         503,
                     )
                 else:
-                    logger.exception("Runner failed while interrupting", session_id=session_id)
-                    raise_http_error("RUNNER_ERROR", f"Failed to interrupt session: {exc}", 500)
+                    logger.exception(
+                        "Runner failed while interrupting", session_id=session_id
+                    )
+                    raise_http_error(
+                        "RUNNER_ERROR", f"Failed to interrupt session: {exc}", 500
+                    )
 
             # Transition to AWAITING_INPUT after interrupt completes
             if session.state == SessionState.INTERRUPTING:
@@ -670,7 +723,9 @@ async def push_agent_event(
                 await emit_error(session, code, message)
 
             elif payload.type == "permission_request":
-                request_id = payload.data.get("request_id") or f"perm_{uuid.uuid4().hex[:8]}"
+                request_id = (
+                    payload.data.get("request_id") or f"perm_{uuid.uuid4().hex[:8]}"
+                )
                 tool_name = payload.data.get("tool_name", "approval")
                 tool_input = payload.data.get("tool_input", payload.data)
                 future = asyncio.get_event_loop().create_future()
@@ -719,10 +774,12 @@ async def poll_agent_events(
         filtered = []
         for evt in events:
             if evt.get("type") in type_filter:
-                filtered.append({
-                    "type": evt["type"],
-                    "data": evt.get("data", {}),
-                    "seq": evt.get("seq"),
-                })
+                filtered.append(
+                    {
+                        "type": evt["type"],
+                        "data": evt.get("data", {}),
+                        "seq": evt.get("seq"),
+                    }
+                )
 
         return {"events": filtered}
