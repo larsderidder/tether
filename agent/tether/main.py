@@ -43,9 +43,16 @@ from tether.bridges.glue import (
 configure_logging()
 logger = structlog.get_logger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.agent_token = settings.token()
+    if settings.adapter() == "opencode" and settings.opencode_sidecar_managed():
+        from tether.runner.opencode_sidecar_manager import (
+            ensure_opencode_sidecar_started,
+        )
+
+        await ensure_opencode_sidecar_started()
     await _init_bridges()
     _subscribe_existing_sessions()
     maintenance_task = asyncio.create_task(maintenance_loop())
@@ -56,6 +63,12 @@ async def lifespan(app: FastAPI):
         maintenance_task.cancel()
         with suppress(asyncio.CancelledError):
             await maintenance_task
+        if settings.opencode_sidecar_managed():
+            from tether.runner.opencode_sidecar_manager import (
+                stop_managed_opencode_sidecar,
+            )
+
+            await stop_managed_opencode_sidecar()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -175,6 +188,7 @@ def _subscribe_existing_sessions() -> None:
 
 app.include_router(api_router)
 app.include_router(root_router)
+
 
 def run() -> None:
     """Entry point for ``tether start``."""
