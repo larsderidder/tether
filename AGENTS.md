@@ -43,7 +43,7 @@ Read the relevant docs below based on what you'll be working on.
 | --- | --- | --- |
 | Session engine | `docs/SESSION_ENGINE.md` | Store, state machine, event pipeline, locking |
 | Bridges | `docs/BRIDGES.md` | Telegram/Slack/Discord, subscriber routing, auto-approve |
-| Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_subprocess, codex, claude_api) |
+| Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_subprocess, codex, litellm, etc.) |
 | Web UI | `docs/WEB_UI.md` | Vue 3 frontend, views, composables, dev server |
 | MCP server | `docs/MCP_SERVER.md` | MCP tools, transport, config |
 | Code standards | `docs/CODE_STANDARDS.md` | Formatting, typing, logging conventions |
@@ -64,7 +64,7 @@ Read the relevant docs below based on what you'll be working on.
 agent/                  # Python backend
   tether/
     api/                # FastAPI routes (sessions, events, directories, deps)
-    runner/             # Execution adapters (claude_subprocess, claude_api, codex_*)
+    runner/             # Execution adapters (claude_subprocess, codex_*, litellm, etc.)
     bridges/            # Messaging bridges (telegram, slack, discord)
     mcp/                # MCP server (tools, transport)
     cli.py              # CLI entry point (tether start, tether init)
@@ -97,10 +97,25 @@ make verify             # Health check agent + UI
 ### CLI (installed package)
 
 ```bash
-tether init             # Interactive setup wizard
-tether start            # Start server (loads ~/.config/tether/config.env)
-tether start --dev      # Dev mode (no auth)
+tether init                          # Interactive setup wizard
+tether start                         # Start server (loads ~/.config/tether/config.env)
+tether start --dev                   # Dev mode (no auth)
 tether start --port 9000
+
+# Client commands (talk to running server)
+tether status                        # Server health + session summary
+tether open                          # Open web UI in browser
+tether list                          # List Tether sessions
+tether list -s running               # Filter by state
+tether list -d .                     # Filter by directory
+tether list --external               # Discover external sessions
+tether attach <external-id>          # Attach an external session
+tether attach                        # Pick from sessions in current dir
+tether attach <id> -p discord        # Attach with Discord thread
+tether input <session-id> "message"  # Send input to a session
+tether interrupt <session-id>        # Interrupt a running session
+tether delete <session-id>           # Delete a session
+tether sync <session-id>             # Pull new messages from an attached external session
 ```
 
 Config precedence: env vars > local `.env` > `~/.config/tether/config.env`.
