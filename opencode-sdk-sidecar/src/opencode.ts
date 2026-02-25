@@ -17,6 +17,9 @@
 
 import { createOpencodeServer } from "@opencode-ai/sdk";
 import { createOpencodeClient } from "@opencode-ai/sdk";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import type { SessionState } from "@tether/sidecar-common/types";
 import {
   emitOutput,
@@ -33,6 +36,125 @@ import { ensureWorkdir } from "@tether/sidecar-common/workdir";
 
 
 const HEARTBEAT_SECONDS = 5;
+
+/**
+ * Part types whose streaming deltas should be suppressed from output.
+ * OpenCode streams "reasoning" / thinking content as message.part.delta
+ * events, but users only want the final response text.
+ */
+/**
+ * Part types whose streaming deltas should be suppressed from output.
+ * OpenCode streams "reasoning" / thinking content as message.part.delta
+ * events, but users only want the final response text.
+ */
+const HIDDEN_PART_TYPES = new Set(["reasoning"]);
+
+/**
+ * Per-session tracking of part IDs whose deltas should be suppressed.
+ * Populated from message.part.updated events, cleared on step-finish.
+ */
+const hiddenPartsPerSession = new Map<string, Set<string>>();
+
+function isHiddenPart(sessionId: string, partId: string): boolean {
+  return hiddenPartsPerSession.get(sessionId)?.has(partId) ?? false;
+}
+
+function markHiddenPart(sessionId: string, partId: string): void {
+  let set = hiddenPartsPerSession.get(sessionId);
+  if (!set) {
+    set = new Set();
+    hiddenPartsPerSession.set(sessionId, set);
+  }
+  set.add(partId);
+}
+
+/** @internal Exported for testing only. */
+export function clearHiddenParts(sessionId: string): void {
+  hiddenPartsPerSession.delete(sessionId);
+}
+
+/**
+ * Track the last emitted partID per session so we can insert a separator
+ * when switching between text parts (prevents thinking and response from
+ * being concatenated without whitespace).
+ */
+const lastEmittedPartId = new Map<string, string>();
+
+/** @internal Exported for testing only. */
+export function clearLastEmittedPartId(sessionId: string): void {
+  lastEmittedPartId.delete(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Per-session model tracking
+// ---------------------------------------------------------------------------
+
+type SessionModel = { providerID: string; modelID: string };
+
+/**
+ * Model the session was started with (discovered from message history).
+ * Passed to prompt_async so replies use the same model.
+ */
+const sessionModels = new Map<string, SessionModel>();
+
+/** @internal Exported for testing only. */
+export function setSessionModel(sessionId: string, model: SessionModel): void {
+  sessionModels.set(sessionId, model);
+}
+
+/** @internal Exported for testing only. */
+export function clearSessionModel(sessionId: string): void {
+  sessionModels.delete(sessionId);
+}
+
+/** @internal Exported for testing only. */
+export function getSessionModel(sessionId: string): SessionModel | undefined {
+  return sessionModels.get(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Ensure `opencode` is on PATH
+// ---------------------------------------------------------------------------
+
+/**
+ * The OpenCode SDK spawns `opencode` by bare name. If the binary is not on
+ * PATH (common when running inside a managed sidecar process), detect its
+ * location and prepend its directory to process.env.PATH.
+ *
+ * Search order:
+ *   1. OPENCODE_BIN env var
+ *   2. ~/.opencode/bin/opencode (default install location)
+ */
+function ensureOpencodeBinOnPath(): void {
+  // Already findable?
+  const pathDirs = (process.env["PATH"] ?? "").split(":");
+  for (const dir of pathDirs) {
+    if (existsSync(join(dir, "opencode"))) return;
+  }
+
+  // Check explicit env var.
+  const envBin = process.env["OPENCODE_BIN"]?.trim();
+  if (envBin && existsSync(envBin)) {
+    const binDir = dirname(envBin);
+    process.env["PATH"] = `${binDir}:${process.env["PATH"] ?? ""}`;
+    logger.info({ binDir }, "Added opencode bin directory to PATH (via OPENCODE_BIN)");
+    return;
+  }
+
+  // Check default install location.
+  const defaultBin = join(homedir(), ".opencode", "bin", "opencode");
+  if (existsSync(defaultBin)) {
+    const binDir = dirname(defaultBin);
+    process.env["PATH"] = `${binDir}:${process.env["PATH"] ?? ""}`;
+    logger.info({ binDir }, "Added opencode bin directory to PATH (default location)");
+    return;
+  }
+
+  logger.warn("opencode binary not found on PATH, OPENCODE_BIN, or ~/.opencode/bin");
+}
+
+// Run once at module load.
+ensureOpencodeBinOnPath();
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -63,14 +185,13 @@ async function ensureServer(
 
   logger.info({ session_id: session.id, workdir }, "Starting opencode server");
 
-  const opencodeBin = settings.opencodeBin();
-
   // createOpencodeServer spawns `opencode serve` and waits until ready.
+  // The ensureOpencodeBinOnPath() call at module load ensures the binary is
+  // findable even if ~/.opencode/bin is not on the inherited PATH.
   const server = await createOpencodeServer({
     hostname: "127.0.0.1",
     // Use a random port so multiple sessions don't collide.
     port: await getFreePort(),
-    ...(opencodeBin ? { config: {} } : {}),
   });
 
   // createOpencodeClient connects to the running server.
@@ -124,6 +245,53 @@ async function ensureOpencodeSession(
   return oc.id;
 }
 
+/**
+ * Discover the model used by an existing OpenCode session by inspecting
+ * its message history. Finds the last assistant message and returns its
+ * model info. Caches the result so we only query once per session.
+ */
+async function discoverSessionModel(
+  handle: OpencodeServerHandle,
+  tetherId: string,
+  ocSessionId: string,
+): Promise<SessionModel | undefined> {
+  const cached = sessionModels.get(tetherId);
+  if (cached) return cached;
+
+  try {
+    const result = await handle.client.session.messages({
+      sessionID: ocSessionId,
+      limit: 20,
+    });
+    // @ts-ignore — SDK response shape varies by version
+    const messages = (result.data ?? []) as Array<{ info: Record<string, any>; parts: unknown[] }>;
+
+    // Walk backwards to find the last assistant message with a model.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const info = messages[i]?.info;
+      if (info?.role === "assistant" && info.modelID && info.providerID) {
+        const model: SessionModel = {
+          providerID: info.providerID,
+          modelID: info.modelID,
+        };
+        sessionModels.set(tetherId, model);
+        logger.info(
+          { session_id: tetherId, provider: model.providerID, model: model.modelID },
+          "Discovered session model from history",
+        );
+        return model;
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      { session_id: tetherId, error: String(err) },
+      "Failed to discover session model; will use server default",
+    );
+  }
+
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // SSE event stream
 // ---------------------------------------------------------------------------
@@ -166,7 +334,7 @@ async function streamEvents(
   }
 }
 
-function handleEvent(
+export function handleEvent(
   session: SessionState<OpencodeServerHandle>,
   type: string,
   props: Record<string, any>,
@@ -174,6 +342,19 @@ function handleEvent(
   switch (type) {
     case "message.part.delta": {
       if (props.field === "text" && props.delta) {
+        // Skip deltas from hidden parts (reasoning / thinking).
+        if (props.partID && isHiddenPart(session.id, props.partID)) break;
+
+        // Insert a separator when switching to a new text part so
+        // consecutive parts (like thinking + response) don't merge.
+        if (props.partID) {
+          const prev = lastEmittedPartId.get(session.id);
+          if (prev && prev !== props.partID) {
+            emitOutput(session, "\n\n", "step");
+          }
+          lastEmittedPartId.set(session.id, props.partID);
+        }
+
         emitOutput(session, props.delta, "step");
       }
       break;
@@ -181,6 +362,12 @@ function handleEvent(
 
     case "message.part.updated": {
       const part = props.part ?? props;
+
+      // Track parts whose deltas should be hidden (reasoning, etc.).
+      if (part.id && HIDDEN_PART_TYPES.has(part.type)) {
+        markHiddenPart(session.id, part.id);
+      }
+
       if (part.type === "step-finish") {
         // Emit token/cost metadata.
         const tokens = part.tokens ?? {};
@@ -192,6 +379,10 @@ function handleEvent(
         }
         if (cost) emitMetadata(session, "cost", cost, String(cost));
         emitOutput(session, "", "final");
+
+        // Clean up per-turn tracking.
+        clearHiddenParts(session.id);
+        lastEmittedPartId.delete(session.id);
       }
       break;
     }
@@ -203,6 +394,13 @@ function handleEvent(
           model: info.modelID,
           provider: info.providerID,
         });
+        // Update the cached model so subsequent turns use the same one.
+        if (info.providerID) {
+          sessionModels.set(session.id, {
+            providerID: info.providerID,
+            modelID: info.modelID,
+          });
+        }
       }
       break;
     }
@@ -277,6 +475,10 @@ export async function runTurn(
       session.threadId ?? (await ensureOpencodeSession(handle, session.id, threadId));
     session.threadId = ocSessionId;
 
+    // Discover the model from the session's message history so we continue
+    // with the same model the session was started with.
+    const model = await discoverSessionModel(handle, session.id, ocSessionId);
+
     emitHeader(session, "OpenCode", { thread_id: ocSessionId });
 
     session.abortController = new AbortController();
@@ -291,9 +493,14 @@ export async function runTurn(
     }
 
     // Send the prompt (fire-and-forget, returns 204).
+    // Pass the discovered model so the reply uses the same model as
+    // previous messages in this session.
     await handle.client.session.promptAsync({
       path: { id: ocSessionId },
-      body: { parts: [{ type: "text", text: input }] },
+      body: {
+        parts: [{ type: "text", text: input }],
+        ...(model ? { model } : {}),
+      },
     });
 
     // Consume the event stream until idle or error.
