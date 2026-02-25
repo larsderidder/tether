@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@tether/sidecar-common": "*",
-    "@opencode-ai/sdk": "file:/home/lars/.opencode/node_modules/@opencode-ai/sdk",
+    "@opencode-ai/sdk": "^1.2.12",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "pino": "^9.4.0",
