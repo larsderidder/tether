@@ -93,7 +93,7 @@ function buildThreadOptions(session: SessionState, approvalChoice: number): Thre
 // Event handling
 // ---------------------------------------------------------------------------
 
-function formatStep(item: ThreadItem): string {
+export function formatStep(item: ThreadItem): string {
   switch (item.type) {
     case "reasoning":
       return (item as ReasoningItem).text;
@@ -121,7 +121,7 @@ function formatStep(item: ThreadItem): string {
   }
 }
 
-function handleEvent(session: SessionState, event: ThreadEvent, options: ThreadOptions): void {
+export function handleEvent(session: SessionState, event: ThreadEvent, options: ThreadOptions): void {
   logger.debug({ session_id: session.id, event_type: event.type }, "SDK event");
   if (LOG_EVENTS) logger.debug({ session_id: session.id, event }, "SDK event details");
 
