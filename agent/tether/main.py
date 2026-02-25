@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import socket
 import sys
 from contextlib import asynccontextmanager, suppress
@@ -63,13 +65,16 @@ async def lifespan(app: FastAPI):
         maintenance_task.cancel()
         with suppress(asyncio.CancelledError):
             await maintenance_task
-        await _stop_bridges()
-        if settings.opencode_sidecar_managed():
-            from tether.runner.opencode_sidecar_manager import (
-                stop_managed_opencode_sidecar,
-            )
-
-            await stop_managed_opencode_sidecar()
+        # Give bridges and sidecars a few seconds to stop; don't block
+        # shutdown indefinitely if something hangs.
+        try:
+            await asyncio.wait_for(_shutdown_services(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Shutdown timed out after 5s, forcing exit")
+        logger.info("Shutdown complete")
+        # Force exit: blocking threads (SSE readers, subprocess pipes) can
+        # keep the process alive indefinitely after uvicorn stops serving.
+        os._exit(0)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -168,6 +173,17 @@ async def _init_bridges() -> None:
             logger.exception("Failed to initialize Discord bridge")
 
 
+async def _shutdown_services() -> None:
+    """Stop bridges and managed sidecars."""
+    await _stop_bridges()
+    if settings.opencode_sidecar_managed():
+        from tether.runner.opencode_sidecar_manager import (
+            stop_managed_opencode_sidecar,
+        )
+
+        await stop_managed_opencode_sidecar()
+
+
 async def _stop_bridges() -> None:
     """Stop all registered messaging bridges."""
     for platform in bridge_manager.list_bridges():
@@ -202,8 +218,35 @@ app.include_router(api_router)
 app.include_router(root_router)
 
 
+_interrupted = False
+
+
+def _install_signal_handlers() -> None:
+    """Install signal handlers that force-exit on repeated ctrl+c.
+
+    Uvicorn handles the first SIGINT to start graceful shutdown, but
+    blocking threads (SSE readers, subprocess pipes) can prevent the
+    process from actually exiting. On the second SIGINT we force-kill.
+    """
+    global _interrupted
+
+    def _handler(signum, frame):
+        global _interrupted
+        if _interrupted:
+            logger.info("Forced exit (repeated interrupt)")
+            os._exit(1)
+        _interrupted = True
+        logger.info("Shutting down (press ctrl+c again to force)")
+        # Re-raise so uvicorn's handler fires too.
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+
+
 def run() -> None:
     """Entry point for ``tether start``."""
+    _install_signal_handlers()
     port = settings.port()
     app.state.agent_token = settings.token()
     try:
