@@ -38,6 +38,12 @@ jobs:
           rm -rf agent/tether/static_ui
           cp -r ui/dist agent/tether/static_ui
 
+      - name: Install sidecar dependencies
+        run: npm install --workspaces
+
+      - name: Build sidecar bundles
+        run: ./scripts/build-sidecars.sh
+
       - name: Build package
         working-directory: agent
         run: |
