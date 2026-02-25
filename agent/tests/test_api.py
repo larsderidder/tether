@@ -330,17 +330,17 @@ class TestSessionRename:
 
         with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
             mock_runner = MagicMock()
-            mock_runner.runner_type = "claude_api"
+            mock_runner.runner_type = "claude-subprocess"
             mock_get_runner.return_value = mock_runner
 
             response = await api_client.post(
                 "/api/sessions",
-                json={"directory": str(test_dir), "adapter": "claude_api"}
+                json={"directory": str(test_dir), "adapter": "claude_subprocess"}
             )
 
             assert response.status_code == 201
             session = response.json()
-            assert session["adapter"] == "claude_api"
+            assert session["adapter"] == "claude_subprocess"
 
     @pytest.mark.anyio
     async def test_create_session_without_adapter(

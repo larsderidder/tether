@@ -63,9 +63,9 @@ class TestExternalAgentToTelegramIntegration:
         assert response.status_code == 201
         data = response.json()
 
-        # Verify thread was created
+        # Verify thread was created (name is generated from directory, not session_name)
         assert len(mock_bridge.thread_calls) == 1
-        assert mock_bridge.thread_calls[0]["session_name"] == "Test Session"
+        assert mock_bridge.thread_calls[0]["session_name"] == "Session"
 
     @pytest.mark.anyio
     async def test_output_routes_to_telegram_via_subscriber(self, api_client, fresh_store: SessionStore) -> None:
