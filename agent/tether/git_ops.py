@@ -1,8 +1,7 @@
 """Rich git operations for Tether session workspaces.
 
-Provides `git_status` and `git_log` which run git subprocesses and parse
-their output into structured data models.  These functions are intentionally
-read-only; write operations live in separate modules.
+Provides read (`git_status`, `git_log`) and write (`git_commit`, `git_push`,
+`git_create_branch`, `git_checkout`) operations backed by subprocess git calls.
 """
 
 from __future__ import annotations
@@ -48,6 +47,15 @@ class GitStatus(BaseModel):
     unstaged_count: int
     untracked_count: int
     last_commit: GitCommit | None
+
+
+class GitPushResult(BaseModel):
+    """Result of a git push operation."""
+
+    success: bool
+    remote: str
+    branch: str
+    message: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +120,160 @@ def git_log(path: str, count: int = 10) -> list[GitCommit]:
     return _recent_commits(path, count)
 
 
+def git_commit(path: str, message: str, add_all: bool = True) -> GitCommit:
+    """Stage all changes and create a commit in the repository at *path*.
+
+    Args:
+        path: Absolute path to a git repository root.
+        message: Commit message (must be non-empty).
+        add_all: When True, runs ``git add -A`` before committing.
+
+    Returns:
+        A `GitCommit` representing the newly created commit.
+
+    Raises:
+        ValueError: Nothing to commit, commit fails, or git is unavailable.
+    """
+    _require_git(path)
+
+    if add_all:
+        _run(["git", "add", "-A"], cwd=path)
+
+    # Check that there is actually something staged
+    staged = _run_silent(
+        ["git", "diff", "--cached", "--name-only"], cwd=path
+    )
+    if not staged.strip():
+        raise ValueError("Nothing to commit: working tree is clean")
+
+    _run(["git", "commit", "-m", message], cwd=path)
+
+    commit = _last_commit(path)
+    if not commit:
+        raise ValueError("Commit succeeded but could not retrieve commit info")
+    return commit
+
+
+def git_push(
+    path: str,
+    remote: str = "origin",
+    branch: str | None = None,
+    set_upstream: bool = True,
+) -> GitPushResult:
+    """Push commits to a remote.
+
+    Args:
+        path: Absolute path to a git repository root.
+        remote: Remote name (default ``"origin"``).
+        branch: Branch to push.  When None the current branch is used.
+        set_upstream: When True and no upstream is configured, adds
+            ``--set-upstream`` so future pushes work without arguments.
+
+    Returns:
+        A `GitPushResult` describing the outcome.
+
+    Raises:
+        ValueError: Push fails (auth error, remote rejection, etc.).
+    """
+    _require_git(path)
+
+    current_branch = _current_branch(path) or "HEAD"
+    target_branch = branch or current_branch
+
+    cmd = ["git", "push"]
+    if set_upstream:
+        # Only add --set-upstream when there is no tracking branch yet
+        if not _remote_tracking_branch(path):
+            cmd.append("--set-upstream")
+    cmd += [remote, target_branch]
+
+    try:
+        _run(cmd, cwd=path, timeout=60)
+    except ValueError as exc:
+        raise ValueError(f"git push failed: {exc}") from exc
+
+    remote_url = _remote_url(path, remote)
+    return GitPushResult(
+        success=True,
+        remote=remote_url or remote,
+        branch=target_branch,
+    )
+
+
+def git_create_branch(path: str, name: str, checkout: bool = True) -> str:
+    """Create a new branch in the repository at *path*.
+
+    Args:
+        path: Absolute path to a git repository root.
+        name: New branch name.  Must not already exist and must be a valid
+            git ref name (no spaces; slashes allowed for namespaced branches).
+        checkout: When True (the default) switches to the new branch
+            immediately using ``git checkout -b``.
+
+    Returns:
+        The name of the newly created branch.
+
+    Raises:
+        ValueError: Branch already exists, invalid name, or git fails.
+    """
+    _require_git(path)
+    _validate_branch_name(name)
+
+    if checkout:
+        try:
+            _run(["git", "checkout", "-b", name], cwd=path)
+        except ValueError as exc:
+            raise ValueError(f"Could not create branch '{name}': {exc}") from exc
+    else:
+        try:
+            _run(["git", "branch", name], cwd=path)
+        except ValueError as exc:
+            raise ValueError(f"Could not create branch '{name}': {exc}") from exc
+
+    return name
+
+
+def git_checkout(path: str, branch: str) -> str:
+    """Check out an existing branch in the repository at *path*.
+
+    Args:
+        path: Absolute path to a git repository root.
+        branch: Branch name to check out.
+
+    Returns:
+        The name of the checked-out branch.
+
+    Raises:
+        ValueError: Branch does not exist or checkout fails.
+    """
+    _require_git(path)
+
+    try:
+        _run(["git", "checkout", branch], cwd=path)
+    except ValueError as exc:
+        raise ValueError(f"Could not checkout '{branch}': {exc}") from exc
+
+    return branch
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+_INVALID_BRANCH_CHARS_RE = re.compile(r"[ \t\n\x00]")
+
+
+def _validate_branch_name(name: str) -> None:
+    """Raise ValueError if *name* is not a safe git branch name."""
+    if not name:
+        raise ValueError("Branch name must not be empty")
+    if _INVALID_BRANCH_CHARS_RE.search(name):
+        raise ValueError(
+            f"Branch name '{name}' contains invalid characters (spaces/tabs/newlines)"
+        )
+    # Delegate the full rule-set to git itself; the check above just catches
+    # the most obvious shell-injection risks before we even call subprocess.
 
 _GIT_STATUS_MAP: dict[str, str] = {
     "M": "modified",
