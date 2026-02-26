@@ -27,6 +27,10 @@ class CreateSessionRequest(BaseModel):
     directory: str | None = None
     base_ref: str | None = None
     adapter: str | None = None
+    # Clone-based workspace fields
+    clone_url: str | None = None
+    clone_branch: str | None = None
+    shallow: bool = False
     # External agent fields
     agent_name: str | None = None
     agent_type: str | None = None
@@ -129,6 +133,8 @@ class SessionResponse(BaseModel):
     external_agent_icon: str | None = None
     platform: str | None = None
     platform_thread_id: str | None = None
+    # Clone-based workspace
+    clone_url: str | None = None
 
     @classmethod
     def from_session(cls, session: Session, store: SessionStore) -> SessionResponse:
@@ -157,6 +163,11 @@ class SessionResponse(BaseModel):
             external_agent_icon=session.external_agent_icon,
             platform=session.platform,
             platform_thread_id=session.platform_thread_id,
+            clone_url=(
+                session.repo_ref_value
+                if getattr(session, "repo_ref_type", None) == "url"
+                else None
+            ),
         )
 
 

@@ -44,11 +44,41 @@ from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import SessionState
+from tether import workspace as _workspace
+from tether.workspace import WorkspaceError
 from tether.runner.base import RunnerUnavailableError
 from tether.store import store
 
 router = APIRouter(tags=["sessions"])
 logger = structlog.get_logger(__name__)
+
+
+def _short_repo_name(url: str | None) -> str:
+    """Return a short human-readable name for a git URL.
+
+    Strips the protocol, host, and trailing '.git' to produce
+    something like 'owner/repo'.
+    """
+    if not url:
+        return "repo_cloned"
+    # Strip trailing .git
+    name = url.rstrip("/")
+    if name.endswith(".git"):
+        name = name[:-4]
+    # Strip protocol/host prefix
+    # Handles: https://host/path, git@host:path, http://host/path
+    for sep in ("://", "@"):
+        idx = name.find(sep)
+        if idx != -1:
+            name = name[idx + len(sep):]
+            # Replace host:path separator (SSH style) with /
+            name = name.replace(":", "/", 1)
+            break
+    # Keep only the last two path components (owner/repo)
+    parts = [p for p in name.split("/") if p]
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return parts[-1] if parts else "repo_cloned"
 
 
 @contextmanager
@@ -79,9 +109,35 @@ async def create_session(
         repo_id=payload.repo_id,
         directory=payload.directory,
         base_ref=payload.base_ref,
+        clone_url=payload.clone_url,
         agent_name=payload.agent_name,
         platform=payload.platform,
     )
+
+    # Validate: clone_url and directory are mutually exclusive
+    if payload.clone_url and payload.directory:
+        raise_http_error(
+            "VALIDATION_ERROR",
+            "clone_url and directory are mutually exclusive",
+            422,
+        )
+
+    # Basic git URL validation
+    if payload.clone_url:
+        url = payload.clone_url
+        valid = (
+            url.startswith("git@")
+            or url.startswith("https://")
+            or url.startswith("http://")
+            or url.endswith(".git")
+        )
+        if not valid:
+            raise_http_error(
+                "VALIDATION_ERROR",
+                "clone_url must be a valid git URL (git@..., https://, http://, or ending in .git)",
+                422,
+            )
+
     normalized_directory: str | None = None
     if payload.directory:
         candidate = Path(payload.directory).expanduser()
@@ -91,10 +147,12 @@ async def create_session(
             )
         normalized_directory = normalize_directory_path(payload.directory)
     # Default repo_id to "external" for external agents
-    if payload.agent_name and not payload.repo_id and not normalized_directory:
+    if payload.agent_name and not payload.repo_id and not normalized_directory and not payload.clone_url:
         resolved_repo_id = "external"
     else:
-        resolved_repo_id = payload.repo_id or normalized_directory or "repo_local"
+        resolved_repo_id = payload.repo_id or normalized_directory or (
+            _short_repo_name(payload.clone_url) if payload.clone_url else "repo_local"
+        )
     session = store.create_session(repo_id=resolved_repo_id, base_ref=payload.base_ref)
 
     # Validate and store adapter selection
@@ -144,6 +202,24 @@ async def create_session(
         session.repo_display = normalized_directory
         store.update_session(session)
         store.set_workdir(session.id, normalized_directory, managed=False)
+    elif payload.clone_url:
+        # Clone the repo into a managed workspace
+        dest = _workspace.workspace_path(session.id)
+        try:
+            cloned_path = _workspace.clone_repo(
+                payload.clone_url,
+                dest,
+                branch=payload.clone_branch or None,
+                shallow=payload.shallow,
+            )
+        except WorkspaceError as exc:
+            store.delete_session(session.id)
+            raise_http_error("CLONE_ERROR", str(exc), 422)
+        session.repo_ref_type = "url"
+        session.repo_ref_value = payload.clone_url
+        session.repo_display = _short_repo_name(payload.clone_url)
+        store.update_session(session)
+        store.set_workdir(session.id, cloned_path, managed=True)
     else:
         store.update_session(session)
     session = store.get_session(session.id) or session
