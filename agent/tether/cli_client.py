@@ -6,6 +6,7 @@ a running Tether server over HTTP; never imports server internals.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import webbrowser
@@ -312,6 +313,21 @@ def cmd_new(
     try:
         with _client() as c:
             resp = c.post("/api/sessions", json=body)
+            if resp.status_code == 422:
+                # Try to surface a helpful message for missing adapter
+                try:
+                    msg = (resp.json().get("error") or {}).get("message", "")
+                except Exception:
+                    msg = ""
+                if "no default adapter" in msg.lower() or "not configured" in msg.lower():
+                    print(
+                        "Error: No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not set.\n"
+                        "Use -a to specify one: tether new . -a claude_auto\n"
+                        "Or set a default: echo 'TETHER_DEFAULT_AGENT_ADAPTER=claude_auto'"
+                        " >> ~/.config/tether/config.env",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             _check_response(resp)
             session = resp.json()
 
@@ -414,6 +430,92 @@ def cmd_interrupt(session_id: str) -> None:
         return
 
     print(f"Session {session_id}: {session['state'].lower()}")
+
+
+def cmd_watch(session_id: str) -> None:
+    """Stream live output from a session to the terminal.
+
+    Connects to the SSE event stream and prints output as it arrives.
+    Press Ctrl+C to stop watching (the session continues running).
+    """
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    url = _base_url()
+    path = f"/events/sessions/{session_id}"
+    headers = _auth_headers()
+
+    import urllib.parse
+
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 80
+
+    import http.client
+    import socket
+
+    print(f"Watching {_short_id(session_id)}... (Ctrl+C to stop)")
+
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+
+        if resp.status != 200:
+            body = resp.read().decode("utf-8", errors="replace")
+            print(f"Error: server returned {resp.status}: {body[:200]}", file=sys.stderr)
+            return
+
+        if conn.sock:
+            conn.sock.settimeout(60)
+
+        while True:
+            try:
+                line = resp.fp.readline().decode("utf-8", errors="replace")
+            except socket.timeout:
+                continue
+
+            if not line:
+                print("\nStream closed.")
+                break
+
+            if not line.startswith("data: "):
+                continue
+
+            try:
+                event = json.loads(line[6:].strip())
+            except json.JSONDecodeError:
+                continue
+
+            etype = event.get("type")
+            data = event.get("data", {})
+
+            if etype == "output":
+                text = data.get("text", "")
+                if text:
+                    print(text, end="", flush=True)
+
+            elif etype == "session_state":
+                state = data.get("state", "")
+                if state in ("AWAITING_INPUT", "ERROR"):
+                    print(f"\n[{_format_state(state)}]", flush=True)
+                    break
+
+            elif etype == "error":
+                msg = data.get("message", "")
+                print(f"\n[error: {msg}]", file=sys.stderr)
+                break
+
+    except KeyboardInterrupt:
+        print("\nStopped watching.")
+    except (httpx.ConnectError, ConnectionRefusedError, OSError):
+        _handle_connection_error()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

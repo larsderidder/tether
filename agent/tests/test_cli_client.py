@@ -455,3 +455,81 @@ class TestCliArgParsing:
         monkeypatch.setattr("tether.config.load_config", lambda: None)
         main(["interrupt", "abc123"])
         assert called["session_id"] == "abc123"
+
+
+# ---------------------------------------------------------------------------
+# cmd_new
+# ---------------------------------------------------------------------------
+
+
+class TestCmdNew:
+    def test_creates_session(self, capsys, tmp_path):
+        session_resp = _mock_response(201, {
+            "id": "sess_abc123def456",
+            "state": "CREATED",
+            "directory": str(tmp_path),
+            "adapter": "claude_auto",
+            "platform": None,
+        })
+        with _patch_client({("POST", "/api/sessions"): session_resp}):
+            cli_client.cmd_new(str(tmp_path), adapter="claude_auto")
+
+        out = capsys.readouterr().out
+        assert "sess_abc123def456" in out
+        assert "claude_auto" in out
+
+    def test_creates_and_starts_with_prompt(self, capsys, tmp_path):
+        session_resp = _mock_response(201, {
+            "id": "sess_abc123def456",
+            "state": "CREATED",
+            "directory": str(tmp_path),
+            "adapter": "claude_auto",
+            "platform": None,
+        })
+        started_resp = _mock_response(200, {
+            "id": "sess_abc123def456",
+            "state": "RUNNING",
+            "directory": str(tmp_path),
+            "adapter": "claude_auto",
+            "platform": None,
+        })
+        with _patch_client({
+            ("POST", "/api/sessions"): session_resp,
+            ("POST", f"/api/sessions/sess_abc123def456/start"): started_resp,
+        }):
+            cli_client.cmd_new(str(tmp_path), adapter="claude_auto", prompt="fix tests")
+
+        out = capsys.readouterr().out
+        assert "sess_abc123def456" in out
+        assert "Started with prompt" in out
+
+    def test_no_adapter_gives_friendly_error(self, capsys):
+        error_resp = _mock_response(422, {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not configured.",
+            }
+        })
+        with _patch_client({("POST", "/api/sessions"): error_resp}):
+            with pytest.raises(SystemExit):
+                cli_client.cmd_new("/tmp")
+
+        err = capsys.readouterr().err
+        assert "TETHER_DEFAULT_AGENT_ADAPTER" in err
+        assert "-a" in err
+
+    def test_new_subcommand_parsed(self, monkeypatch):
+        from tether.cli import main
+
+        called = {}
+
+        def fake_new(directory, adapter, prompt, platform):
+            called["directory"] = directory
+            called["adapter"] = adapter
+            called["prompt"] = prompt
+
+        monkeypatch.setattr(cli_client, "cmd_new", fake_new)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["new", "/tmp/proj", "-a", "opencode", "-m", "fix tests"])
+        assert called["adapter"] == "opencode"
+        assert called["prompt"] == "fix tests"

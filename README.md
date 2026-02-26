@@ -1,76 +1,76 @@
-# <img src="tether_compact_logo.png" height="32"> Tether
+# Tether
 
-[![CI](https://github.com/larsderidder/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/larsderidder/tether/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/tether-ai)](https://pypi.org/project/tether-ai/)
-[![Python](https://img.shields.io/pypi/pyversions/tether-ai)](https://pypi.org/project/tether-ai/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+The open source supervision layer for local AI coding agents.
 
-The open source infra layer between your local coding agents and messaging apps.
-
-Tether runs on your machine and turns agent runs into something you can *supervise* from anywhere:
-a mobile friendly web UI plus messaging bridges (Telegram, Slack, Discord) with approvals, input
-prompts, and live output streaming.
-
-If you're running Claude Code, Codex, OpenCode, or Pi locally and you want supervision (logs, state, diffs, approvals) in the places you
-already work, this is that layer.
+You run Claude Code, Codex, OpenCode, or Pi in your terminal. Tether sits alongside and lets you watch and control those sessions from anywhere: a mobile-first web UI, or Telegram, Slack, and Discord threads with live output and approval buttons.
 
 ```
-Claude Code / Codex / OpenCode / Pi / custom agent
-          |   (adapter, MCP, or REST)
+Claude Code / Codex / OpenCode / Pi
+          |
           v
-      Tether (local control plane)
+      Tether (local)
         |             |
         v             v
-   Web UI (PWA)   Telegram/Slack/Discord
+   Web UI (PWA)   Telegram / Slack / Discord
 ```
 
-## How it works
+## The typical workflow
 
+You already have an agent running. Tether attaches to it:
+
+```bash
+pipx install tether-ai
+tether init          # generates a token, optionally sets up a bridge
+tether start         # runs in the background
+
+tether attach        # pick from sessions running in the current directory
 ```
-1. Start Tether on your machine (or a VM you control)
-2. Open the web UI, or connect a messaging bridge
-3. Run an agent session (Claude / Codex / custom)
-4. Stream output + state in real time (web + messaging threads)
-5. Approve tool use, provide input, or interrupt when needed
+
+From that point the session appears in the web UI and, if you set up a bridge, gets its own Telegram topic or Discord thread where output streams live and approvals show up as buttons.
+
+If you want to launch agents through Tether rather than directly:
+
+```bash
+# Set a default adapter once
+echo "TETHER_DEFAULT_AGENT_ADAPTER=claude_auto" >> ~/.config/tether/config.env
+
+tether new .                          # create a session in the current directory
+tether new . -m "fix the failing tests"  # create and start immediately
 ```
 
 ## What you get
 
-1. A single place to observe every agent session (state, logs, diffs, approvals)
-2. Messaging native control: per session threads with approve and reject controls
-3. Human in the loop gates for risky operations (file writes, shell commands, etc.)
-4. A stable interface for agents: run via built in adapters, or connect via MCP or REST
+- Every session in one place: state, output, diffs, approvals
+- Approval prompts as buttons in Telegram, Slack, or Discord, not terminal popups
+- Auto-approve rules for low-risk tool patterns
+- Human in the loop gates you can configure per session
+- CLI client for scripting: `tether list`, `tether input`, `tether interrupt`, and more
+- MCP server and REST API for custom agents
 
-## Features
-
-1. Local first: runs on your machine, your data stays yours
-2. Human in the loop: approve tool use, provide input, review diffs
-3. Observable: live streaming output and explicit session state (web and messaging)
-4. Messaging bridges: Telegram, Slack, and Discord with approvals and auto approve
-5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, OpenCode via sidecar, Pi coding agent, plus LiteLLM (experimental)
-6. External agent API: MCP server and REST API for custom agents and integrations
-7. Mobile first UI: PWA dashboard for monitoring and controlling sessions (experimental)
-8. CLI client: manage sessions, attach external agents, and send input from your terminal
-
-## Quick Start
+## Install
 
 ```bash
 pipx install tether-ai
-tether init
+```
+
+Bridge dependencies are optional extras:
+
+```bash
+pip install tether-ai[telegram]   # or [slack] or [discord]
+```
+
+Node.js is required for the Codex and OpenCode adapters. The sidecar bundles are included in the package and started automatically.
+
+## Setup
+
+```bash
+tether init    # generates ~/.config/tether/config.env
 tether start
 ```
 
-Then open `http://localhost:8787`.
+Open `http://localhost:8787`.
 
-The `init` wizard generates an auth token, detects your `claude` CLI, and optionally
-configures a messaging bridge. Config is saved to `~/.config/tether/config.env`.
-
-### Typical uses
-
-1. Keep long running agent work accountable: audit output, diffs, and approvals after the fact
-2. Run an agent on a workstation or VM and supervise from your phone (web UI or messaging)
-3. Put approvals where your team already lives (Slack or Discord) instead of in a terminal
-4. Plug in your own agent: use MCP or REST to emit events and request approvals
+`tether init` generates an auth token and optionally walks you through a messaging bridge. That is all it does. You do not need to configure an agent adapter to get started; just run your agents as usual and attach them.
 
 ### From source
 
@@ -82,30 +82,90 @@ cp .env.example .env
 make start
 ```
 
-## External Agent API (for your own agents)
+## Attaching external sessions
 
-Any AI agent can connect to Tether to get human in the loop supervision. Two interfaces
-are available. Use whichever fits your agent tooling:
+Tether discovers sessions from Claude Code, Codex, OpenCode, and Pi that are already running on your machine. Use the external session browser in the web UI, or from the CLI:
 
-### MCP (recommended for Claude Code and other MCP capable agents)
+```bash
+tether list --external            # show all discoverable sessions
+tether attach                     # pick from sessions in current directory
+tether attach <id-prefix>         # attach by ID (prefix is fine)
+tether attach <id> -p telegram    # attach and create a Telegram topic
+```
 
-The MCP server exposes Tether as tools that any agent can call to register a session,
-stream output, and request human approval:
+After attaching, use `tether sync` to pull messages that arrived before attachment.
+
+## Messaging bridges
+
+Configure credentials in `~/.config/tether/config.env` (or `.env` in the project root). The bridge starts automatically with `tether start`.
+
+| Platform | Required vars |
+|----------|--------------|
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_FORUM_GROUP_ID` |
+| Slack    | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` |
+| Discord  | `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID` |
+
+Telegram requires a supergroup with Topics enabled. Each session gets its own topic. Commands work in the General topic: `/list`, `/attach`, `/new`, `/help`.
+
+## Adapters
+
+Set `TETHER_DEFAULT_AGENT_ADAPTER` to use `tether new` or create sessions from the UI without specifying an adapter each time. If you only ever attach external sessions, you do not need this.
+
+| Adapter | Description |
+|---------|-------------|
+| `claude_auto` | Claude Code, auto-detects OAuth or API key |
+| `claude_subprocess` | Claude via Agent SDK subprocess |
+| `opencode` | OpenCode via TypeScript sidecar (auto-managed) |
+| `codex_sdk_sidecar` | Codex via TypeScript sidecar |
+| `pi_rpc` | Pi coding agent via JSON-RPC |
+| `litellm` | Any model via LiteLLM (experimental) |
+
+## CLI
+
+```bash
+tether init                          # setup wizard
+tether start                         # start the server
+tether start --dev                   # dev mode (no auth)
+tether start --port 9000
+
+# attach to agents already running on your machine
+tether list --external               # discover Claude Code / Codex / OpenCode / Pi sessions
+tether attach                        # pick from sessions in current directory
+tether attach <id>                   # attach by ID prefix
+tether attach <id> -p telegram       # attach and bind a messaging thread
+
+# manage Tether sessions
+tether status                        # server health and active bridges
+tether list                          # list Tether sessions
+tether list -s running               # filter by state
+tether new [directory]               # create a new session
+tether new . -a opencode -m "..."    # create and start with a prompt
+tether input <id> "message"          # send input
+tether interrupt <id>                # interrupt a running session
+tether sync <id>                     # pull new messages from an attached session
+tether watch <id>                    # stream live output to the terminal
+tether delete <id>                   # delete a session
+tether open                          # open web UI in browser
+```
+
+Session IDs accept short prefixes.
+
+## External Agent API
+
+Any agent can connect to Tether via MCP or REST to get supervision without being one of the built-in adapters.
+
+### MCP
 
 ```bash
 tether-mcp
-# or: python -m tether.mcp_server.server
 ```
 
 Tools: `create_session`, `send_output`, `request_approval`, `check_input`.
 
-Add to your agent's MCP config:
 ```json
 {
   "mcpServers": {
-    "tether": {
-      "command": "tether-mcp"
-    }
+    "tether": { "command": "tether-mcp" }
   }
 }
 ```
@@ -113,8 +173,6 @@ Add to your agent's MCP config:
 Install: `pip install tether-ai[mcp]`
 
 ### REST
-
-For agents that don't support MCP, the same workflow is available via REST:
 
 ```bash
 # Create a session
@@ -128,135 +186,44 @@ curl -X POST http://localhost:8787/api/sessions/{id}/events \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type": "output", "data": {"text": "Hello from agent"}}'
-
-# Poll for human input
-curl http://localhost:8787/api/sessions/{id}/events/poll?since_seq=0 \
-  -H "Authorization: Bearer $TOKEN"
 ```
 
 See `docs/API_REFERENCE.md` for full endpoint documentation.
 
-## Adapters (built in runners)
-
-Set `TETHER_DEFAULT_AGENT_ADAPTER` in `.env`:
-
-1. `claude_auto`: Auto detect (prefer OAuth, fallback to API key)
-2. `claude_subprocess`: Claude via Agent SDK in subprocess (OAuth or API key)
-3. `codex_sdk_sidecar`: Codex via TypeScript sidecar
-4. `opencode`: OpenCode via TypeScript sidecar (auto-managed, uses the OpenCode SDK)
-5. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess
-6. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
-
-Sessions can override the default adapter at creation time. Multiple adapters can run simultaneously.
-
-The Codex and OpenCode sidecars share a common infrastructure layer (`sidecar-common`) and are built as
-npm workspace packages. When using managed mode (the default for OpenCode), Tether starts and stops the
-sidecar process automatically.
-
-> **Note:** The Codex and OpenCode adapters require Node.js on your PATH. The sidecar bundles
-> are included in the PyPI package and started automatically.
-
-## Messaging Bridges
-
-Connect a messaging platform so you can monitor and control sessions from your phone. Configure
-credentials in `.env`. The bridge starts automatically.
-
-Platforms:
-1. Telegram: `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_FORUM_GROUP_ID` (supergroup with topics)
-2. Slack: `SLACK_BOT_TOKEN` plus `SLACK_APP_TOKEN` plus `SLACK_CHANNEL_ID`
-3. Discord: `DISCORD_BOT_TOKEN` plus `DISCORD_CHANNEL_ID`
-
-### How to use it (2 minutes)
-
-1. Set the platform env vars above (or run `tether init` and let it guide you).
-2. Start Tether: `tether start`
-3. In Telegram: run `/list`, then `/attach <number>`
-4. In Slack/Discord: run `!list`, then `!attach <number>`
-
-That creates a per session thread (topic or thread) where output streams live and approvals show up as buttons or text prompts.
-
-Bridge features:
-1. Live output streaming to threads (one per session)
-2. Approval request controls with approve, reject, and always approve
-3. Auto approve with configurable tool patterns and duration
-4. Session listing, status updates, and input forwarding
-
-Install bridge dependencies:
-```bash
-pip install tether-ai[telegram]   # or [slack] or [discord]
-```
-
-## CLI
-
-```
-tether init                          # Interactive setup wizard
-tether start                         # Start the server
-tether start --dev                   # Dev mode (no auth required)
-tether start --port 9000 --host 127.0.0.1
-
-# Client commands (talk to a running server)
-tether status                        # Server health + session summary
-tether open                          # Open web UI in browser
-tether list                          # List Tether sessions
-tether list -s running               # Filter by state
-tether list -d .                     # Filter by directory
-tether list --external               # Discover Claude Code / Codex / OpenCode / Pi sessions
-tether attach <external-id>          # Attach an external session to Tether
-tether attach                        # Pick from external sessions in current dir
-tether attach <id> -p discord        # Attach and create a Discord thread
-tether input <session-id> "message"  # Send input to a session
-tether interrupt <session-id>        # Interrupt a running session
-tether delete <session-id>           # Delete a session
-tether sync <session-id>             # Pull new messages from an attached external session
-```
-
-Session IDs accept short prefixes (first few characters are enough as long as they are unique).
-
-### Running in the background
-
-Tether does not have a built in daemon mode. To run it in the background:
-
-```bash
-nohup tether start > ~/.local/share/tether/tether.log 2>&1 &
-echo $! > ~/.local/share/tether/tether.pid
-
-# Later, to stop it:
-kill $(cat ~/.local/share/tether/tether.pid)
-```
-
-Or use your system's service manager (systemd, launchd, etc.).
-
 ## Configuration
 
-Tether loads config from layered sources (highest precedence first):
-
-1. Environment variables
-2. Local `.env` file (working directory)
-3. `~/.config/tether/config.env` (created by `tether init`)
-
-Key settings:
+Config is loaded in order: environment variables, local `.env`, `~/.config/tether/config.env`.
 
 ```bash
-TETHER_DEFAULT_AGENT_ADAPTER=claude_auto  # Agent adapter
-TETHER_AGENT_TOKEN=               # Protect the API/UI with bearer auth
-TETHER_AGENT_HOST=0.0.0.0         # Bind address (default: 0.0.0.0)
-TETHER_AGENT_PORT=8787            # Port (default: 8787)
+TETHER_AGENT_TOKEN=               # auth token (required in non-dev mode)
+TETHER_DEFAULT_AGENT_ADAPTER=     # default adapter for new sessions (optional)
+TETHER_AGENT_HOST=0.0.0.0         # bind address
+TETHER_AGENT_PORT=8787            # port
 ```
 
-See `.env.example` for the complete reference including adapter-specific settings, session
-timeouts, logging, and bridge configuration.
+See `.env.example` for the full reference.
 
 ## Development
 
 ```bash
-make install    # Install Python + Node dependencies
-make start      # Build UI and run agent
-make dev-ui     # Run UI dev server (hot reload); run agent separately
-make test       # Run pytest
-make verify     # Health check
+make install    # Python + Node dependencies
+make start      # build UI and start
+make dev-ui     # hot-reload UI dev server (run agent separately)
+make test       # pytest
+make verify     # health check
 ```
 
-See `AGENTS.md` for full developer docs and `docs/` for architecture documentation.
+See `AGENTS.md` and `docs/` for architecture documentation.
+
+## Running in the background
+
+```bash
+nohup tether start > ~/.local/share/tether/tether.log 2>&1 &
+echo $! > ~/.local/share/tether/tether.pid
+kill $(cat ~/.local/share/tether/tether.pid)
+```
+
+Or use systemd, launchd, etc.
 
 ## License
 

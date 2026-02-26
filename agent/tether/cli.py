@@ -135,6 +135,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     sync_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
+    # tether watch
+    watch_parser = sub.add_parser(
+        "watch", help="Stream live output from a session to the terminal"
+    )
+    watch_parser.add_argument("session_id", help="Session ID (prefix is fine)")
+
     args = parser.parse_args(argv)
 
     if args.command == "start":
@@ -142,7 +148,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "init":
         _run_init()
     elif args.command in (
-        "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
+        "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync", "watch",
     ):
         _run_client(args)
     else:
@@ -195,6 +201,7 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_open,
         cmd_status,
         cmd_sync,
+        cmd_watch,
     )
 
     if args.command == "status":
@@ -220,6 +227,8 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_delete(args.session_id)
     elif args.command == "sync":
         cmd_sync(args.session_id)
+    elif args.command == "watch":
+        cmd_watch(args.session_id)
 
 
 if __name__ == "__main__":

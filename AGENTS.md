@@ -118,6 +118,7 @@ tether input <session-id> "message"  # Send input to a session
 tether interrupt <session-id>        # Interrupt a running session
 tether delete <session-id>           # Delete a session
 tether sync <session-id>             # Pull new messages from an attached external session
+tether watch <session-id>            # Stream live output to the terminal
 ```
 
 Config precedence: env vars > local `.env` > `~/.config/tether/config.env`.
