@@ -182,6 +182,22 @@ class Settings:
         """
         return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
 
+    @staticmethod
+    def git_user_name() -> str:
+        """Git user.name applied to cloned workspaces.
+
+        Env: TETHER_GIT_USER_NAME (default: Tether)
+        """
+        return _get("TETHER_GIT_USER_NAME", default="Tether")
+
+    @staticmethod
+    def git_user_email() -> str:
+        """Git user.email applied to cloned workspaces.
+
+        Env: TETHER_GIT_USER_EMAIL (default: tether@localhost)
+        """
+        return _get("TETHER_GIT_USER_EMAIL", default="tether@localhost")
+
     # -------------------------------------------------------------------------
     # Session Settings
     # -------------------------------------------------------------------------

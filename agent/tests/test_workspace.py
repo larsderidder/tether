@@ -265,3 +265,93 @@ class TestCleanupWorkspace:
 
         with pytest.raises(WorkspaceError, match="outside managed workspaces root"):
             cleanup_workspace(traversal)
+
+
+# ---------------------------------------------------------------------------
+# Git identity in cloned workspaces
+# ---------------------------------------------------------------------------
+
+
+class TestGitIdentityAfterClone:
+    """Verify that user.name and user.email are written into the local git
+    config after clone_repo() completes."""
+
+    def _read_git_config(self, repo_path: str, key: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "config", "--local", key],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def test_default_identity_set_after_clone(self, tmp_path, monkeypatch):
+        """Default user.name and user.email are written to local git config."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.delenv("TETHER_GIT_USER_NAME", raising=False)
+        monkeypatch.delenv("TETHER_GIT_USER_EMAIL", raising=False)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        dest = workspace_path("sess_identity_default")
+        clone_repo(src, dest)
+
+        assert self._read_git_config(dest, "user.name") == "Tether"
+        assert self._read_git_config(dest, "user.email") == "tether@localhost"
+
+    def test_custom_identity_set_after_clone(self, tmp_path, monkeypatch):
+        """TETHER_GIT_USER_NAME / TETHER_GIT_USER_EMAIL are respected."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_GIT_USER_NAME", "CI Bot")
+        monkeypatch.setenv("TETHER_GIT_USER_EMAIL", "ci@example.com")
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        dest = workspace_path("sess_identity_custom")
+        clone_repo(src, dest)
+
+        assert self._read_git_config(dest, "user.name") == "CI Bot"
+        assert self._read_git_config(dest, "user.email") == "ci@example.com"
+
+    def test_identity_is_local_not_global(self, tmp_path, monkeypatch):
+        """Identity is stored in the repo's local config, not --global."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        dest = workspace_path("sess_identity_scope")
+        clone_repo(src, dest)
+
+        # --local must return a value; --global must not override it
+        local_result = subprocess.run(
+            ["git", "-C", dest, "config", "--local", "user.name"],
+            capture_output=True, text=True,
+        )
+        assert local_result.returncode == 0
+        assert local_result.stdout.strip() != ""
+
+    def test_commit_works_with_configured_identity(self, tmp_path, monkeypatch):
+        """A commit can be created inside the workspace using the configured identity."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.delenv("TETHER_GIT_USER_NAME", raising=False)
+        monkeypatch.delenv("TETHER_GIT_USER_EMAIL", raising=False)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        dest = workspace_path("sess_commit_test")
+        clone_repo(src, dest)
+
+        # Create a new file and commit it
+        new_file = os.path.join(dest, "new.txt")
+        with open(new_file, "w") as f:
+            f.write("hello\n")
+
+        subprocess.run(["git", "-C", dest, "add", "."], check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "-C", dest, "commit", "-m", "Test commit"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"commit failed: {result.stderr}"

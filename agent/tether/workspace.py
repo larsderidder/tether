@@ -101,7 +101,9 @@ def clone_repo(
             f"git clone failed (exit {result.returncode}): {stderr}"
         )
 
-    return str(Path(target_dir).resolve())
+    resolved = str(Path(target_dir).resolve())
+    _configure_git_identity(resolved)
+    return resolved
 
 
 def cleanup_workspace(path: str) -> None:
@@ -152,3 +154,38 @@ def _clone_timeout() -> int:
         except ValueError:
             pass
     return 120
+
+
+def _git_user_name() -> str:
+    """Return the git user.name to apply to cloned workspaces."""
+    raw = os.environ.get("TETHER_GIT_USER_NAME", "").strip()
+    return raw if raw else "Tether"
+
+
+def _git_user_email() -> str:
+    """Return the git user.email to apply to cloned workspaces."""
+    raw = os.environ.get("TETHER_GIT_USER_EMAIL", "").strip()
+    return raw if raw else "tether@localhost"
+
+
+def _configure_git_identity(repo_path: str) -> None:
+    """Set local git user.name and user.email in a cloned workspace.
+
+    Uses local config so the server's global git config is unaffected and
+    different sessions can carry different identities in the future.
+
+    Failures are silently ignored: a missing git binary or a read-only repo
+    are unlikely during normal operation and should not block session creation.
+    """
+    name = _git_user_name()
+    email = _git_user_email()
+
+    for key, value in (("user.name", name), ("user.email", email)):
+        try:
+            subprocess.run(
+                ["git", "-C", repo_path, "config", key, value],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
