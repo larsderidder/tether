@@ -183,6 +183,29 @@ class Settings:
         return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
 
     @staticmethod
+    def git_auto_branch() -> bool:
+        """Auto-create a working branch after cloning a repo for a session.
+
+        When enabled, a branch named ``tether/{short_session_id}`` is created
+        and checked out after every clone-based session creation.  This keeps
+        checkpoint commits off the default branch.
+
+        Env: TETHER_GIT_AUTO_BRANCH (default: 0)
+        """
+        return _get_bool("TETHER_GIT_AUTO_BRANCH", default=False)
+
+    @staticmethod
+    def git_branch_pattern() -> str:
+        """Pattern used to name auto-created working branches.
+
+        The placeholder ``{session_id}`` is replaced with the last 6 characters
+        of the session ID.
+
+        Env: TETHER_GIT_BRANCH_PATTERN (default: tether/{session_id})
+        """
+        return _get("TETHER_GIT_BRANCH_PATTERN", default="tether/{session_id}")
+
+    @staticmethod
     def git_auto_checkpoint() -> bool:
         """Auto-commit all changes after each agent turn completes (opt-in).
 

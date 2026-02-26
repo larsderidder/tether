@@ -718,3 +718,117 @@ class TestCreateSessionClone:
 
         assert response.status_code == 201
         assert response.json()["clone_url"] == url
+
+
+class TestAutobranchOnClone:
+    """Tests for auto_branch behaviour in POST /sessions."""
+
+    def _make_git_repo(self, path: str) -> str:
+        """Create a minimal committed git repo at *path* and return path."""
+        import os
+        import subprocess
+        os.makedirs(path, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main", path], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "config", "user.email", "t@t.t"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "config", "user.name", "T"], check=True, capture_output=True)
+        with open(os.path.join(path, "README.md"), "w") as f:
+            f.write("# test\n")
+        subprocess.run(["git", "-C", path, "add", "."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "commit", "-m", "init"], check=True, capture_output=True)
+        return path
+
+    @pytest.mark.anyio
+    async def test_auto_branch_creates_working_branch(
+        self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
+    ) -> None:
+        """auto_branch=True creates a tether/<short_id> branch in the clone."""
+        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
+             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir), \
+             monkeypatch.context() as m:
+            m.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
+            resp = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": True},
+            )
+        assert resp.status_code == 201
+        session = resp.json()
+        assert session["working_branch"] is not None
+        assert session["working_branch"].startswith("tether/")
+
+    @pytest.mark.anyio
+    async def test_auto_branch_via_setting(
+        self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
+    ) -> None:
+        """TETHER_GIT_AUTO_BRANCH=1 triggers auto-branch even without request flag."""
+        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.setenv("TETHER_GIT_AUTO_BRANCH", "1")
+        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
+             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+            resp = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git"},
+            )
+        assert resp.status_code == 201
+        assert resp.json()["working_branch"] is not None
+
+    @pytest.mark.anyio
+    async def test_no_auto_branch_by_default(
+        self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
+    ) -> None:
+        """working_branch is None when auto_branch is False and setting is off."""
+        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.setenv("TETHER_GIT_AUTO_BRANCH", "0")
+        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
+             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+            resp = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": False},
+            )
+        assert resp.status_code == 201
+        assert resp.json()["working_branch"] is None
+
+    @pytest.mark.anyio
+    async def test_custom_branch_pattern(
+        self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
+    ) -> None:
+        """TETHER_GIT_BRANCH_PATTERN controls the branch name."""
+        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.setenv("TETHER_GIT_BRANCH_PATTERN", "work/{session_id}")
+        monkeypatch.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
+        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
+             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+            resp = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": True},
+            )
+        assert resp.status_code == 201
+        branch = resp.json()["working_branch"]
+        assert branch is not None
+        assert branch.startswith("work/")
+
+    @pytest.mark.anyio
+    async def test_auto_branch_checkout_active(
+        self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
+    ) -> None:
+        """The working branch is the current branch in the cloned workspace."""
+        import subprocess
+        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
+        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
+             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+            resp = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": True},
+            )
+        assert resp.status_code == 201
+        session = resp.json()
+        working_branch = session["working_branch"]
+        directory = session["directory"]
+
+        # Confirm git reports the same branch as current HEAD
+        result = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == working_branch

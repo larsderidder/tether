@@ -972,3 +972,76 @@ class TestGitSubcommands:
         monkeypatch.setattr("tether.config.load_config", lambda: None)
         main(["git", "log", "sess_abc", "-n", "5"])
         assert called["count"] == 5
+
+
+class TestAutobranchCliFlag:
+    """Tests for --auto-branch flag in tether new --clone."""
+
+    def test_auto_branch_flag_sent_in_body(self, capsys):
+        """--auto-branch passes auto_branch=True in the request body."""
+        url = "https://github.com/owner/repo.git"
+        captured_body: dict = {}
+        resp = _mock_response(201, {
+            "id": "sess_clone001",
+            "state": "CREATED",
+            "directory": "/ws/sess_x/",
+            "clone_url": url,
+            "working_branch": "tether/abc123",
+            "adapter": None,
+            "platform": None,
+        })
+
+        class CapturingClient(FakeClient):
+            def post(self, path, **kwargs):
+                captured_body.update(kwargs.get("json", {}))
+                return resp
+
+        with patch.object(cli_client, "_client", return_value=CapturingClient({})):
+            cli_client.cmd_new(clone_url=url, auto_branch=True)
+
+        assert captured_body.get("auto_branch") is True
+
+    def test_auto_branch_shown_in_output(self, capsys):
+        """Working branch is shown in cmd_new output when returned."""
+        url = "https://github.com/owner/repo.git"
+        resp = _mock_response(201, {
+            "id": "sess_clone001",
+            "state": "CREATED",
+            "directory": "/ws/sess_x/",
+            "clone_url": url,
+            "working_branch": "tether/abc123",
+            "adapter": None,
+            "platform": None,
+        })
+        with patch.object(cli_client, "_client", return_value=FakeClient({("POST", "/api/sessions"): resp})):
+            cli_client.cmd_new(clone_url=url, auto_branch=True)
+
+        out = capsys.readouterr().out
+        assert "tether/abc123" in out
+
+    def test_auto_branch_arg_parsed(self, monkeypatch):
+        """tether new --clone <url> --auto-branch passes auto_branch=True."""
+        from tether.cli import main
+        called = {}
+
+        def fake_new(**kwargs):
+            called.update(kwargs)
+
+        monkeypatch.setattr(cli_client, "cmd_new", fake_new)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        main(["new", "--clone", "https://github.com/owner/repo.git", "--auto-branch"])
+
+        assert called.get("auto_branch") is True
+
+    def test_auto_branch_without_clone_exits(self, monkeypatch, capsys):
+        """--auto-branch without --clone prints an error and exits."""
+        from tether.cli import main
+
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        with pytest.raises(SystemExit):
+            main(["new", "--auto-branch"])
+
+        err = capsys.readouterr().err
+        assert "--clone" in err

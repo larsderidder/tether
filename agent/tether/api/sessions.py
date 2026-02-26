@@ -46,11 +46,22 @@ from tether.git import has_git_repository, normalize_directory_path
 from tether.models import SessionState
 from tether import workspace as _workspace
 from tether.workspace import WorkspaceError
+from tether.git_ops import git_create_branch
 from tether.runner.base import RunnerUnavailableError
 from tether.store import store
 
 router = APIRouter(tags=["sessions"])
 logger = structlog.get_logger(__name__)
+
+
+def _make_working_branch_name(session_id: str, pattern: str) -> str:
+    """Return the working-branch name for a session using *pattern*.
+
+    The placeholder ``{session_id}`` in *pattern* is replaced with the last
+    6 characters of *session_id* (e.g. ``"tether/a1b2c3"``).
+    """
+    short = session_id[-6:] if len(session_id) >= 6 else session_id
+    return pattern.replace("{session_id}", short)
 
 
 def _short_repo_name(url: str | None) -> str:
@@ -218,6 +229,29 @@ async def create_session(
         session.repo_ref_type = "url"
         session.repo_ref_value = payload.clone_url
         session.repo_display = _short_repo_name(payload.clone_url)
+
+        # Auto-branch: create a working branch after clone
+        from tether.settings import settings as _settings
+        if payload.auto_branch or _settings.git_auto_branch():
+            working_branch = _make_working_branch_name(
+                session.id, _settings.git_branch_pattern()
+            )
+            try:
+                git_create_branch(cloned_path, working_branch, checkout=True)
+                session.working_branch = working_branch
+                logger.info(
+                    "Auto-branch created",
+                    session_id=session.id,
+                    branch=working_branch,
+                )
+            except Exception as exc:
+                # Non-fatal: log and continue without working branch
+                logger.warning(
+                    "Auto-branch failed",
+                    session_id=session.id,
+                    error=str(exc),
+                )
+
         store.update_session(session)
         store.set_workdir(session.id, cloned_path, managed=True)
     else:

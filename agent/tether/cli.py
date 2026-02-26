@@ -125,6 +125,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Perform a shallow clone (only valid with --clone)",
     )
+    new_parser.add_argument(
+        "--auto-branch",
+        action="store_true",
+        dest="auto_branch",
+        help="Create a working branch after clone (only valid with --clone)",
+    )
 
     # tether input
     input_parser = sub.add_parser("input", help="Send input to a session")
@@ -294,11 +300,12 @@ def _run_client(args: argparse.Namespace) -> None:
         clone_url = getattr(args, "clone_url", None)
         clone_branch = getattr(args, "clone_branch", None)
         shallow = getattr(args, "shallow", False)
+        auto_branch = getattr(args, "auto_branch", False)
 
-        # --branch / --shallow without --clone is a user error
-        if not clone_url and (clone_branch or shallow):
+        # --branch / --shallow / --auto-branch without --clone is a user error
+        if not clone_url and (clone_branch or shallow or auto_branch):
             print(
-                "Error: --branch and --shallow require --clone.",
+                "Error: --branch, --shallow, and --auto-branch require --clone.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -319,6 +326,7 @@ def _run_client(args: argparse.Namespace) -> None:
                 clone_url=clone_url,
                 clone_branch=clone_branch,
                 shallow=shallow,
+                auto_branch=auto_branch,
             )
         else:
             directory = os.path.abspath(args.directory or ".")

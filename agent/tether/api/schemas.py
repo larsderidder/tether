@@ -31,6 +31,7 @@ class CreateSessionRequest(BaseModel):
     clone_url: str | None = None
     clone_branch: str | None = None
     shallow: bool = False
+    auto_branch: bool = False  # create a working branch after clone
     # External agent fields
     agent_name: str | None = None
     agent_type: str | None = None
@@ -135,6 +136,7 @@ class SessionResponse(BaseModel):
     platform_thread_id: str | None = None
     # Clone-based workspace
     clone_url: str | None = None
+    working_branch: str | None = None  # auto-created branch after clone
 
     @classmethod
     def from_session(cls, session: Session, store: SessionStore) -> SessionResponse:
@@ -168,6 +170,7 @@ class SessionResponse(BaseModel):
                 if getattr(session, "repo_ref_type", None) == "url"
                 else None
             ),
+            working_branch=getattr(session, "working_branch", None),
         )
 
 

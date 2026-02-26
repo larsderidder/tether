@@ -85,6 +85,9 @@ class Session(SQLModel, table=True):
     platform: Optional[str] = None  # e.g., "telegram", "slack", "discord"
     platform_thread_id: Optional[str] = None  # Platform-specific thread ID
 
+    # Working branch (set when auto_branch creates a branch after clone)
+    working_branch: Optional[str] = None
+
     @property
     def repo_ref(self) -> RepoRef:
         """Get repo_ref as a RepoRef object."""

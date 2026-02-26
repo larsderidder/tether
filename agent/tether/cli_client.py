@@ -305,6 +305,7 @@ def cmd_new(
     clone_url: str | None = None,
     clone_branch: str | None = None,
     shallow: bool = False,
+    auto_branch: bool = False,
 ) -> None:
     """Create a new session and optionally start it with a prompt."""
     body: dict = {}
@@ -314,6 +315,8 @@ def cmd_new(
             body["clone_branch"] = clone_branch
         if shallow:
             body["shallow"] = True
+        if auto_branch:
+            body["auto_branch"] = True
     else:
         body["directory"] = directory or "."
     if adapter:
@@ -364,6 +367,8 @@ def cmd_new(
     print(f"  Directory: {session.get('directory') or '?'}")
     if session.get("clone_url"):
         print(f"  Cloned:    {session['clone_url']}")
+    if session.get("working_branch"):
+        print(f"  Branch:    {session['working_branch']}")
     print(f"  Adapter:   {session.get('adapter') or 'default'}")
     print(f"  State:     {_format_state(session['state'])}")
     if session.get("platform"):
