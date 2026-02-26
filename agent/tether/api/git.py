@@ -13,6 +13,8 @@ from tether.git_ops import (
     GitCommit,
     GitPushResult,
     GitStatus,
+    PrResult,
+    create_pr,
     git_checkout,
     git_commit,
     git_create_branch,
@@ -282,3 +284,53 @@ async def do_git_checkout(
 
     logger.info("Git checkout completed", session_id=session_id, branch=branch)
     return {"branch": branch}
+
+
+class CreatePrRequest(BaseModel):
+    """Request body for POST /sessions/{id}/git/pr."""
+
+    title: str = Field(..., min_length=1)
+    body: str = ""
+    base: str | None = None
+    draft: bool = False
+    auto_push: bool = True
+
+
+@router.post("/sessions/{session_id}/git/pr", response_model=PrResult, status_code=201)
+async def do_create_pr(
+    session_id: str,
+    payload: CreatePrRequest,
+    _: None = Depends(require_token),
+) -> PrResult:
+    """Create a pull request (GitHub) or merge request (GitLab) from the
+    session's current working branch.
+
+    Auto-detects the forge from the ``origin`` remote URL.  Requires ``gh``
+    (GitHub) or ``glab`` (GitLab) to be installed and authenticated.
+
+    Raises 404 if session not found, 422 if no git repo or forge unsupported,
+    409 if session is running.
+    """
+    _block_if_running(session_id)
+    directory = _require_git_workspace(session_id)
+
+    try:
+        result = create_pr(
+            directory,
+            title=payload.title,
+            body=payload.body,
+            base=payload.base,
+            draft=payload.draft,
+            auto_push=payload.auto_push,
+        )
+    except ValueError as exc:
+        raise_http_error("GIT_ERROR", str(exc), 422)
+
+    logger.info(
+        "PR created",
+        session_id=session_id,
+        url=result.url,
+        number=result.number,
+        forge=result.forge,
+    )
+    return result

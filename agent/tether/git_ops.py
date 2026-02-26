@@ -58,6 +58,15 @@ class GitPushResult(BaseModel):
     message: str | None = None
 
 
+class PrResult(BaseModel):
+    """Result of creating a pull request or merge request."""
+
+    url: str
+    number: int
+    forge: str  # "github" or "gitlab"
+    draft: bool
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -231,6 +240,82 @@ def git_create_branch(path: str, name: str, checkout: bool = True) -> str:
             raise ValueError(f"Could not create branch '{name}': {exc}") from exc
 
     return name
+
+
+def detect_forge(remote_url: str) -> str | None:
+    """Detect the forge (hosting service) from a git remote URL.
+
+    Args:
+        remote_url: The remote URL string (https or ssh).
+
+    Returns:
+        ``"github"`` for GitHub URLs, ``"gitlab"`` for GitLab URLs, or
+        ``None`` when the forge cannot be determined.
+    """
+    if not remote_url:
+        return None
+    url_lower = remote_url.lower()
+    if "github.com" in url_lower:
+        return "github"
+    if "gitlab.com" in url_lower or "gitlab." in url_lower:
+        return "gitlab"
+    return None
+
+
+def create_pr(
+    path: str,
+    title: str,
+    body: str = "",
+    base: str | None = None,
+    draft: bool = False,
+    auto_push: bool = True,
+) -> PrResult:
+    """Create a pull request (GitHub) or merge request (GitLab) from the
+    current branch.
+
+    The forge is auto-detected from the ``origin`` remote URL.  Delegates to
+    ``gh pr create`` (GitHub) or ``glab mr create`` (GitLab).
+
+    Args:
+        path: Absolute path to a git repository root.
+        title: PR/MR title (required, non-empty).
+        body: PR/MR description (default empty string).
+        base: Target branch for the PR/MR.  When None the remote default
+            branch is used.
+        draft: Create as a draft PR/MR.
+        auto_push: When True, push the current branch before creating the
+            PR/MR so the remote has the latest commits.
+
+    Returns:
+        A `PrResult` with URL, number, forge, and draft flag.
+
+    Raises:
+        ValueError: ``gh`` or ``glab`` is not installed, the forge cannot be
+            detected, the push fails, or PR/MR creation fails.
+    """
+    _require_git(path)
+
+    remote_url = _remote_url(path, "origin")
+    if not remote_url:
+        raise ValueError("No 'origin' remote configured; cannot detect forge")
+
+    forge = detect_forge(remote_url)
+    if not forge:
+        raise ValueError(
+            f"Unsupported forge for remote URL '{remote_url}'. "
+            "Only GitHub and GitLab are supported."
+        )
+
+    if auto_push:
+        try:
+            git_push(path, remote="origin", branch=None)
+        except ValueError as exc:
+            raise ValueError(f"Auto-push before PR creation failed: {exc}") from exc
+
+    if forge == "github":
+        return _create_github_pr(path, title, body, base, draft)
+    else:
+        return _create_gitlab_mr(path, title, body, base, draft)
 
 
 def git_checkout(path: str, branch: str) -> str:
@@ -415,6 +500,106 @@ def _changed_files(path: str) -> list[GitFileChange]:
         i += 1
 
     return files
+
+
+def _run_tool(args: list[str], cwd: str, tool: str, timeout: int = 60) -> str:
+    """Run an external tool (gh/glab) and return stdout, raising on failure.
+
+    Raises:
+        ValueError: Tool not found in PATH or command exited non-zero.
+    """
+    try:
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise ValueError(
+            f"'{tool}' is not installed or not in PATH. "
+            f"Install it to create {'pull requests' if tool == 'gh' else 'merge requests'}."
+        )
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"'{tool}' command timed out after {timeout}s")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise ValueError(f"'{tool}' command failed: {stderr or result.stdout.strip()}")
+
+    return result.stdout.strip()
+
+
+def _create_github_pr(
+    path: str,
+    title: str,
+    body: str,
+    base: str | None,
+    draft: bool,
+) -> PrResult:
+    """Create a GitHub pull request via ``gh pr create``.
+
+    Returns a `PrResult` with the PR URL and number.
+    """
+    cmd = ["gh", "pr", "create", "--title", title, "--body", body]
+    if base:
+        cmd += ["--base", base]
+    if draft:
+        cmd.append("--draft")
+
+    url = _run_tool(cmd, cwd=path, tool="gh")
+
+    # Retrieve the PR number from the URL: .../pull/123
+    number = _extract_pr_number(url)
+    return PrResult(url=url, number=number, forge="github", draft=draft)
+
+
+def _create_gitlab_mr(
+    path: str,
+    title: str,
+    body: str,
+    base: str | None,
+    draft: bool,
+) -> PrResult:
+    """Create a GitLab merge request via ``glab mr create``.
+
+    Returns a `PrResult` with the MR URL and number.
+    """
+    cmd = ["glab", "mr", "create", "--title", title, "--description", body, "--yes"]
+    if base:
+        cmd += ["--target-branch", base]
+    if draft:
+        cmd.append("--draft")
+
+    output = _run_tool(cmd, cwd=path, tool="glab")
+
+    # glab prints something like:
+    # "https://gitlab.com/owner/repo/-/merge_requests/42"
+    url = _extract_url_from_output(output)
+    if not url:
+        raise ValueError(f"glab mr create did not return a URL. Output: {output}")
+
+    number = _extract_pr_number(url)
+    return PrResult(url=url, number=number, forge="gitlab", draft=draft)
+
+
+_URL_RE = re.compile(r"https?://\S+")
+_PR_NUMBER_RE = re.compile(r"/(?:pull|merge_requests)/(\d+)")
+
+
+def _extract_url_from_output(output: str) -> str | None:
+    """Extract the first URL from command output."""
+    match = _URL_RE.search(output)
+    return match.group(0) if match else None
+
+
+def _extract_pr_number(url: str) -> int:
+    """Extract the PR/MR number from a URL like .../pull/42 or .../merge_requests/7."""
+    match = _PR_NUMBER_RE.search(url)
+    if match:
+        return int(match.group(1))
+    return 0
 
 
 def _last_commit(path: str) -> GitCommit | None:

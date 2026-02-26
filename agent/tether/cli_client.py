@@ -879,6 +879,41 @@ def cmd_git_branch(session_id: str, name: str, checkout: bool = True) -> None:
     print(f"{action} branch {result['branch']}")
 
 
+def cmd_git_pr(
+    session_id: str,
+    title: str,
+    body: str = "",
+    base: str | None = None,
+    draft: bool = False,
+    auto_push: bool = True,
+) -> None:
+    """Create a pull request or merge request from the session's working branch."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    payload: dict = {"title": title, "body": body, "draft": draft, "auto_push": auto_push}
+    if base:
+        payload["base"] = base
+
+    try:
+        with _client() as c:
+            resp = c.post(
+                f"/api/sessions/{session_id}/git/pr",
+                json=payload,
+                timeout=120.0,
+            )
+            _check_response(resp)
+            result = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    draft_label = " (draft)" if result.get("draft") else ""
+    forge = result.get("forge", "")
+    print(f"{'PR' if forge == 'github' else 'MR'} created{draft_label}: {result['url']}")
+
+
 def cmd_git_checkout(session_id: str, branch: str) -> None:
     """Checkout an existing branch in a session's workspace."""
     session_id = _resolve_session_id(session_id)

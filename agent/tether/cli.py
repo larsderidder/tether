@@ -216,6 +216,18 @@ def main(argv: list[str] | None = None) -> None:
     git_checkout_p.add_argument("session_id", help="Session ID (prefix is fine)")
     git_checkout_p.add_argument("branch", help="Branch to checkout")
 
+    # tether git pr <session-id> -t <title>
+    git_pr_p = git_sub.add_parser("pr", help="Create a pull/merge request")
+    git_pr_p.add_argument("session_id", help="Session ID (prefix is fine)")
+    git_pr_p.add_argument("--title", "-t", required=True, metavar="TITLE", help="PR title")
+    git_pr_p.add_argument("--body", "-b", default="", metavar="BODY", help="PR description")
+    git_pr_p.add_argument("--base", metavar="BRANCH", help="Target branch (default: repo default)")
+    git_pr_p.add_argument("--draft", action="store_true", help="Create as a draft PR")
+    git_pr_p.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="Do not auto-push before creating the PR",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "start":
@@ -274,6 +286,7 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_git_commit,
         cmd_git_diff,
         cmd_git_log,
+        cmd_git_pr,
         cmd_git_push,
         cmd_git_status,
         cmd_input,
@@ -363,6 +376,15 @@ def _run_client(args: argparse.Namespace) -> None:
             cmd_git_branch(args.session_id, args.name, checkout=not args.no_checkout)
         elif git_cmd == "checkout":
             cmd_git_checkout(args.session_id, args.branch)
+        elif git_cmd == "pr":
+            cmd_git_pr(
+                args.session_id,
+                title=args.title,
+                body=args.body,
+                base=getattr(args, "base", None),
+                draft=args.draft,
+                auto_push=not args.no_push,
+            )
         else:
             print(f"Error: unknown git subcommand '{git_cmd}'.", file=sys.stderr)
             sys.exit(1)
