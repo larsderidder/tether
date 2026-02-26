@@ -154,12 +154,15 @@
                   <!-- Quick attach button (always visible for attachable sessions) -->
                   <button
                     v-if="['claude_code', 'pi'].includes(session.runner_type)"
-                    class="ml-1 mt-0.5 flex h-7 shrink-0 items-center rounded-md bg-emerald-600/20 px-2 text-xs font-medium text-emerald-400 transition hover:bg-emerald-600/40 active:scale-95"
-                    :disabled="attaching"
+                    class="ml-1 mt-0.5 flex h-7 shrink-0 items-center rounded-md bg-emerald-600/20 px-2 text-xs font-medium text-emerald-400 transition hover:bg-emerald-600/40 active:scale-95 disabled:opacity-50"
+                    :disabled="attaching !== null"
                     @click.stop="attachToSession(session)"
                     title="Attach to this session"
                   >
-                    {{ attaching ? '…' : 'Attach' }}
+                    <span v-if="attaching === session.id" class="flex items-center gap-1">
+                      <span class="h-3 w-3 animate-spin rounded-full border-2 border-emerald-400/30 border-t-emerald-400"></span>
+                    </span>
+                    <span v-else>Attach</span>
                   </button>
                 </div>
 
@@ -200,16 +203,20 @@
                     </div>
 
                     <!-- Attach button -->
-                    <div class="border-t border-stone-800/50 px-3 py-3">
-                      <p v-if="session.is_running" class="mb-2 text-center text-xs text-amber-400">
+                    <div class="border-t border-stone-800/50 px-3 py-3 space-y-2">
+                      <p v-if="session.is_running" class="text-center text-xs text-amber-400">
                         Session is currently busy
                       </p>
+                      <p v-if="attachError && expandedSession === session.id" class="text-center text-xs text-rose-400">
+                        {{ attachError }}
+                      </p>
                       <button
-                        class="w-full rounded-lg bg-emerald-600 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
-                        :disabled="attaching"
+                        class="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:opacity-60"
+                        :disabled="attaching !== null"
                         @click="attachToSession(session)"
                       >
-                        {{ attaching ? 'Attaching...' : 'Attach' }}
+                        <span v-if="attaching === session.id" class="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"></span>
+                        {{ attaching === session.id ? 'Attaching…' : 'Attach' }}
                       </button>
                     </div>
                   </div>
@@ -264,7 +271,8 @@ const runnerTypeFilter = ref<ExternalRunnerType | "all">("all");
 const expandedSession = ref<string | null>(null);
 const sessionDetail = ref<ExternalSessionDetail | null>(null);
 const loadingHistory = ref(false);
-const attaching = ref(false);
+const attaching = ref<string | null>(null); // session ID being attached, or null
+const attachError = ref<string | null>(null);
 const expandedDirectoryGroups = ref(new Set<string>());
 
 const runnerTypes = [
@@ -398,7 +406,8 @@ async function attachToSession(session: ExternalSessionSummary) {
     return;
   }
 
-  attaching.value = true;
+  attaching.value = session.id;
+  attachError.value = null;
   try {
     const newSession = await attachToExternalSession(
       session.id,
@@ -409,9 +418,9 @@ async function attachToSession(session: ExternalSessionSummary) {
     emit("update:open", false);
   } catch (err) {
     console.error("Failed to attach to session:", err);
-    alert(err instanceof Error ? err.message : "Failed to attach to session");
+    attachError.value = err instanceof Error ? err.message : "Failed to attach to session";
   } finally {
-    attaching.value = false;
+    attaching.value = null;
   }
 }
 
