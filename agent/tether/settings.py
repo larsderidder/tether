@@ -108,23 +108,26 @@ class Settings:
         return str(path)
 
     @staticmethod
-    def adapter() -> str:
-        """Runner adapter selection.
+    def adapter() -> str | None:
+        """Default runner adapter.
 
-        Env: TETHER_DEFAULT_AGENT_ADAPTER (default: claude_auto)
+        Env: TETHER_DEFAULT_AGENT_ADAPTER
         Backwards compat: TETHER_AGENT_ADAPTER is still accepted if the new name is not set.
 
+        Returns None when not configured. Callers that need a concrete adapter
+        must handle None and surface a clear error rather than silently falling
+        back to a default.
+
         Options:
-            - codex_sdk_sidecar: Codex SDK sidecar
-            - opencode: OpenCode sidecar
-            - claude_subprocess: Claude via Agent SDK in subprocess (OAuth or API key)
-            - claude_auto: Auto-detect (requires OAuth or ANTHROPIC_API_KEY)
-            - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
+            - claude_auto: Auto-detect Claude (requires OAuth or ANTHROPIC_API_KEY)
+            - claude_subprocess: Claude via Agent SDK subprocess
+            - opencode: OpenCode via sidecar
+            - codex_sdk_sidecar: Codex via SDK sidecar
             - pi_rpc: Pi coding agent via JSON-RPC subprocess
+            - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
         """
-        # Fall back to old name for backwards compatibility
         value = _get("TETHER_DEFAULT_AGENT_ADAPTER") or _get("TETHER_AGENT_ADAPTER")
-        return (value or "claude_auto").lower()
+        return value.lower() if value else None
 
     # -------------------------------------------------------------------------
     # Logging Settings

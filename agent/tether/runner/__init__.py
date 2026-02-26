@@ -76,6 +76,10 @@ def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
     """
     if name is None:
         name = settings.adapter()
+    if not name:
+        raise ValueError(
+            "No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not set."
+        )
 
     if name == "codex_sdk_sidecar":
         from tether.runner.codex_sdk_sidecar import SidecarRunner

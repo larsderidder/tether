@@ -36,6 +36,11 @@ class RunnerRegistry:
             ValueError: If adapter name is invalid or missing credentials.
         """
         name = adapter_name or self._default_adapter
+        if not name:
+            raise ValueError(
+                "No adapter specified and no default adapter configured. "
+                "Set TETHER_DEFAULT_AGENT_ADAPTER in your config, or pass an adapter explicitly."
+            )
 
         # Return cached runner if exists
         if name in self._runners:
@@ -53,8 +58,8 @@ class RunnerRegistry:
         )
         return runner
 
-    def get_default_adapter(self) -> str:
-        """Get the default adapter name from environment."""
+    def get_default_adapter(self) -> str | None:
+        """Get the default adapter name from environment, or None if not configured."""
         return self._default_adapter
 
     def validate_adapter(self, adapter_name: str) -> None:

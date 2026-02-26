@@ -99,8 +99,8 @@ class TestStringSettings:
         assert Settings.host() == "127.0.0.1"
 
     def test_adapter_default(self, clean_env) -> None:
-        """Adapter defaults to claude_auto."""
-        assert Settings.adapter() == "claude_auto"
+        """Adapter returns None when not configured."""
+        assert Settings.adapter() is None
 
     def test_adapter_custom(self, clean_env) -> None:
         """Adapter can be customized."""

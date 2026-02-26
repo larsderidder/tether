@@ -5,7 +5,7 @@ import stat
 
 import pytest
 
-from tether.init_wizard import _detect_adapter, _write_config
+from tether.init_wizard import _write_config
 from tether.config import parse_env_file
 
 
@@ -46,27 +46,4 @@ class TestWriteConfig:
         assert parsed["K"] == "val#ue"
 
 
-class TestDetectAdapter:
-    """Test _detect_adapter."""
 
-    def test_returns_default_when_nothing_found(self, monkeypatch):
-        monkeypatch.setenv("PATH", "/nonexistent")
-        # No agent CLIs on PATH — should return claude_auto as fallback
-        result = _detect_adapter()
-        assert result == "claude_auto"
-
-    def test_detects_claude(self, monkeypatch, tmp_path):
-        fake_bin = tmp_path / "claude"
-        fake_bin.write_text("#!/bin/sh\n")
-        fake_bin.chmod(0o755)
-        monkeypatch.setenv("PATH", str(tmp_path))
-        result = _detect_adapter()
-        assert result == "claude_auto"
-
-    def test_detects_opencode(self, monkeypatch, tmp_path):
-        fake_bin = tmp_path / "opencode"
-        fake_bin.write_text("#!/bin/sh\n")
-        fake_bin.chmod(0o755)
-        monkeypatch.setenv("PATH", str(tmp_path))
-        result = _detect_adapter()
-        assert result == "opencode"

@@ -27,15 +27,10 @@ def run_wizard() -> None:
     config["TETHER_AGENT_TOKEN"] = token
     print(f"Generated auth token: {token[:8]}...")
 
-    # 2. Adapter detection
-    adapter = _detect_adapter()
-    if adapter:
-        config["TETHER_DEFAULT_AGENT_ADAPTER"] = adapter
-
-    # 3. Bridge setup
+    # 2. Bridge setup
     _configure_bridge(config)
 
-    # 4. Write config
+    # 3. Write config
     dest = config_dir() / "config.env"
     _write_config(config, dest)
 
@@ -45,41 +40,13 @@ def run_wizard() -> None:
     print("Next steps:")
     print(f"  tether start")
     print()
+    print(f"To create sessions from the CLI or UI, set a default agent adapter:")
+    print(f"  TETHER_DEFAULT_AGENT_ADAPTER=claude_auto   # or opencode, pi_rpc, codex_sdk_sidecar")
+    print()
     print(f"Your auth token (save this for connecting from your browser):")
     print(f"  {token}")
     print()
 
-
-def _detect_adapter() -> str | None:
-    """Detect available AI CLI tools and let the user pick one."""
-    detected: list[tuple[str, str, str]] = []  # (label, adapter, binary)
-
-    if shutil.which("claude"):
-        detected.append(("Claude Code", "claude_auto", "claude"))
-    if shutil.which("opencode"):
-        detected.append(("OpenCode", "opencode", "opencode"))
-    if shutil.which("pi"):
-        detected.append(("Pi", "pi", "pi"))
-
-    if not detected:
-        print("No supported agent CLI found on PATH.")
-        print("Defaulting to claude_auto — set ANTHROPIC_API_KEY or install the claude CLI.")
-        return "claude_auto"
-
-    if len(detected) == 1:
-        label, adapter, binary = detected[0]
-        print(f"Detected `{binary}` on PATH — using {label} ({adapter}).")
-        return adapter
-
-    print(f"Detected {len(detected)} agents on PATH:")
-    options = [f"{label} ({adapter})" for label, adapter, _ in detected]
-    options.append("Skip (configure manually later)")
-    choice = _prompt_choice("Which agent do you want as the default?", options)
-    idx = options.index(choice)
-    if idx >= len(detected):
-        return None
-    _, adapter, _ = detected[idx]
-    return adapter
 
 
 def _configure_bridge(config: dict[str, str]) -> None:
