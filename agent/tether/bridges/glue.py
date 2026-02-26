@@ -275,6 +275,66 @@ async def _get_external_history(
     return response.json()
 
 
+async def _git_status(session_id: str) -> dict:
+    """Get git status for a session's workspace."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/git",
+            headers=_api_headers(),
+            timeout=15.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
+async def _git_commit(session_id: str, message: str) -> dict:
+    """Stage all changes and commit in a session's workspace."""
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/git/commit",
+            json={"message": message, "add_all": True},
+            headers=_api_headers(),
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
+async def _git_push(session_id: str) -> dict:
+    """Push the current branch to origin for a session's workspace."""
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/git/push",
+            json={},
+            headers=_api_headers(),
+            timeout=60.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
+async def _git_pr(
+    session_id: str,
+    title: str,
+    body: str = "",
+    base: str | None = None,
+    draft: bool = False,
+) -> dict:
+    """Create a pull/merge request from a session's working branch."""
+    payload: dict = {"title": title, "body": body, "draft": draft}
+    if base:
+        payload["base"] = base
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/git/pr",
+            json=payload,
+            headers=_api_headers(),
+            timeout=120.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
 async def _sync_session(session_id: str) -> dict:
     """Pull new messages from an attached external session."""
 
@@ -331,6 +391,10 @@ def make_bridge_callbacks() -> BridgeCallbacks:
         get_external_history=_get_external_history,
         attach_external=_attach_external,
         sync_session=_sync_session,
+        git_status=_git_status,
+        git_commit=_git_commit,
+        git_push=_git_push,
+        git_pr=_git_pr,
     )
 
 
