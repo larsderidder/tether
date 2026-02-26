@@ -14,6 +14,54 @@ import argparse
 import os
 import sys
 
+from tether.servers import get_default_server, get_server
+
+
+def _apply_connection_args(args: argparse.Namespace) -> None:
+    """Apply --host/--port/--token/--server flags to the process environment.
+
+    Precedence (highest to lowest):
+    1. Explicit ``--host``, ``--port``, ``--token`` CLI flags
+    2. ``--server <name>`` profile from ``~/.config/tether/servers.yaml``
+    3. Existing env vars / config file (already loaded by ``load_config``)
+    4. Built-in defaults (127.0.0.1:8787)
+    """
+    host = getattr(args, "remote_host", None)
+    port = getattr(args, "remote_port", None)
+    token = getattr(args, "remote_token", None)
+    server_name = getattr(args, "server", None)
+
+    # Resolve a named server profile first; explicit flags will override it.
+    profile: dict[str, str] | None = None
+    if server_name:
+        profile = get_server(server_name)
+        if profile is None:
+            print(
+                f"Error: unknown server '{server_name}'. "
+                "Check ~/.config/tether/servers.yaml.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    elif not host and not port and not token:
+        # No explicit connection flags; check for a configured default server.
+        profile = get_default_server()
+
+    if profile:
+        if "host" in profile and not host:
+            os.environ["TETHER_AGENT_HOST"] = profile["host"]
+        if "port" in profile and not port:
+            os.environ["TETHER_AGENT_PORT"] = profile["port"]
+        if "token" in profile and not token:
+            os.environ["TETHER_AGENT_TOKEN"] = profile["token"]
+
+    # Explicit CLI flags always win.
+    if host:
+        os.environ["TETHER_AGENT_HOST"] = host
+    if port is not None:
+        os.environ["TETHER_AGENT_PORT"] = str(port)
+    if token:
+        os.environ["TETHER_AGENT_TOKEN"] = token
+
 
 def main(argv: list[str] | None = None) -> None:
     """Main CLI entry point (``tether`` command)."""
@@ -21,12 +69,40 @@ def main(argv: list[str] | None = None) -> None:
         prog="tether",
         description="Tether \u2014 control plane for AI coding agents",
     )
+
+    # Global connection flags (apply to all client subcommands).
+    parser.add_argument(
+        "--host", "-H",
+        dest="remote_host",
+        metavar="HOST",
+        help="Remote Tether server hostname or IP (overrides TETHER_AGENT_HOST)",
+    )
+    parser.add_argument(
+        "--port", "-P",
+        dest="remote_port",
+        type=int,
+        metavar="PORT",
+        help="Remote Tether server port (overrides TETHER_AGENT_PORT)",
+    )
+    parser.add_argument(
+        "--token",
+        dest="remote_token",
+        metavar="TOKEN",
+        help="Bearer token for remote server auth (overrides TETHER_AGENT_TOKEN)",
+    )
+    parser.add_argument(
+        "--server", "-S",
+        dest="server",
+        metavar="NAME",
+        help="Use a named server profile from ~/.config/tether/servers.yaml",
+    )
+
     sub = parser.add_subparsers(dest="command")
 
     # tether start
     start_parser = sub.add_parser("start", help="Start the Tether server")
-    start_parser.add_argument("--host", help="Host to bind to")
-    start_parser.add_argument("--port", type=int, help="Port to bind to")
+    start_parser.add_argument("--host", dest="bind_host", help="Host to bind to")
+    start_parser.add_argument("--port", dest="bind_port", type=int, help="Port to bind to")
     start_parser.add_argument(
         "--dev", action="store_true", help="Enable dev mode (no auth required)"
     )
@@ -238,6 +314,7 @@ def main(argv: list[str] | None = None) -> None:
         "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync", "watch",
         "git",
     ):
+        _apply_connection_args(args)
         _run_client(args)
     else:
         parser.print_help()
@@ -247,10 +324,10 @@ def main(argv: list[str] | None = None) -> None:
 def _run_start(args: argparse.Namespace) -> None:
     """Handle ``tether start``."""
     # Apply CLI flag overrides BEFORE loading config
-    if args.host:
-        os.environ["TETHER_AGENT_HOST"] = args.host
-    if args.port:
-        os.environ["TETHER_AGENT_PORT"] = str(args.port)
+    if args.bind_host:
+        os.environ["TETHER_AGENT_HOST"] = args.bind_host
+    if args.bind_port:
+        os.environ["TETHER_AGENT_PORT"] = str(args.bind_port)
     if args.dev:
         os.environ["TETHER_AGENT_DEV_MODE"] = "1"
 
