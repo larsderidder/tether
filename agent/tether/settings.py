@@ -161,6 +161,31 @@ class Settings:
     # Session Settings
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # Workspace Settings
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def workspace_dir() -> str:
+        """Root directory for managed workspaces (cloned repos).
+
+        Env: TETHER_WORKSPACE_DIR
+        When unset, defaults to {data_dir}/workspaces/.
+        """
+        return _get("TETHER_WORKSPACE_DIR")
+
+    @staticmethod
+    def git_clone_timeout() -> int:
+        """Timeout in seconds for git clone operations.
+
+        Env: TETHER_GIT_CLONE_TIMEOUT (default: 120)
+        """
+        return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
+
+    # -------------------------------------------------------------------------
+    # Session Settings
+    # -------------------------------------------------------------------------
+
     @staticmethod
     def session_retention_days() -> int:
         """Number of days to retain completed sessions before pruning.
