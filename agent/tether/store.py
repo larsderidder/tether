@@ -50,6 +50,7 @@ class SessionRuntime:
     stop_requested: bool = False
     synced_message_count: int = 0
     synced_turn_count: int = 0  # Number of conversation turns (user messages)
+    checkpoint_turn_count: int = 0  # Number of auto-checkpoint commits made
     pending_permissions: dict[str, PendingPermission] = field(default_factory=dict)
     agent_metadata: dict | None = None  # External agent metadata (not persisted)
 
@@ -233,6 +234,12 @@ class SessionStore:
         runtime = self._get_runtime(session_id)
         runtime.seq += 1
         return runtime.seq
+
+    def next_checkpoint_turn(self, session_id: str) -> int:
+        """Increment and return the checkpoint turn counter for a session."""
+        runtime = self._get_runtime(session_id)
+        runtime.checkpoint_turn_count += 1
+        return runtime.checkpoint_turn_count
 
     def new_subscriber(self, session_id: str) -> asyncio.Queue:
         """Register a new SSE subscriber queue for a session.

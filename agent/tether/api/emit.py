@@ -395,3 +395,33 @@ async def emit_history_message(
                     },
                 },
             )
+
+
+async def emit_checkpoint(
+    session: Session,
+    commit_hash: str,
+    message: str,
+    files_changed: int,
+) -> None:
+    """Emit a checkpoint event after an auto-commit.
+
+    Args:
+        session: Session that produced the checkpoint.
+        commit_hash: Short hash of the new commit.
+        message: Commit message used.
+        files_changed: Number of files included in the commit.
+    """
+    await store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "checkpoint",
+            "data": {
+                "commit_hash": commit_hash,
+                "message": message,
+                "files_changed": files_changed,
+            },
+        },
+    )

@@ -183,6 +183,18 @@ class Settings:
         return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
 
     @staticmethod
+    def git_auto_checkpoint() -> bool:
+        """Auto-commit all changes after each agent turn completes (opt-in).
+
+        When enabled, Tether creates a checkpoint commit with message
+        "[tether] checkpoint after turn N" whenever the agent finishes a turn
+        and there are uncommitted changes in a git workspace.
+
+        Env: TETHER_GIT_AUTO_CHECKPOINT (default: 0)
+        """
+        return _get_bool("TETHER_GIT_AUTO_CHECKPOINT", default=False)
+
+    @staticmethod
     def git_user_name() -> str:
         """Git user.name applied to cloned workspaces.
 

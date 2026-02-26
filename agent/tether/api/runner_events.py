@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import structlog
+
 from tether.api.emit import (
+    emit_checkpoint,
     emit_error,
     emit_header,
     emit_heartbeat,
@@ -12,11 +15,14 @@ from tether.api.emit import (
     emit_permission_request,
     emit_permission_resolved,
     emit_state,
+    emit_warning,
 )
 from tether.api.state import now, session_lock, transition
 from tether.models import SessionState
 from tether.runner import Runner, get_runner
 from tether.store import store
+
+logger = structlog.get_logger(__name__)
 
 # Import at end to avoid circular dependency
 from typing import TYPE_CHECKING
@@ -135,6 +141,10 @@ class ApiRunnerEvents:
             last_output = recent[-1] if recent else None
             await emit_input_required(session, last_output)
 
+        # Auto-checkpoint: commit any uncommitted changes after the turn.
+        # Runs outside the lock so it doesn't block other callbacks.
+        await _maybe_checkpoint(session_id)
+
     async def on_metadata(
         self, session_id: str, key: str, value: object, raw: str
     ) -> None:
@@ -194,6 +204,62 @@ class ApiRunnerEvents:
             allowed=allowed,
             message=message,
         )
+
+
+async def _maybe_checkpoint(session_id: str) -> None:
+    """Auto-commit uncommitted changes if auto-checkpoint is enabled.
+
+    Silently no-ops when:
+    - TETHER_GIT_AUTO_CHECKPOINT is not set / False
+    - The session has no git directory
+    - The working tree is clean
+
+    Emits a ``checkpoint`` SSE event on success and a ``warning`` on failure.
+    Errors never propagate to the caller.
+    """
+    from tether.settings import settings
+
+    if not settings.git_auto_checkpoint():
+        return
+
+    session = store.get_session(session_id)
+    if not session or not session.directory or not session.directory_has_git:
+        return
+
+    try:
+        from tether.git_ops import git_commit, git_status
+
+        status = git_status(session.directory)
+        if not status.dirty:
+            return
+
+        turn = store.next_checkpoint_turn(session_id)
+        commit_message = f"[tether] checkpoint after turn {turn}"
+        commit = git_commit(session.directory, commit_message)
+
+        files_changed = (
+            status.staged_count + status.unstaged_count + status.untracked_count
+        )
+        await emit_checkpoint(session, commit.hash, commit_message, files_changed)
+        logger.info(
+            "Auto-checkpoint committed",
+            session_id=session_id,
+            turn=turn,
+            hash=commit.hash,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Auto-checkpoint failed",
+            session_id=session_id,
+            error=str(exc),
+        )
+        session = store.get_session(session_id)
+        if session:
+            await emit_warning(
+                session,
+                "CHECKPOINT_FAILED",
+                f"Auto-checkpoint failed: {exc}",
+            )
 
 
 # Lazy registry initialization to speed up startup
