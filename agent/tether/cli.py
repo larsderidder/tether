@@ -88,6 +88,27 @@ def main(argv: list[str] | None = None) -> None:
         help="Bind to a messaging platform (telegram, slack, discord)",
     )
 
+    # tether new
+    new_parser = sub.add_parser("new", help="Create a new session")
+    new_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Working directory (default: current directory)",
+    )
+    new_parser.add_argument(
+        "--adapter", "-a",
+        help="Agent adapter (claude_auto, opencode, pi, codex, ...)",
+    )
+    new_parser.add_argument(
+        "--prompt", "-m",
+        help="Start the session immediately with this prompt",
+    )
+    new_parser.add_argument(
+        "--platform", "-p",
+        help="Bind to a messaging platform (telegram, slack, discord)",
+    )
+
     # tether input
     input_parser = sub.add_parser("input", help="Send input to a session")
     input_parser.add_argument("session_id", help="Session ID (prefix is fine)")
@@ -121,7 +142,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "init":
         _run_init()
     elif args.command in (
-        "status", "open", "list", "attach", "input", "interrupt", "delete", "sync",
+        "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
     ):
         _run_client(args)
     else:
@@ -170,6 +191,7 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_interrupt,
         cmd_list,
         cmd_list_external,
+        cmd_new,
         cmd_open,
         cmd_status,
         cmd_sync,
@@ -184,6 +206,9 @@ def _run_client(args: argparse.Namespace) -> None:
             cmd_list_external(args.directory, args.runner_type)
         else:
             cmd_list(state=args.state, directory=args.directory)
+    elif args.command == "new":
+        directory = os.path.abspath(args.directory)
+        cmd_new(directory, args.adapter, args.prompt, args.platform)
     elif args.command == "attach":
         directory = os.path.abspath(args.directory)
         cmd_attach(args.external_id, args.runner_type, directory, args.platform)

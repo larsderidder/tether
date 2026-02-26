@@ -109,6 +109,8 @@ tether list                          # List Tether sessions
 tether list -s running               # Filter by state
 tether list -d .                     # Filter by directory
 tether list --external               # Discover external sessions
+tether new [directory]               # Create a new session
+tether new . -a opencode -m "fix tests"  # Create and start immediately
 tether attach <external-id>          # Attach an external session
 tether attach                        # Pick from sessions in current dir
 tether attach <id> -p discord        # Attach with Discord thread

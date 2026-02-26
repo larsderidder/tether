@@ -296,6 +296,47 @@ def cmd_attach(
         print(f"  Platform:  {session['platform']}")
 
 
+def cmd_new(
+    directory: str,
+    adapter: str | None = None,
+    prompt: str | None = None,
+    platform: str | None = None,
+) -> None:
+    """Create a new session and optionally start it with a prompt."""
+    body: dict = {"directory": directory}
+    if adapter:
+        body["adapter"] = adapter
+    if platform:
+        body["platform"] = platform
+
+    try:
+        with _client() as c:
+            resp = c.post("/api/sessions", json=body)
+            _check_response(resp)
+            session = resp.json()
+
+        if prompt:
+            with _client() as c:
+                resp = c.post(
+                    f"/api/sessions/{session['id']}/start",
+                    json={"prompt": prompt},
+                )
+                _check_response(resp)
+                session = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    print(f"Created session {session['id']}")
+    print(f"  Directory: {session.get('directory') or '?'}")
+    print(f"  Adapter:   {session.get('adapter') or 'default'}")
+    print(f"  State:     {_format_state(session['state'])}")
+    if session.get("platform"):
+        print(f"  Platform:  {session['platform']}")
+    if prompt:
+        print(f"  Started with prompt.")
+
+
 def cmd_delete(session_id: str) -> None:
     """Delete a session."""
     session_id = _resolve_session_id(session_id)

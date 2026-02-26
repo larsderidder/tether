@@ -51,20 +51,35 @@ def run_wizard() -> None:
 
 
 def _detect_adapter() -> str | None:
-    """Detect available AI CLI tools and suggest an adapter."""
-    has_claude = _detect_claude_cli()
-    if has_claude:
-        print("Detected `claude` CLI on PATH — using claude_auto adapter.")
+    """Detect available AI CLI tools and let the user pick one."""
+    detected: list[tuple[str, str, str]] = []  # (label, adapter, binary)
+
+    if shutil.which("claude"):
+        detected.append(("Claude Code", "claude_auto", "claude"))
+    if shutil.which("opencode"):
+        detected.append(("OpenCode", "opencode", "opencode"))
+    if shutil.which("pi"):
+        detected.append(("Pi", "pi", "pi"))
+
+    if not detected:
+        print("No supported agent CLI found on PATH.")
+        print("Defaulting to claude_auto — set ANTHROPIC_API_KEY or install the claude CLI.")
         return "claude_auto"
 
-    print("No `claude` CLI detected. Defaulting to claude_auto adapter.")
-    print("You will need the `claude` CLI or ANTHROPIC_API_KEY set in your config.")
-    return "claude_auto"
+    if len(detected) == 1:
+        label, adapter, binary = detected[0]
+        print(f"Detected `{binary}` on PATH — using {label} ({adapter}).")
+        return adapter
 
-
-def _detect_claude_cli() -> bool:
-    """Check if the `claude` CLI is available on PATH."""
-    return shutil.which("claude") is not None
+    print(f"Detected {len(detected)} agents on PATH:")
+    options = [f"{label} ({adapter})" for label, adapter, _ in detected]
+    options.append("Skip (configure manually later)")
+    choice = _prompt_choice("Which agent do you want as the default?", options)
+    idx = options.index(choice)
+    if idx >= len(detected):
+        return None
+    _, adapter, _ = detected[idx]
+    return adapter
 
 
 def _configure_bridge(config: dict[str, str]) -> None:
