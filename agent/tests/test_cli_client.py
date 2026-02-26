@@ -704,3 +704,271 @@ class TestCmdNewCloneArgParsing:
 
         err = capsys.readouterr().err
         assert "mutually exclusive" in err
+
+
+class TestGitSubcommands:
+    """Tests for cmd_git_* functions and their arg-parsing dispatch."""
+
+    # -----------------------------------------------------------------------
+    # cmd_git_status
+    # -----------------------------------------------------------------------
+
+    def test_git_status_prints_branch(self, capsys):
+        """cmd_git_status prints branch name."""
+        git_resp = _mock_response(200, {
+            "branch": "main",
+            "remote_url": None,
+            "remote_branch": None,
+            "ahead": 0,
+            "behind": 0,
+            "dirty": False,
+            "staged_count": 0,
+            "unstaged_count": 0,
+            "untracked_count": 0,
+            "changed_files": [],
+            "last_commit": {
+                "hash": "abc1234",
+                "message": "Initial commit",
+                "author": "Test",
+                "timestamp": "2026-01-01T10:00:00+00:00",
+            },
+        })
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("GET", "/api/sessions/sess_abc123/git"): git_resp,
+        }):
+            cli_client.cmd_git_status("sess_abc123")
+
+        out = capsys.readouterr().out
+        assert "main" in out
+        assert "clean" in out
+        assert "abc1234" in out
+
+    def test_git_status_shows_dirty_counts(self, capsys):
+        """cmd_git_status shows staged/unstaged/untracked counts when dirty."""
+        git_resp = _mock_response(200, {
+            "branch": "feature",
+            "remote_url": None,
+            "remote_branch": None,
+            "ahead": 0,
+            "behind": 0,
+            "dirty": True,
+            "staged_count": 2,
+            "unstaged_count": 1,
+            "untracked_count": 3,
+            "changed_files": [],
+            "last_commit": None,
+        })
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("GET", "/api/sessions/sess_abc123/git"): git_resp,
+        }):
+            cli_client.cmd_git_status("sess_abc123")
+
+        out = capsys.readouterr().out
+        assert "dirty" in out
+        assert "2 staged" in out
+        assert "1 unstaged" in out
+        assert "3 untracked" in out
+
+    # -----------------------------------------------------------------------
+    # cmd_git_log
+    # -----------------------------------------------------------------------
+
+    def test_git_log_prints_commits(self, capsys):
+        """cmd_git_log prints one line per commit."""
+        log_resp = _mock_response(200, [
+            {"hash": "abc1234", "message": "Fix bug", "author": "Alice", "timestamp": "2026-01-02T00:00:00Z"},
+            {"hash": "def5678", "message": "Initial", "author": "Bob", "timestamp": "2026-01-01T00:00:00Z"},
+        ])
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("GET", "/api/sessions/sess_abc123/git/log"): log_resp,
+        }):
+            cli_client.cmd_git_log("sess_abc123", count=5)
+
+        out = capsys.readouterr().out
+        assert "abc1234" in out
+        assert "Fix bug" in out
+        assert "def5678" in out
+
+    # -----------------------------------------------------------------------
+    # cmd_git_commit
+    # -----------------------------------------------------------------------
+
+    def test_git_commit_prints_hash_and_message(self, capsys):
+        """cmd_git_commit prints the new commit hash and message."""
+        commit_resp = _mock_response(201, {
+            "hash": "abc1234",
+            "message": "My commit",
+            "author": "Test",
+            "timestamp": "2026-01-01T00:00:00Z",
+        })
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("POST", "/api/sessions/sess_abc123/git/commit"): commit_resp,
+        }):
+            cli_client.cmd_git_commit("sess_abc123", "My commit")
+
+        out = capsys.readouterr().out
+        assert "abc1234" in out
+        assert "My commit" in out
+
+    # -----------------------------------------------------------------------
+    # cmd_git_push
+    # -----------------------------------------------------------------------
+
+    def test_git_push_prints_result(self, capsys):
+        """cmd_git_push prints the pushed branch and remote."""
+        push_resp = _mock_response(200, {
+            "success": True,
+            "remote": "https://github.com/owner/repo.git",
+            "branch": "main",
+        })
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("POST", "/api/sessions/sess_abc123/git/push"): push_resp,
+        }):
+            cli_client.cmd_git_push("sess_abc123")
+
+        out = capsys.readouterr().out
+        assert "main" in out
+        assert "github.com" in out
+
+    # -----------------------------------------------------------------------
+    # cmd_git_branch
+    # -----------------------------------------------------------------------
+
+    def test_git_branch_prints_name(self, capsys):
+        """cmd_git_branch prints the created branch name."""
+        branch_resp = _mock_response(200, {"branch": "feature-x"})
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("POST", "/api/sessions/sess_abc123/git/branch"): branch_resp,
+        }):
+            cli_client.cmd_git_branch("sess_abc123", "feature-x")
+
+        out = capsys.readouterr().out
+        assert "feature-x" in out
+
+    # -----------------------------------------------------------------------
+    # cmd_git_checkout
+    # -----------------------------------------------------------------------
+
+    def test_git_checkout_prints_branch(self, capsys):
+        """cmd_git_checkout prints the checked-out branch."""
+        co_resp = _mock_response(200, {"branch": "develop"})
+        sessions_resp = _mock_response(200, [{"id": "sess_abc123", "name": "test"}])
+        with _patch_client({
+            ("GET", "/api/sessions"): sessions_resp,
+            ("POST", "/api/sessions/sess_abc123/git/checkout"): co_resp,
+        }):
+            cli_client.cmd_git_checkout("sess_abc123", "develop")
+
+        out = capsys.readouterr().out
+        assert "develop" in out
+
+    # -----------------------------------------------------------------------
+    # Arg-parsing dispatch via main()
+    # -----------------------------------------------------------------------
+
+    def test_git_status_parsed(self, monkeypatch):
+        """tether git status <id> dispatches to cmd_git_status."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid):
+            called["session_id"] = sid
+
+        monkeypatch.setattr(cli_client, "cmd_git_status", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "status", "sess_abc"])
+        assert called["session_id"] == "sess_abc"
+
+    def test_git_commit_parsed(self, monkeypatch):
+        """tether git commit <id> -m 'msg' dispatches to cmd_git_commit."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid, message):
+            called["session_id"] = sid
+            called["message"] = message
+
+        monkeypatch.setattr(cli_client, "cmd_git_commit", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "commit", "sess_abc", "-m", "hello"])
+        assert called["message"] == "hello"
+
+    def test_git_push_parsed(self, monkeypatch):
+        """tether git push <id> dispatches to cmd_git_push."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid, remote="origin", branch=None):
+            called["session_id"] = sid
+            called["remote"] = remote
+
+        monkeypatch.setattr(cli_client, "cmd_git_push", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "push", "sess_abc", "--remote", "upstream"])
+        assert called["remote"] == "upstream"
+
+    def test_git_branch_parsed(self, monkeypatch):
+        """tether git branch <id> <name> dispatches to cmd_git_branch."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid, name, checkout=True):
+            called["name"] = name
+            called["checkout"] = checkout
+
+        monkeypatch.setattr(cli_client, "cmd_git_branch", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "branch", "sess_abc", "feature-y"])
+        assert called["name"] == "feature-y"
+        assert called["checkout"] is True
+
+    def test_git_branch_no_checkout_parsed(self, monkeypatch):
+        """tether git branch <id> <name> --no-checkout passes checkout=False."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid, name, checkout=True):
+            called["checkout"] = checkout
+
+        monkeypatch.setattr(cli_client, "cmd_git_branch", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "branch", "sess_abc", "feature-z", "--no-checkout"])
+        assert called["checkout"] is False
+
+    def test_git_checkout_parsed(self, monkeypatch):
+        """tether git checkout <id> <branch> dispatches to cmd_git_checkout."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid, branch):
+            called["branch"] = branch
+
+        monkeypatch.setattr(cli_client, "cmd_git_checkout", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "checkout", "sess_abc", "main"])
+        assert called["branch"] == "main"
+
+    def test_git_log_count_parsed(self, monkeypatch):
+        """tether git log <id> -n 5 passes count=5."""
+        from tether.cli import main
+        called = {}
+
+        def fake(sid, count=10):
+            called["count"] = count
+
+        monkeypatch.setattr(cli_client, "cmd_git_log", fake)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+        main(["git", "log", "sess_abc", "-n", "5"])
+        assert called["count"] == 5

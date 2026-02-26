@@ -158,6 +158,58 @@ def main(argv: list[str] | None = None) -> None:
     )
     watch_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
+    # tether git <subcommand>
+    git_parser = sub.add_parser("git", help="Git operations on a session workspace")
+    git_sub = git_parser.add_subparsers(dest="git_command")
+
+    # tether git status <session-id>
+    git_status_p = git_sub.add_parser("status", help="Show branch, changes, last commit")
+    git_status_p.add_argument("session_id", help="Session ID (prefix is fine)")
+
+    # tether git log <session-id> [-n N]
+    git_log_p = git_sub.add_parser("log", help="Show recent commits")
+    git_log_p.add_argument("session_id", help="Session ID (prefix is fine)")
+    git_log_p.add_argument(
+        "-n", "--count", type=int, default=10, metavar="N",
+        help="Number of commits to show (default: 10)",
+    )
+
+    # tether git diff <session-id>
+    git_diff_p = git_sub.add_parser("diff", help="Show full git diff")
+    git_diff_p.add_argument("session_id", help="Session ID (prefix is fine)")
+
+    # tether git commit <session-id> -m <message>
+    git_commit_p = git_sub.add_parser("commit", help="Commit all changes")
+    git_commit_p.add_argument("session_id", help="Session ID (prefix is fine)")
+    git_commit_p.add_argument(
+        "--message", "-m", required=True, metavar="MSG",
+        help="Commit message",
+    )
+
+    # tether git push <session-id>
+    git_push_p = git_sub.add_parser("push", help="Push commits to remote")
+    git_push_p.add_argument("session_id", help="Session ID (prefix is fine)")
+    git_push_p.add_argument(
+        "--remote", default="origin", help="Remote name (default: origin)"
+    )
+    git_push_p.add_argument(
+        "--branch", metavar="BRANCH", help="Branch to push (default: current branch)"
+    )
+
+    # tether git branch <session-id> <name>
+    git_branch_p = git_sub.add_parser("branch", help="Create and checkout a new branch")
+    git_branch_p.add_argument("session_id", help="Session ID (prefix is fine)")
+    git_branch_p.add_argument("name", help="New branch name")
+    git_branch_p.add_argument(
+        "--no-checkout", action="store_true",
+        help="Create branch without switching to it",
+    )
+
+    # tether git checkout <session-id> <branch>
+    git_checkout_p = git_sub.add_parser("checkout", help="Checkout an existing branch")
+    git_checkout_p.add_argument("session_id", help="Session ID (prefix is fine)")
+    git_checkout_p.add_argument("branch", help="Branch to checkout")
+
     args = parser.parse_args(argv)
 
     if args.command == "start":
@@ -166,6 +218,7 @@ def main(argv: list[str] | None = None) -> None:
         _run_init()
     elif args.command in (
         "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync", "watch",
+        "git",
     ):
         _run_client(args)
     else:
@@ -210,6 +263,13 @@ def _run_client(args: argparse.Namespace) -> None:
     from tether.cli_client import (
         cmd_attach,
         cmd_delete,
+        cmd_git_branch,
+        cmd_git_checkout,
+        cmd_git_commit,
+        cmd_git_diff,
+        cmd_git_log,
+        cmd_git_push,
+        cmd_git_status,
         cmd_input,
         cmd_interrupt,
         cmd_list,
@@ -276,6 +336,28 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_sync(args.session_id)
     elif args.command == "watch":
         cmd_watch(args.session_id)
+    elif args.command == "git":
+        git_cmd = getattr(args, "git_command", None)
+        if not git_cmd:
+            print("Error: specify a git subcommand (status, log, diff, commit, push, branch, checkout).", file=sys.stderr)
+            sys.exit(1)
+        if git_cmd == "status":
+            cmd_git_status(args.session_id)
+        elif git_cmd == "log":
+            cmd_git_log(args.session_id, count=args.count)
+        elif git_cmd == "diff":
+            cmd_git_diff(args.session_id)
+        elif git_cmd == "commit":
+            cmd_git_commit(args.session_id, args.message)
+        elif git_cmd == "push":
+            cmd_git_push(args.session_id, remote=args.remote, branch=getattr(args, "branch", None))
+        elif git_cmd == "branch":
+            cmd_git_branch(args.session_id, args.name, checkout=not args.no_checkout)
+        elif git_cmd == "checkout":
+            cmd_git_checkout(args.session_id, args.branch)
+        else:
+            print(f"Error: unknown git subcommand '{git_cmd}'.", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

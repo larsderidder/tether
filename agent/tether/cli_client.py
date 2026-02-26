@@ -711,3 +711,185 @@ def _print_external_sessions_table(items: list[dict]) -> None:
         [12, 13, 9, 30, 30],
         rows,
     )
+
+
+# ---------------------------------------------------------------------------
+# Git subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_git_status(session_id: str) -> None:
+    """Show git status for a session's workspace."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        data = _get_json(f"/api/sessions/{session_id}/git")
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    branch = data.get("branch") or "(detached HEAD)"
+    remote_branch = data.get("remote_branch")
+    ahead = data.get("ahead", 0)
+    behind = data.get("behind", 0)
+    dirty = data.get("dirty", False)
+    staged = data.get("staged_count", 0)
+    unstaged = data.get("unstaged_count", 0)
+    untracked = data.get("untracked_count", 0)
+    last = data.get("last_commit")
+    remote_url = data.get("remote_url")
+
+    print(f"Branch:  {branch}", end="")
+    if remote_branch:
+        tracking = f"  (tracking {remote_branch}"
+        if ahead or behind:
+            tracking += f", ahead {ahead}, behind {behind}"
+        tracking += ")"
+        print(tracking, end="")
+    print()
+    if remote_url:
+        print(f"Remote:  {remote_url}")
+    print(f"Status:  {'dirty' if dirty else 'clean'}", end="")
+    if dirty:
+        parts = []
+        if staged:
+            parts.append(f"{staged} staged")
+        if unstaged:
+            parts.append(f"{unstaged} unstaged")
+        if untracked:
+            parts.append(f"{untracked} untracked")
+        print(f"  ({', '.join(parts)})", end="")
+    print()
+    if last:
+        ts = last.get("timestamp", "")[:19].replace("T", " ")
+        print(f"Last:    {last['hash']}  {last['message']}  ({last['author']}, {ts})")
+
+
+def cmd_git_log(session_id: str, count: int = 10) -> None:
+    """Show recent commits for a session's workspace."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        commits = _get_json(f"/api/sessions/{session_id}/git/log", params={"count": str(count)})
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    if not commits:
+        print("No commits found.")
+        return
+
+    for c in commits:
+        ts = c.get("timestamp", "")[:10]
+        print(f"{c['hash']}  {ts}  {c['message']}  ({c['author']})")
+
+
+def cmd_git_diff(session_id: str) -> None:
+    """Show the full git diff for a session's workspace."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        data = _get_json(f"/api/sessions/{session_id}/diff")
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    diff = data.get("diff", "") if isinstance(data, dict) else ""
+    if diff:
+        print(diff)
+    else:
+        print("No changes.")
+
+
+def cmd_git_commit(session_id: str, message: str) -> None:
+    """Commit all changes in a session's workspace."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        with _client() as c:
+            resp = c.post(
+                f"/api/sessions/{session_id}/git/commit",
+                json={"message": message},
+            )
+            _check_response(resp)
+            commit = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    print(f"Committed {commit['hash']}: {commit['message']}")
+
+
+def cmd_git_push(session_id: str, remote: str = "origin", branch: str | None = None) -> None:
+    """Push commits from a session's workspace to a remote."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    body: dict = {"remote": remote}
+    if branch:
+        body["branch"] = branch
+
+    try:
+        with _client() as c:
+            resp = c.post(f"/api/sessions/{session_id}/git/push", json=body)
+            _check_response(resp)
+            result = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    pushed_branch = result.get("branch", branch or "")
+    pushed_remote = result.get("remote", remote)
+    print(f"Pushed {pushed_branch} to {pushed_remote}")
+
+
+def cmd_git_branch(session_id: str, name: str, checkout: bool = True) -> None:
+    """Create a new branch in a session's workspace."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        with _client() as c:
+            resp = c.post(
+                f"/api/sessions/{session_id}/git/branch",
+                json={"name": name, "checkout": checkout},
+            )
+            _check_response(resp)
+            result = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    action = "Created and checked out" if checkout else "Created"
+    print(f"{action} branch {result['branch']}")
+
+
+def cmd_git_checkout(session_id: str, branch: str) -> None:
+    """Checkout an existing branch in a session's workspace."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        with _client() as c:
+            resp = c.post(
+                f"/api/sessions/{session_id}/git/checkout",
+                json={"branch": branch},
+            )
+            _check_response(resp)
+            result = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    print(f"Switched to branch {result['branch']}")
