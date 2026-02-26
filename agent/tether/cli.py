@@ -93,8 +93,8 @@ def main(argv: list[str] | None = None) -> None:
     new_parser.add_argument(
         "directory",
         nargs="?",
-        default=".",
-        help="Working directory (default: current directory)",
+        default=None,
+        help="Working directory (default: current directory, unless --clone is used)",
     )
     new_parser.add_argument(
         "--adapter", "-a",
@@ -107,6 +107,23 @@ def main(argv: list[str] | None = None) -> None:
     new_parser.add_argument(
         "--platform", "-p",
         help="Bind to a messaging platform (telegram, slack, discord)",
+    )
+    new_parser.add_argument(
+        "--clone", "-c",
+        dest="clone_url",
+        metavar="URL",
+        help="Git repo URL to clone as the session workspace",
+    )
+    new_parser.add_argument(
+        "--branch", "-b",
+        dest="clone_branch",
+        metavar="BRANCH",
+        help="Branch to checkout (only valid with --clone)",
+    )
+    new_parser.add_argument(
+        "--shallow",
+        action="store_true",
+        help="Perform a shallow clone (only valid with --clone)",
     )
 
     # tether input
@@ -214,8 +231,38 @@ def _run_client(args: argparse.Namespace) -> None:
         else:
             cmd_list(state=args.state, directory=args.directory)
     elif args.command == "new":
-        directory = os.path.abspath(args.directory)
-        cmd_new(directory, args.adapter, args.prompt, args.platform)
+        clone_url = getattr(args, "clone_url", None)
+        clone_branch = getattr(args, "clone_branch", None)
+        shallow = getattr(args, "shallow", False)
+
+        # --branch / --shallow without --clone is a user error
+        if not clone_url and (clone_branch or shallow):
+            print(
+                "Error: --branch and --shallow require --clone.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if clone_url:
+            # --clone and a positional directory are mutually exclusive
+            if args.directory is not None:
+                print(
+                    "Error: --clone and a directory argument are mutually exclusive.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            cmd_new(
+                directory=None,
+                adapter=args.adapter,
+                prompt=args.prompt,
+                platform=args.platform,
+                clone_url=clone_url,
+                clone_branch=clone_branch,
+                shallow=shallow,
+            )
+        else:
+            directory = os.path.abspath(args.directory or ".")
+            cmd_new(directory, args.adapter, args.prompt, args.platform)
     elif args.command == "attach":
         directory = os.path.abspath(args.directory)
         cmd_attach(args.external_id, args.runner_type, directory, args.platform)

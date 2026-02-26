@@ -533,3 +533,174 @@ class TestCmdNew:
         main(["new", "/tmp/proj", "-a", "opencode", "-m", "fix tests"])
         assert called["adapter"] == "opencode"
         assert called["prompt"] == "fix tests"
+
+
+class TestCmdNewClone:
+    """Tests for clone-based session creation via cmd_new."""
+
+    def _clone_session_resp(self, clone_url: str, directory: str = "/ws/sess_x/") -> httpx.Response:
+        return _mock_response(201, {
+            "id": "sess_clone001",
+            "state": "CREATED",
+            "directory": directory,
+            "clone_url": clone_url,
+            "adapter": None,
+            "platform": None,
+        })
+
+    def test_clone_url_sent_in_request_body(self, capsys):
+        """cmd_new with clone_url sends clone_url (not directory) in the body."""
+        url = "https://github.com/owner/repo.git"
+        captured_body: dict = {}
+        resp = self._clone_session_resp(url)
+
+        class CapturingClient(FakeClient):
+            def post(self, path, **kwargs):
+                captured_body.update(kwargs.get("json", {}))
+                return resp
+
+        with patch.object(cli_client, "_client", return_value=CapturingClient({})):
+            cli_client.cmd_new(clone_url=url)
+
+        assert captured_body.get("clone_url") == url
+        assert "directory" not in captured_body
+
+    def test_clone_branch_sent_in_request_body(self, capsys):
+        """cmd_new with clone_branch includes it in the request body."""
+        url = "https://github.com/owner/repo.git"
+        captured_body: dict = {}
+        resp = self._clone_session_resp(url)
+
+        class CapturingClient(FakeClient):
+            def post(self, path, **kwargs):
+                captured_body.update(kwargs.get("json", {}))
+                return resp
+
+        with patch.object(cli_client, "_client", return_value=CapturingClient({})):
+            cli_client.cmd_new(clone_url=url, clone_branch="feature")
+
+        assert captured_body.get("clone_branch") == "feature"
+
+    def test_shallow_sent_in_request_body(self, capsys):
+        """cmd_new with shallow=True includes shallow=True in the request body."""
+        url = "https://github.com/owner/repo.git"
+        captured_body: dict = {}
+        resp = self._clone_session_resp(url)
+
+        class CapturingClient(FakeClient):
+            def post(self, path, **kwargs):
+                captured_body.update(kwargs.get("json", {}))
+                return resp
+
+        with patch.object(cli_client, "_client", return_value=CapturingClient({})):
+            cli_client.cmd_new(clone_url=url, shallow=True)
+
+        assert captured_body.get("shallow") is True
+
+    def test_clone_url_shown_in_output(self, capsys):
+        """Successful clone-based session shows clone_url in output."""
+        url = "https://github.com/owner/repo.git"
+        with _patch_client({("POST", "/api/sessions"): self._clone_session_resp(url)}):
+            cli_client.cmd_new(clone_url=url)
+
+        out = capsys.readouterr().out
+        assert url in out
+        assert "sess_clone001" in out
+
+    def test_clone_prints_cloning_message(self, capsys):
+        """A 'Cloning...' message is printed before the API call."""
+        url = "git@github.com:owner/repo.git"
+        with _patch_client({("POST", "/api/sessions"): self._clone_session_resp(url)}):
+            cli_client.cmd_new(clone_url=url)
+
+        out = capsys.readouterr().out
+        assert "Cloning" in out
+
+
+class TestCmdNewCloneArgParsing:
+    """Tests that CLI arg parsing for --clone wires through correctly."""
+
+    def test_clone_flag_parsed(self, monkeypatch):
+        """--clone sets clone_url in cmd_new call."""
+        from tether.cli import main
+
+        called = {}
+
+        def fake_new(**kwargs):
+            called.update(kwargs)
+
+        monkeypatch.setattr(cli_client, "cmd_new", fake_new)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        main(["new", "--clone", "https://github.com/owner/repo.git"])
+
+        assert called.get("clone_url") == "https://github.com/owner/repo.git"
+        assert called.get("directory") is None
+
+    def test_clone_branch_flag_parsed(self, monkeypatch):
+        """--branch is forwarded as clone_branch."""
+        from tether.cli import main
+
+        called = {}
+
+        def fake_new(**kwargs):
+            called.update(kwargs)
+
+        monkeypatch.setattr(cli_client, "cmd_new", fake_new)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        main(["new", "--clone", "https://github.com/owner/repo.git", "--branch", "feat"])
+
+        assert called.get("clone_branch") == "feat"
+
+    def test_shallow_flag_parsed(self, monkeypatch):
+        """--shallow is forwarded."""
+        from tether.cli import main
+
+        called = {}
+
+        def fake_new(**kwargs):
+            called.update(kwargs)
+
+        monkeypatch.setattr(cli_client, "cmd_new", fake_new)
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        main(["new", "--clone", "https://github.com/owner/repo.git", "--shallow"])
+
+        assert called.get("shallow") is True
+
+    def test_branch_without_clone_exits(self, monkeypatch, capsys):
+        """--branch without --clone prints an error and exits."""
+        from tether.cli import main
+
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        with pytest.raises(SystemExit):
+            main(["new", "--branch", "feature"])
+
+        err = capsys.readouterr().err
+        assert "--clone" in err
+
+    def test_shallow_without_clone_exits(self, monkeypatch, capsys):
+        """--shallow without --clone prints an error and exits."""
+        from tether.cli import main
+
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        with pytest.raises(SystemExit):
+            main(["new", "--shallow"])
+
+        err = capsys.readouterr().err
+        assert "--clone" in err
+
+    def test_clone_and_directory_mutually_exclusive(self, monkeypatch, capsys):
+        """--clone with a positional directory arg prints an error and exits."""
+        from tether.cli import main
+
+        monkeypatch.setattr("tether.config.load_config", lambda: None)
+
+        with pytest.raises(SystemExit):
+            main(["new", "/some/dir", "--clone", "https://github.com/owner/repo.git"])
+
+        err = capsys.readouterr().err
+        assert "mutually exclusive" in err

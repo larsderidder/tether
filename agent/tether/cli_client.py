@@ -298,23 +298,37 @@ def cmd_attach(
 
 
 def cmd_new(
-    directory: str,
+    directory: str | None = None,
     adapter: str | None = None,
     prompt: str | None = None,
     platform: str | None = None,
+    clone_url: str | None = None,
+    clone_branch: str | None = None,
+    shallow: bool = False,
 ) -> None:
     """Create a new session and optionally start it with a prompt."""
-    body: dict = {"directory": directory}
+    body: dict = {}
+    if clone_url:
+        body["clone_url"] = clone_url
+        if clone_branch:
+            body["clone_branch"] = clone_branch
+        if shallow:
+            body["shallow"] = True
+    else:
+        body["directory"] = directory or "."
     if adapter:
         body["adapter"] = adapter
     if platform:
         body["platform"] = platform
 
+    if clone_url:
+        print(f"Cloning {clone_url}...", flush=True)
+
     try:
         with _client() as c:
             resp = c.post("/api/sessions", json=body)
             if resp.status_code == 422:
-                # Try to surface a helpful message for missing adapter
+                # Try to surface a helpful message
                 try:
                     msg = (resp.json().get("error") or {}).get("message", "")
                 except Exception:
@@ -327,6 +341,9 @@ def cmd_new(
                         " >> ~/.config/tether/config.env",
                         file=sys.stderr,
                     )
+                    sys.exit(1)
+                if clone_url and ("clone" in msg.lower() or "git" in msg.lower()):
+                    print(f"Error: Clone failed: {msg}", file=sys.stderr)
                     sys.exit(1)
             _check_response(resp)
             session = resp.json()
@@ -345,6 +362,8 @@ def cmd_new(
 
     print(f"Created session {session['id']}")
     print(f"  Directory: {session.get('directory') or '?'}")
+    if session.get("clone_url"):
+        print(f"  Cloned:    {session['clone_url']}")
     print(f"  Adapter:   {session.get('adapter') or 'default'}")
     print(f"  State:     {_format_state(session['state'])}")
     if session.get("platform"):
