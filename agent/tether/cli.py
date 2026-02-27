@@ -173,6 +173,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Working directory (default: current directory, unless --clone is used)",
     )
     new_parser.add_argument(
+        "--template", "-t",
+        metavar="NAME_OR_PATH",
+        help="Session template name or path (overrides can be mixed with other flags)",
+    )
+    new_parser.add_argument(
         "--adapter", "-a",
         help="Agent adapter (claude_auto, opencode, pi, codex, ...)",
     )
@@ -194,19 +199,28 @@ def main(argv: list[str] | None = None) -> None:
         "--branch", "-b",
         dest="clone_branch",
         metavar="BRANCH",
-        help="Branch to checkout (only valid with --clone)",
+        help="Branch to checkout (only valid with --clone or template)",
     )
     new_parser.add_argument(
         "--shallow",
         action="store_true",
-        help="Perform a shallow clone (only valid with --clone)",
+        help="Perform a shallow clone (only valid with --clone or template)",
     )
     new_parser.add_argument(
         "--auto-branch",
         action="store_true",
         dest="auto_branch",
-        help="Create a working branch after clone (only valid with --clone)",
+        help="Create a working branch after clone (only valid with --clone or template)",
     )
+
+    # tether templates
+    templates_parser = sub.add_parser("templates", help="Manage session templates")
+    templates_sub = templates_parser.add_subparsers(dest="templates_command")
+
+    templates_sub.add_parser("list", help="List available templates")
+
+    templates_show_p = templates_sub.add_parser("show", help="Show template contents")
+    templates_show_p.add_argument("name", help="Template name or path")
 
     # tether input
     input_parser = sub.add_parser("input", help="Send input to a session")
@@ -310,6 +324,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_start(args)
     elif args.command == "init":
         _run_init()
+    elif args.command == "templates":
+        _run_templates(args)
     elif args.command in (
         "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync", "watch",
         "git",
@@ -346,6 +362,20 @@ def _run_init() -> None:
     from tether.init_wizard import run_wizard
 
     run_wizard()
+
+
+def _run_templates(args: argparse.Namespace) -> None:
+    """Handle ``tether templates`` subcommands (no server connection needed)."""
+    from tether.cli_client import cmd_templates_list, cmd_templates_show
+
+    cmd = getattr(args, "templates_command", None)
+    if cmd == "list":
+        cmd_templates_list()
+    elif cmd == "show":
+        cmd_templates_show(args.name)
+    else:
+        print("Usage: tether templates <list|show>", file=sys.stderr)
+        sys.exit(1)
 
 
 def _run_client(args: argparse.Namespace) -> None:
@@ -387,40 +417,75 @@ def _run_client(args: argparse.Namespace) -> None:
         else:
             cmd_list(state=args.state, directory=args.directory)
     elif args.command == "new":
+        template_name = getattr(args, "template", None)
         clone_url = getattr(args, "clone_url", None)
         clone_branch = getattr(args, "clone_branch", None)
         shallow = getattr(args, "shallow", False)
         auto_branch = getattr(args, "auto_branch", False)
 
-        # --branch / --shallow / --auto-branch without --clone is a user error
-        if not clone_url and (clone_branch or shallow or auto_branch):
-            print(
-                "Error: --branch, --shallow, and --auto-branch require --clone.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        if template_name:
+            # Template path: resolve template, then apply explicit flag overrides
+            from tether.templates import TemplateError, resolve_template
 
-        if clone_url:
-            # --clone and a positional directory are mutually exclusive
-            if args.directory is not None:
+            try:
+                resolved = resolve_template(
+                    template_name,
+                    overrides={
+                        "clone_url": clone_url or None,
+                        "clone_branch": clone_branch or None,
+                        "adapter": args.adapter or None,
+                        "platform": args.platform or None,
+                        "auto_branch": auto_branch or None,
+                        "shallow": shallow or None,
+                        "directory": args.directory or None,
+                    },
+                )
+            except TemplateError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            cmd_new(
+                directory=resolved.get("directory"),
+                adapter=resolved.get("adapter"),
+                prompt=args.prompt,
+                platform=resolved.get("platform"),
+                clone_url=resolved.get("clone_url"),
+                clone_branch=resolved.get("clone_branch"),
+                shallow=bool(resolved.get("shallow")),
+                auto_branch=bool(resolved.get("auto_branch")),
+                approval_mode=resolved.get("approval_mode"),
+            )
+        else:
+            # No template — existing behaviour
+            # --branch / --shallow / --auto-branch without --clone is a user error
+            if not clone_url and (clone_branch or shallow or auto_branch):
                 print(
-                    "Error: --clone and a directory argument are mutually exclusive.",
+                    "Error: --branch, --shallow, and --auto-branch require --clone.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            cmd_new(
-                directory=None,
-                adapter=args.adapter,
-                prompt=args.prompt,
-                platform=args.platform,
-                clone_url=clone_url,
-                clone_branch=clone_branch,
-                shallow=shallow,
-                auto_branch=auto_branch,
-            )
-        else:
-            directory = os.path.abspath(args.directory or ".")
-            cmd_new(directory, args.adapter, args.prompt, args.platform)
+
+            if clone_url:
+                # --clone and a positional directory are mutually exclusive
+                if args.directory is not None:
+                    print(
+                        "Error: --clone and a directory argument are mutually exclusive.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                cmd_new(
+                    directory=None,
+                    adapter=args.adapter,
+                    prompt=args.prompt,
+                    platform=args.platform,
+                    clone_url=clone_url,
+                    clone_branch=clone_branch,
+                    shallow=shallow,
+                    auto_branch=auto_branch,
+                )
+            else:
+                directory = os.path.abspath(args.directory or ".")
+                cmd_new(directory, args.adapter, args.prompt, args.platform)
     elif args.command == "attach":
         directory = os.path.abspath(args.directory)
         cmd_attach(args.external_id, args.runner_type, directory, args.platform)

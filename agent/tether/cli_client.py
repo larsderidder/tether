@@ -306,6 +306,7 @@ def cmd_new(
     clone_branch: str | None = None,
     shallow: bool = False,
     auto_branch: bool = False,
+    approval_mode: int | None = None,
 ) -> None:
     """Create a new session and optionally start it with a prompt."""
     body: dict = {}
@@ -323,6 +324,8 @@ def cmd_new(
         body["adapter"] = adapter
     if platform:
         body["platform"] = platform
+    if approval_mode is not None:
+        body["approval_mode"] = approval_mode
 
     if clone_url:
         print(f"Cloning {clone_url}...", flush=True)
@@ -352,10 +355,13 @@ def cmd_new(
             session = resp.json()
 
         if prompt:
+            start_body: dict = {"prompt": prompt}
+            if approval_mode is not None:
+                start_body["approval_choice"] = approval_mode
             with _client() as c:
                 resp = c.post(
                     f"/api/sessions/{session['id']}/start",
-                    json={"prompt": prompt},
+                    json=start_body,
                 )
                 _check_response(resp)
                 session = resp.json()
@@ -933,3 +939,49 @@ def cmd_git_checkout(session_id: str, branch: str) -> None:
         return
 
     print(f"Switched to branch {result['branch']}")
+
+
+# ---------------------------------------------------------------------------
+# Template commands (no server required)
+# ---------------------------------------------------------------------------
+
+
+def cmd_templates_list() -> None:
+    """List all available session templates."""
+    from tether.templates import list_templates
+
+    templates = list_templates()
+    if not templates:
+        print("No templates found.")
+        print(
+            "Create a template at ~/.config/tether/templates/<name>.yaml "
+            "or .tether/templates/<name>.yaml in your project."
+        )
+        return
+
+    print(f"{'Name':<30}  {'Source'}")
+    print("-" * 70)
+    for t in templates:
+        print(f"{t['name']:<30}  {t['source']}")
+
+
+def cmd_templates_show(name_or_path: str) -> None:
+    """Show the contents of a template."""
+    from tether.templates import TemplateError, find_template, load_template
+
+    path = find_template(name_or_path)
+    if path is None:
+        print(f"Error: template '{name_or_path}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        data = load_template(path)
+    except TemplateError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Template: {path}")
+    print("-" * 50)
+    for key, value in sorted(data.items()):
+        print(f"  {key}: {value}")
+

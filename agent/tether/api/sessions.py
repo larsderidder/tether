@@ -191,6 +191,8 @@ async def create_session(
         session.external_agent_workspace = payload.agent_workspace
     if payload.session_name:
         session.name = payload.session_name
+    if payload.approval_mode is not None:
+        session.approval_mode = payload.approval_mode
 
     # Platform binding: create messaging thread
     if payload.platform:

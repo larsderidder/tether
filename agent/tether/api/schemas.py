@@ -39,6 +39,7 @@ class CreateSessionRequest(BaseModel):
     agent_workspace: str | None = None
     platform: str | None = None  # "telegram", "slack", "discord"
     session_name: str | None = None
+    approval_mode: int | None = None  # 0=interactive, 1=edits only, 2=full auto
 
 
 class StartSessionRequest(BaseModel):
