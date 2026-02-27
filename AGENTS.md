@@ -44,6 +44,7 @@ Read the relevant docs below based on what you'll be working on.
 | Bridges | `docs/BRIDGES.md` | Telegram/Slack/Discord, subscriber routing, auto-approve |
 | Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_subprocess, codex, litellm, etc.) |
 | MCP server | `docs/MCP_SERVER.md` | MCP tools, transport, config |
+| Server deployment | `docs/SERVER_MODE.md` | systemd, Tailscale, SSH keys, remote CLI |
 | Code standards | `docs/CODE_STANDARDS.md` | Formatting, typing, logging conventions |
 
 ### Historical / product context (optional)
