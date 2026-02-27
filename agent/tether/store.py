@@ -192,9 +192,13 @@ class SessionStore:
 
     def delete_session(self, session_id: str) -> bool:
         """Remove a session and its associated runtime state."""
-        session = self._sessions.pop(session_id, None)
+        session = self._sessions.get(session_id)
         if not session:
             return False
+        # Clear managed workspace before removing from _sessions so clear_workdir
+        # can find the session object.
+        self.clear_workdir(session_id)
+        self._sessions.pop(session_id, None)
         with self._db_lock:
             with get_db_session() as db:
                 # Delete messages first
@@ -206,7 +210,6 @@ class SessionStore:
                 if db_session:
                     db.delete(db_session)
                 db.commit()
-        self.clear_workdir(session_id)
         self._runtime.pop(session_id, None)
         return True
 

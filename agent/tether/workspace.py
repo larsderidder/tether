@@ -16,6 +16,92 @@ class WorkspaceError(Exception):
     """Raised when a workspace operation fails."""
 
 
+# ---------------------------------------------------------------------------
+# Disk usage
+# ---------------------------------------------------------------------------
+
+
+def dir_size_bytes(path: str) -> int:
+    """Return the total size in bytes of all files under *path*.
+
+    Follows symlinks for files but does not follow them for directories
+    (matches ``du -L --bytes`` behaviour). Returns 0 if the path does not
+    exist or cannot be stat'd.
+    """
+    total = 0
+    try:
+        for entry in Path(path).rglob("*"):
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
+
+
+def list_workspace_usage() -> list[dict]:
+    """Return disk usage for every managed workspace directory.
+
+    Each entry is a dict::
+
+        {
+            "session_id": str,
+            "path": str,
+            "size_bytes": int,
+        }
+
+    Only directories that exist under the managed workspaces root are
+    returned. The list is sorted by ``size_bytes`` descending.
+    """
+    root = Path(managed_workspaces_dir())
+    if not root.exists():
+        return []
+
+    entries: list[dict] = []
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return []
+
+    for child in children:
+        if not child.is_dir():
+            continue
+        session_id = child.name
+        size = dir_size_bytes(str(child))
+        entries.append({"session_id": session_id, "path": str(child), "size_bytes": size})
+
+    entries.sort(key=lambda e: e["size_bytes"], reverse=True)
+    return entries
+
+
+def find_orphan_workspaces(known_session_ids: set[str]) -> list[dict]:
+    """Return workspace directories that have no matching session.
+
+    Useful for identifying leftover directories after sessions are deleted
+    outside the normal ``delete_session`` flow (for example, a server crash
+    mid-delete or a manual database wipe).
+
+    Args:
+        known_session_ids: Set of session IDs currently in the store.
+
+    Returns:
+        List of ``{session_id, path, size_bytes}`` dicts for orphaned dirs.
+    """
+    all_workspaces = list_workspace_usage()
+    return [w for w in all_workspaces if w["session_id"] not in known_session_ids]
+
+
+def cleanup_orphan_workspace(path: str) -> None:
+    """Remove an orphaned workspace directory.
+
+    Delegates to :func:`cleanup_workspace`, which enforces that the path
+    is under the managed workspaces root.
+    """
+    cleanup_workspace(path)
+
+
 def managed_workspaces_dir() -> str:
     """Return the managed workspaces root directory, creating it if needed.
 

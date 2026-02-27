@@ -985,3 +985,82 @@ def cmd_templates_show(name_or_path: str) -> None:
     for key, value in sorted(data.items()):
         print(f"  {key}: {value}")
 
+
+# ---------------------------------------------------------------------------
+# Workspace commands
+# ---------------------------------------------------------------------------
+
+
+def _fmt_bytes(n: int) -> str:
+    """Format byte count as human-readable string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def cmd_workspaces(stale_only: bool = False) -> None:
+    """List managed workspaces with disk usage."""
+    params = {}
+    if stale_only:
+        params["stale_only"] = "true"
+
+    try:
+        with _client() as c:
+            resp = c.get("/api/status/workspaces", params=params)
+            _check_response(resp)
+            data = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    workspaces = data.get("workspaces", [])
+    total_bytes = data.get("total_bytes", 0)
+    orphan_count = data.get("orphan_count", 0)
+    warning = data.get("warning")
+
+    if not workspaces:
+        print("No managed workspaces found.")
+        return
+
+    print(f"{'Session':<24}  {'State':<16}  {'Size':>8}  {'Orphan':<6}  Path")
+    print("-" * 90)
+    for ws in workspaces:
+        sid = ws["session_id"][:22]
+        state = (ws.get("session_state") or "—")[:14]
+        size = _fmt_bytes(ws["size_bytes"])
+        orphan = "yes" if ws.get("is_orphan") else ""
+        path = ws.get("path", "")
+        print(f"{sid:<24}  {state:<16}  {size:>8}  {orphan:<6}  {path}")
+
+    print()
+    print(f"Total: {_fmt_bytes(total_bytes)} across {len(workspaces)} workspace(s)")
+    if orphan_count:
+        print(f"Orphaned: {orphan_count} (run 'tether workspaces clean' to remove)")
+    if warning:
+        print(f"⚠️  {warning}")
+
+
+def cmd_workspaces_clean() -> None:
+    """Remove orphaned workspace directories."""
+    try:
+        with _client() as c:
+            resp = c.delete("/api/status/workspaces/orphans")
+            _check_response(resp)
+            data = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    removed = data.get("removed", 0)
+    errors = data.get("errors", [])
+
+    if removed == 0 and not errors:
+        print("No orphaned workspaces found.")
+        return
+
+    if removed:
+        print(f"Removed {removed} orphaned workspace(s).")
+    for err in errors:
+        print(f"  Error: {err}", file=sys.stderr)

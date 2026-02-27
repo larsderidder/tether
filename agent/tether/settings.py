@@ -183,6 +183,23 @@ class Settings:
         return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
 
     @staticmethod
+    def workspace_max_disk_gb() -> float | None:
+        """Optional disk-usage warning threshold for managed workspaces (GB).
+
+        When set and total workspace disk usage exceeds this value, a warning
+        is included in the ``GET /api/status/workspaces`` response.
+
+        Env: TETHER_WORKSPACE_MAX_DISK_GB (default: unset / no limit)
+        """
+        raw = _get("TETHER_WORKSPACE_MAX_DISK_GB")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
     def git_auto_branch() -> bool:
         """Auto-create a working branch after cloning a repo for a session.
 

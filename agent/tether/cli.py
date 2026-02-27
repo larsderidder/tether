@@ -318,6 +318,22 @@ def main(argv: list[str] | None = None) -> None:
         help="Do not auto-push before creating the PR",
     )
 
+    # tether workspaces [--stale]
+    workspaces_parser = sub.add_parser(
+        "workspaces", help="List managed workspaces with disk usage"
+    )
+    workspaces_parser.add_argument(
+        "--stale",
+        action="store_true",
+        help="Show only stale/orphaned workspaces",
+    )
+
+    # tether workspaces clean
+    workspaces_sub = workspaces_parser.add_subparsers(dest="workspaces_command")
+    workspaces_sub.add_parser(
+        "clean", help="Remove orphaned workspace directories"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "start":
@@ -328,7 +344,7 @@ def main(argv: list[str] | None = None) -> None:
         _run_templates(args)
     elif args.command in (
         "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync", "watch",
-        "git",
+        "git", "workspaces",
     ):
         _apply_connection_args(args)
         _run_client(args)
@@ -530,6 +546,14 @@ def _run_client(args: argparse.Namespace) -> None:
         else:
             print(f"Error: unknown git subcommand '{git_cmd}'.", file=sys.stderr)
             sys.exit(1)
+    elif args.command == "workspaces":
+        ws_cmd = getattr(args, "workspaces_command", None)
+        from tether.cli_client import cmd_workspaces, cmd_workspaces_clean
+
+        if ws_cmd == "clean":
+            cmd_workspaces_clean()
+        else:
+            cmd_workspaces(stale_only=getattr(args, "stale", False))
 
 
 if __name__ == "__main__":
