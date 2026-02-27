@@ -214,7 +214,10 @@ def _subscribe_existing_sessions() -> None:
             )
 
 
+from tether.api.dashboard import router as dashboard_router
+
 app.include_router(api_router)
+app.include_router(dashboard_router)
 
 
 _interrupted = False

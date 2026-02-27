@@ -113,6 +113,9 @@ def main(argv: list[str] | None = None) -> None:
     # tether status
     sub.add_parser("status", help="Server health and session summary")
 
+    # tether verify
+    sub.add_parser("verify", help="Check that the server is reachable and healthy")
+
     # tether open
     sub.add_parser("open", help="Open the web UI in the default browser")
 
@@ -343,8 +346,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "templates":
         _run_templates(args)
     elif args.command in (
-        "status", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync", "watch",
-        "git", "workspaces",
+        "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
+        "watch", "git", "workspaces",
     ):
         _apply_connection_args(args)
         _run_client(args)
@@ -420,11 +423,14 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_open,
         cmd_status,
         cmd_sync,
+        cmd_verify,
         cmd_watch,
     )
 
     if args.command == "status":
         cmd_status()
+    elif args.command == "verify":
+        cmd_verify()
     elif args.command == "open":
         cmd_open()
     elif args.command == "list":

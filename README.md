@@ -66,9 +66,10 @@ Node.js is required for the Codex and OpenCode adapters. The sidecar bundles are
 ```bash
 tether init    # generates ~/.config/tether/config.env
 tether start
+tether verify  # check everything is reachable
 ```
 
-Open `http://localhost:8787`.
+Open `http://localhost:8787` for a read-only status dashboard showing sessions, states, and bridge status.
 
 `tether init` generates an auth token and optionally walks you through a messaging bridge. That is all it does. You do not need to configure an agent adapter to get started; just run your agents as usual and attach them.
 
@@ -127,6 +128,7 @@ tether init                          # setup wizard
 tether start                         # start the server
 tether start --dev                   # dev mode (no auth)
 tether start --port 9000
+tether verify                        # check server health and bridges
 
 # attach to agents already running on your machine
 tether list --external               # discover Claude Code / Codex / OpenCode / Pi sessions

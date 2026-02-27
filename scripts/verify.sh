@@ -20,7 +20,7 @@ echo -n "Health check... "
 HEALTH=$(curl -sf "$BASE_URL/api/health" 2>/dev/null) || {
     echo "FAILED"
     echo "Could not reach $BASE_URL/api/health"
-    echo "Is the agent running? Try: make start"
+    echo "Is the agent running? Try: tether start"
     exit 1
 }
 echo "OK"
@@ -35,7 +35,6 @@ else
 fi
 RESULT=$?
 if [ $RESULT -ne 0 ]; then
-    # Check if it's an auth issue
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/sessions" 2>/dev/null)
     if [ "$STATUS" = "401" ]; then
         echo "FAILED (auth required)"
@@ -48,8 +47,8 @@ if [ $RESULT -ne 0 ]; then
 fi
 echo "OK"
 
-# Test UI loads
-echo -n "UI available... "
+# Test dashboard loads
+echo -n "Dashboard... "
 UI=$(curl -sf "$BASE_URL/" -o /dev/null -w "%{http_code}" 2>/dev/null) || UI="000"
 if [ "$UI" = "200" ]; then
     echo "OK"
@@ -60,3 +59,4 @@ fi
 
 echo
 echo "All checks passed!"
+echo "Tip: also try 'tether verify' from the CLI."

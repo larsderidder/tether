@@ -95,6 +95,7 @@ tether init                          # Interactive setup wizard
 tether start                         # Start server (loads ~/.config/tether/config.env)
 tether start --dev                   # Dev mode (no auth)
 tether start --port 9000
+tether verify                        # Check server health and bridges
 
 # Client commands (talk to running server)
 tether status                        # Server health + session summary

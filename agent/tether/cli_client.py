@@ -548,6 +548,72 @@ def cmd_watch(session_id: str) -> None:
             pass
 
 
+def cmd_verify() -> None:
+    """Verify that the Tether server is reachable and healthy.
+
+    Checks the health endpoint, authenticated API access, and bridge status.
+    """
+    url = _base_url()
+    headers = _auth_headers()
+    all_ok = True
+
+    # 1. Health check (no auth required)
+    print(f"Checking {url} ...")
+    try:
+        with _client() as c:
+            resp = c.get("/api/health")
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        print(f"  Health:     FAIL (cannot reach {url})", file=sys.stderr)
+        print("\nIs the server running? Start it with: tether start")
+        sys.exit(1)
+
+    if resp.status_code == 200:
+        print("  Health:     ok")
+    else:
+        print(f"  Health:     FAIL (HTTP {resp.status_code})", file=sys.stderr)
+        all_ok = False
+
+    # 2. Authenticated API access
+    try:
+        with _client() as c:
+            resp = c.get("/api/sessions")
+        if resp.status_code == 200:
+            sessions = resp.json()
+            print(f"  API:        ok ({len(sessions)} session{'s' if len(sessions) != 1 else ''})")
+        elif resp.status_code == 401:
+            print("  API:        FAIL (401 unauthorized, check TETHER_AGENT_TOKEN)", file=sys.stderr)
+            all_ok = False
+        else:
+            print(f"  API:        FAIL (HTTP {resp.status_code})", file=sys.stderr)
+            all_ok = False
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        print("  API:        FAIL (connection lost)", file=sys.stderr)
+        all_ok = False
+
+    # 3. Bridge status
+    try:
+        with _client() as c:
+            resp = c.get("/api/status/bridges")
+        if resp.status_code == 200:
+            bridges = resp.json().get("bridges", [])
+            running = [b for b in bridges if b["status"] == "running"]
+            if running:
+                names = ", ".join(b["platform"] for b in running)
+                print(f"  Bridges:    {names}")
+            else:
+                print("  Bridges:    none configured")
+        else:
+            print(f"  Bridges:    unknown (HTTP {resp.status_code})")
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        print("  Bridges:    unknown (connection lost)")
+
+    if all_ok:
+        print("\nAll checks passed.")
+    else:
+        print("\nSome checks failed.", file=sys.stderr)
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
