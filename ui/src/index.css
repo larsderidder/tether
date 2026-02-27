@@ -1,0 +1,334 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #app {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
+    /* Disable iOS double-tap zoom globally */
+    touch-action: manipulation;
+  }
+
+  :root {
+    color-scheme: dark;
+    --spacing-touch: 44px;
+    --radius-default: 0.75rem;
+    --radius-full: 9999px;
+    --radius: 0.5rem;
+
+    /* Dark mode colors (always on) */
+    --background: 20 14.3% 4.1%;
+    --foreground: 60 9.1% 97.8%;
+    --card: 20 14.3% 4.1%;
+    --card-foreground: 60 9.1% 97.8%;
+    --popover: 20 14.3% 4.1%;
+    --popover-foreground: 60 9.1% 97.8%;
+    --primary: 60 9.1% 97.8%;
+    --primary-foreground: 24 9.8% 10%;
+    --secondary: 12 6.5% 15.1%;
+    --secondary-foreground: 60 9.1% 97.8%;
+    --muted: 12 6.5% 15.1%;
+    --muted-foreground: 24 5.4% 63.9%;
+    --accent: 12 6.5% 15.1%;
+    --accent-foreground: 60 9.1% 97.8%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 60 9.1% 97.8%;
+    --border: 12 6.5% 15.1%;
+    --input: 12 6.5% 15.1%;
+    --ring: 24 5.7% 82.9%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  }
+}
+
+@layer components {
+  .message-markdown code {
+    @apply rounded bg-stone-900/80 px-1 py-0.5 font-mono text-xs text-stone-200;
+  }
+
+  .message-markdown em {
+    @apply text-stone-300;
+  }
+
+  .message-markdown strong {
+    @apply font-semibold text-stone-100;
+  }
+
+  .message-thinking-markdown {
+    @apply text-stone-400;
+  }
+
+  .message-thinking-markdown strong {
+    @apply text-stone-500 font-medium;
+  }
+
+  /* Markdown tables */
+  .message-markdown .markdown-table-wrapper,
+  .message-thinking-markdown .markdown-table-wrapper {
+    @apply my-2 overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .message-markdown .markdown-table,
+  .message-thinking-markdown .markdown-table {
+    @apply w-full border-collapse text-left;
+  }
+
+  .message-markdown .markdown-table th,
+  .message-markdown .markdown-table td {
+    @apply border border-stone-700 px-3 py-1.5 text-xs;
+  }
+
+  .message-markdown .markdown-table th {
+    @apply bg-stone-800 font-semibold text-stone-200;
+  }
+
+  .message-markdown .markdown-table td {
+    @apply bg-stone-900/50 text-stone-300;
+  }
+
+  .message-thinking-markdown .markdown-table th,
+  .message-thinking-markdown .markdown-table td {
+    @apply border border-stone-800 px-3 py-1.5 text-xs;
+  }
+
+  .message-thinking-markdown .markdown-table th {
+    @apply bg-stone-900 font-medium text-stone-400;
+  }
+
+  .message-thinking-markdown .markdown-table td {
+    @apply bg-stone-900/30 text-stone-500;
+  }
+
+  /* Markdown headers */
+  .message-markdown .markdown-h1 {
+    @apply text-lg font-semibold text-stone-100 mt-3 mb-2;
+  }
+
+  .message-markdown .markdown-h2 {
+    @apply text-base font-semibold text-stone-100 mt-3 mb-1.5;
+  }
+
+  .message-markdown .markdown-h3 {
+    @apply text-sm font-semibold text-stone-200 mt-2 mb-1;
+  }
+
+  .message-markdown .markdown-h4,
+  .message-markdown .markdown-h5,
+  .message-markdown .markdown-h6 {
+    @apply text-sm font-medium text-stone-200 mt-2 mb-1;
+  }
+
+  .message-thinking-markdown .markdown-h1,
+  .message-thinking-markdown .markdown-h2,
+  .message-thinking-markdown .markdown-h3,
+  .message-thinking-markdown .markdown-h4,
+  .message-thinking-markdown .markdown-h5,
+  .message-thinking-markdown .markdown-h6 {
+    @apply font-medium text-stone-400 mt-2 mb-1;
+  }
+
+  /* Markdown lists */
+  .message-markdown .markdown-list {
+    @apply my-1.5 pl-5 text-stone-300;
+  }
+
+  .message-markdown .markdown-list li {
+    @apply my-0.5;
+  }
+
+  .message-markdown ul.markdown-list {
+    @apply list-disc;
+  }
+
+  .message-markdown ol.markdown-list {
+    @apply list-decimal;
+  }
+
+  .message-thinking-markdown .markdown-list {
+    @apply my-1.5 pl-5 text-stone-500;
+  }
+
+  .message-thinking-markdown .markdown-list li {
+    @apply my-0.5;
+  }
+
+  .message-thinking-markdown ul.markdown-list {
+    @apply list-disc;
+  }
+
+  .message-thinking-markdown ol.markdown-list {
+    @apply list-decimal;
+  }
+
+  /* Markdown code blocks */
+  .message-markdown .markdown-code {
+    @apply my-2 overflow-x-auto rounded-lg bg-stone-900 p-3 text-xs;
+  }
+
+  .message-markdown .markdown-code code {
+    @apply bg-transparent p-0 text-stone-200;
+  }
+
+  .message-thinking-markdown .markdown-code {
+    @apply my-2 overflow-x-auto rounded-lg bg-stone-900/50 p-3 text-xs;
+  }
+
+  .message-thinking-markdown .markdown-code code {
+    @apply bg-transparent p-0 text-stone-400;
+  }
+
+  /* Markdown blockquotes */
+  .message-markdown .markdown-blockquote {
+    @apply my-2 border-l-2 border-stone-600 pl-3 text-stone-300 italic;
+  }
+
+  .message-thinking-markdown .markdown-blockquote {
+    @apply my-2 border-l-2 border-stone-700 pl-3 text-stone-500 italic;
+  }
+
+  /* Markdown links */
+  .message-markdown a {
+    @apply text-emerald-400 underline hover:text-emerald-300;
+  }
+
+  .message-thinking-markdown a {
+    @apply text-stone-400 underline hover:text-stone-300;
+  }
+
+  /* Markdown paragraphs - reduce spacing */
+  .message-markdown p,
+  .message-thinking-markdown p {
+    @apply my-1;
+  }
+
+  /* Markdown horizontal rules */
+  .message-markdown hr {
+    @apply my-4 border-0 border-t border-stone-700/50;
+  }
+
+  .message-thinking-markdown hr {
+    @apply my-4 border-0 border-t border-stone-800/50;
+  }
+
+  /* diff2html dark theme - mobile optimized */
+  .diff-content {
+    @apply -mx-3 sm:mx-0 px-0 sm:px-4 py-2 sm:py-3;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .diff2html {
+    @apply text-stone-200;
+  }
+
+  .diff2html .d2h-wrapper {
+    @apply bg-transparent;
+  }
+
+  .diff2html .d2h-file-wrapper {
+    @apply border-none bg-transparent mb-0;
+  }
+
+  .diff2html .d2h-file-list-wrapper,
+  .diff2html .d2h-file-header {
+    @apply hidden;
+  }
+
+  .diff2html .d2h-diff-table {
+    @apply w-full border-collapse font-mono text-xs;
+  }
+
+  /* Hide the old line number, show only new */
+  .diff2html .d2h-code-linenumber .line-num1 {
+    @apply hidden;
+  }
+
+  .diff2html .d2h-code-linenumber .line-num2 {
+    @apply float-none w-auto;
+  }
+
+  .diff2html .d2h-code-line,
+  .diff2html .d2h-code-side-line {
+    @apply bg-stone-900/40;
+    padding: 0 0 0 4em;
+    width: calc(100% - 4em);
+  }
+
+  .diff2html .d2h-code-line-ctn {
+    @apply bg-transparent text-stone-300;
+    white-space: pre;
+    padding: 0;
+  }
+
+  .diff2html .d2h-code-line-prefix {
+    @apply select-none text-stone-500 bg-transparent;
+    padding: 0;
+  }
+
+  .diff2html .d2h-del {
+    @apply bg-rose-950/50;
+  }
+
+  .diff2html .d2h-del .d2h-code-line-ctn {
+    @apply text-rose-200;
+  }
+
+  .diff2html .d2h-ins {
+    @apply bg-emerald-950/50;
+  }
+
+  .diff2html .d2h-ins .d2h-code-line-ctn {
+    @apply text-emerald-200;
+  }
+
+  .diff2html .d2h-info {
+    @apply bg-stone-800/60;
+  }
+
+  .diff2html .d2h-info .d2h-code-line-ctn {
+    @apply text-stone-400;
+  }
+
+  .diff2html .d2h-code-linenumber {
+    @apply border-r border-stone-700/50 bg-stone-900/60 text-stone-500;
+    width: 4em;
+    padding: 0 0.5em;
+  }
+
+  .diff2html .d2h-del .d2h-code-linenumber {
+    @apply border-rose-900/50 bg-rose-950/40 text-rose-400;
+  }
+
+  .diff2html .d2h-ins .d2h-code-linenumber {
+    @apply border-emerald-900/50 bg-emerald-950/40 text-emerald-400;
+  }
+
+  .diff2html .d2h-diff-tbody tr {
+    @apply border-b border-stone-800/30;
+  }
+
+  .diff2html .d2h-diff-tbody tr:last-child {
+    @apply border-b-0;
+  }
+
+  .diff2html del {
+    @apply bg-rose-900/40 text-rose-200 no-underline;
+  }
+
+  .diff2html ins {
+    @apply bg-emerald-900/40 text-emerald-200 no-underline;
+  }
+}
