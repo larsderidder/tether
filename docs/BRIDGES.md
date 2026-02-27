@@ -11,7 +11,7 @@ Store events ──> BridgeSubscriber ──> BridgeManager ──> Platform Bri
                    (per session)       (registry)         (Telegram/Slack/Discord)
 ```
 
-Bridges are one of two event consumption paths from the store subscriber queue. The other is the SSE stream that feeds the web UI. Bridges filter events server-side (only final output, permission requests, state changes) and render for text-based messaging platforms. The web UI receives all events raw and renders client-side. See [Session Engine > Event Distribution](SESSION_ENGINE.md#event-distribution) for the full picture.
+Bridges are one of the event consumption paths from the store subscriber queue (the other is the SSE stream for external API clients). Bridges filter events server-side (only final output, permission requests, state changes) and render for text-based messaging platforms. See [Session Engine > Event Distribution](SESSION_ENGINE.md#event-distribution) for the full picture.
 
 ### Pattern: Strategy + Registry
 - `BridgeInterface` (ABC) — shared base with abstract methods + shared helpers
@@ -59,17 +59,36 @@ Routes store events to bridge methods:
 
 ### Slack (`agent/tether/bridges/slack/`)
 - **bot.py** — Thread-based: `!attach`, `!list`, `!stop`, `!usage`, `!help`, `!status`
+- Git commands (inside a session thread): `!git`, `!commit <msg>`, `!push`, `!pr <title> [--draft]`
 - Socket mode for real-time events (requires `SLACK_APP_TOKEN`)
 - Text-based approval: reply `allow`, `deny`, `allow all`, `allow {tool}`
 - Auto-approve sends `✅ *Tool* — auto-approved (reason)` notification
 
 ### Discord (`agent/tether/bridges/discord/`)
 - **bot.py** — Thread-based: same `!` commands as Slack
+- Git commands (inside a session thread): `!git`, `!commit <msg>`, `!push`, `!pr <title> [--draft]`
 - discord.py client with message_content intent
 - Text-based approval: same as Slack
 - Auto-approve sends `✅ **Tool** — auto-approved (reason)` notification
 - Optional pairing/allowlist: when enabled, only authorized Discord user IDs can run commands or send input
 - Optional no-ID setup: if `DISCORD_CHANNEL_ID` is unset, run `!setup <code>` in the desired channel to configure it
+
+## Bridge Git Commands
+
+Available inside a session thread on Slack and Discord (and via Telegram `/commit`, `/push`, `/pr`):
+
+| Command | Action |
+|---------|--------|
+| `!git` | Show git status: branch, ahead/behind, changed files, last commit |
+| `!commit <message>` | Stage all changes and commit |
+| `!push` | Push current branch to origin |
+| `!pr <title> [--draft]` | Create a pull/merge request via `gh` or `glab` |
+
+These call the git API endpoints on the Tether server. The session workspace
+must be a git repository (i.e. the session was created with `--clone`). Git
+write commands are blocked while the session is `RUNNING`.
+
+Forge detection is automatic: `github.com` URLs use `gh`, GitLab URLs use `glab`.
 
 ## Auto-Approve System
 

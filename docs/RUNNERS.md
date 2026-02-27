@@ -88,6 +88,22 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 - `agent/tether/api/runner_events.py` — RunnerEvents → SSE bridge
 - `agent/tether/api/runner_registry.py` — Runner caching
 
+## Server Mode Notes
+
+Runners work identically in server mode (running on a remote machine). A few
+things to keep in mind:
+
+- **API credentials** — Set `ANTHROPIC_API_KEY` (or equivalent) in the systemd
+  unit file or `~/.config/tether/config.env` on the server. Runners inherit
+  the daemon's environment.
+- **SSH keys for git** — Runners that make git commits or pushes inside a
+  cloned workspace use the server's `~/.ssh` config. Ensure a deploy key (or
+  personal access token via HTTPS) is configured before starting sessions that
+  need to push. See [Server Mode > SSH keys](SERVER_MODE.md#ssh-keys-for-git-cloning).
+- **Auto-checkpoint** — When `TETHER_GIT_AUTO_CHECKPOINT=true`, `on_awaiting_input`
+  triggers a git commit in the workspace after each turn. The runner itself is
+  not involved; this is handled by `api/runner_events.py`.
+
 ## Tests
 
 - `tests/test_runner_events.py` — All RunnerEvents callbacks
