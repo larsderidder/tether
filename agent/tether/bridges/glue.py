@@ -108,7 +108,50 @@ def get_sessions_for_restore() -> list[dict]:
 
 
 async def _create_session(**kwargs) -> dict:
-    """Create a new Tether session."""
+    """Create a new Tether session.
+
+    If ``kwargs`` contains a ``template`` key, the template is resolved
+    locally before forwarding to the API. Explicit kwargs override template
+    values (same precedence as the CLI).
+    """
+    template_name = kwargs.pop("template", None)
+    if template_name:
+        from tether.templates import TemplateError, resolve_template
+
+        overrides = {
+            k: v for k, v in kwargs.items()
+            if k not in ("platform", "session_name") and v is not None
+        }
+        try:
+            resolved = resolve_template(template_name, overrides=overrides)
+        except TemplateError as exc:
+            raise RuntimeError(f"Template error: {exc}") from exc
+
+        # Build kwargs from resolved template, keeping platform / session_name
+        body: dict = {}
+        if resolved.get("clone_url"):
+            body["clone_url"] = resolved["clone_url"]
+            if resolved.get("clone_branch"):
+                body["clone_branch"] = resolved["clone_branch"]
+            if resolved.get("shallow"):
+                body["shallow"] = True
+            if resolved.get("auto_branch"):
+                body["auto_branch"] = True
+        elif resolved.get("directory"):
+            body["directory"] = resolved["directory"]
+        if resolved.get("adapter"):
+            body["adapter"] = resolved["adapter"]
+        if resolved.get("approval_mode") is not None:
+            body["approval_mode"] = resolved["approval_mode"]
+        # Preserve platform / session_name from original kwargs
+        for key in ("platform", "session_name"):
+            if key in kwargs:
+                body[key] = kwargs[key]
+        # Explicit kwargs override template values for clone/adapter fields
+        for key in ("adapter", "clone_branch", "auto_branch", "shallow"):
+            if kwargs.get(key) is not None:
+                body[key] = kwargs[key]
+        kwargs = body
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
