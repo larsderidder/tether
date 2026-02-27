@@ -4,7 +4,7 @@ This file is the canonical entrypoint for AI agents working in this repository.
 
 ## What is Tether
 
-Local-first control plane for supervising AI coding agents. Start agents (Claude Code, Codex), monitor progress, review changes, approve actions — from mobile, browser, or messaging platforms (Telegram, Slack, Discord).
+Local-first control plane for supervising AI coding agents. Start agents (Claude Code, Codex), monitor progress, review changes, approve actions — from mobile or messaging platforms (Telegram, Slack, Discord).
 
 ## Before You Start
 
@@ -13,14 +13,13 @@ Local-first control plane for supervising AI coding agents. Start agents (Claude
 Recommended path (installed via pipx/pip):
 1. `tether init` — interactive wizard (generates token, detects adapters, configures bridges)
 2. `tether start` — starts the server
-3. Open `http://localhost:8787` — see phone access section below
+3. Connect via Telegram, Slack, or Discord, or use the CLI
 
 From source:
 1. `make install` to install dependencies
 2. `cp .env.example .env` and configure
 3. `make start` to run (or `make start-codex` for Codex)
 4. `make verify` to check everything works
-5. Open `http://localhost:8787`
 
 ### If you're developing on the codebase
 
@@ -44,7 +43,6 @@ Read the relevant docs below based on what you'll be working on.
 | Session engine | `docs/SESSION_ENGINE.md` | Store, state machine, event pipeline, locking |
 | Bridges | `docs/BRIDGES.md` | Telegram/Slack/Discord, subscriber routing, auto-approve |
 | Runners | `docs/RUNNERS.md` | Runner protocol, adapters (claude_subprocess, codex, litellm, etc.) |
-| Web UI | `docs/WEB_UI.md` | Vue 3 frontend, views, composables, dev server |
 | MCP server | `docs/MCP_SERVER.md` | MCP tools, transport, config |
 | Code standards | `docs/CODE_STANDARDS.md` | Formatting, typing, logging conventions |
 
@@ -74,10 +72,6 @@ agent/                  # Python backend
     store.py            # Session store + JSONL event log
     main.py             # App entrypoint
   tests/                # pytest test suite
-ui/                     # Vue 3 mobile-first PWA
-  src/
-    views/              # Page components
-    composables/        # Shared logic (useSession, useSSE, etc.)
 background/             # Specs, docs, plans (not runtime code)
 ```
 
@@ -86,12 +80,11 @@ background/             # Specs, docs, plans (not runtime code)
 ## Dev Commands
 
 ```bash
-make install            # Install Python + Node dependencies
-make start              # Build UI and start agent
-make start-codex        # Build UI, start codex-sdk-sidecar, run agent
-make dev-ui             # Run UI dev server (hot reload) - run agent separately
+make install            # Install Python dependencies
+make start              # Build sidecars and start agent
+make start-codex        # Start codex-sdk-sidecar and run agent
 make test               # Run pytest
-make verify             # Health check agent + UI
+make verify             # Health check agent
 ```
 
 ### CLI (installed package)
@@ -104,7 +97,6 @@ tether start --port 9000
 
 # Client commands (talk to running server)
 tether status                        # Server health + session summary
-tether open                          # Open web UI in browser
 tether list                          # List Tether sessions
 tether list -s running               # Filter by state
 tether list -d .                     # Filter by directory
@@ -119,6 +111,10 @@ tether interrupt <session-id>        # Interrupt a running session
 tether delete <session-id>           # Delete a session
 tether sync <session-id>             # Pull new messages from an attached external session
 tether watch <session-id>            # Stream live output to the terminal
+
+# Remote server
+tether -H my-server list             # Connect to a remote Tether server
+tether --server work list            # Use a named server from ~/.config/tether/servers.yaml
 ```
 
 Config precedence: env vars > local `.env` > `~/.config/tether/config.env`.
@@ -155,16 +151,6 @@ Refactor bridge subscriber routing
 See `docs/CODE_STANDARDS.md` for full details.
 
 ---
-
-## Phone Access
-
-To access from a phone on the same network:
-1. Find the computer's IP address
-2. Open firewall port 8787:
-   - **Linux (ufw):** `sudo ufw allow 8787/tcp`
-   - **Linux (firewalld):** `sudo firewall-cmd --add-port=8787/tcp --permanent && sudo firewall-cmd --reload`
-   - **macOS:** System Settings > Network > Firewall > Allow incoming
-3. Open `http://<ip>:8787` on phone
 
 ## Docker
 

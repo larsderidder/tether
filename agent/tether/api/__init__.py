@@ -3,6 +3,6 @@
 from __future__ import annotations
 
 from tether.api.deps import require_token
-from tether.api.router import api_router, root_router
+from tether.api.router import api_router
 
-__all__ = ["api_router", "root_router", "require_token"]
+__all__ = ["api_router", "require_token"]

@@ -22,7 +22,7 @@ from tether.config import load_config
 
 load_config()
 
-from tether.api import api_router, root_router
+from tether.api import api_router
 from tether.middleware import (
     http_exception_handler,
     request_logging_middleware,
@@ -31,7 +31,7 @@ from tether.middleware import (
 from tether.log_config import configure_logging
 from tether.maintenance import maintenance_loop
 from tether.settings import settings
-from tether.startup import log_ui_urls
+from tether.startup import log_api_urls
 from tether.bridges.glue import (
     bridge_manager,
     make_bridge_callbacks,
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     await _init_bridges()
     _subscribe_existing_sessions()
     maintenance_task = asyncio.create_task(maintenance_loop())
-    log_ui_urls(port=settings.port())
+    log_api_urls(port=settings.port())
     try:
         yield
     finally:
@@ -215,7 +215,6 @@ def _subscribe_existing_sessions() -> None:
 
 
 app.include_router(api_router)
-app.include_router(root_router)
 
 
 _interrupted = False
