@@ -109,6 +109,224 @@ def cmd_open() -> None:
     webbrowser.open(url)
 
 
+def cmd_setup_agents(
+    agent_filter: str | None = None,
+    *,
+    check_only: bool = False,
+) -> None:
+    """Interactively install and configure agent CLIs on the remote server.
+
+    Fetches the current agent status from the server, then for each agent
+    that is not installed or not authenticated it asks the user whether to
+    install / push credentials.
+
+    Args:
+        agent_filter: If given, only handle that one agent by name.
+        check_only:   Just print status; do not prompt for any actions.
+    """
+    # Determine a human-readable server label for display purposes.
+    server_label = _server_label()
+
+    try:
+        data = _get_json("/api/setup/agents")
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    agents: list[dict] = data.get("agents", [])
+
+    if agent_filter:
+        agents = [a for a in agents if a["name"] == agent_filter]
+        if not agents:
+            print(f"Error: unknown agent '{agent_filter}'.", file=sys.stderr)
+            print("Known agents: claude_code, opencode, pi", file=sys.stderr)
+            sys.exit(1)
+
+    print(f"Checking remote server ({server_label})...\n")
+
+    # Print status table.
+    _print_agents_status(agents)
+
+    if check_only:
+        return
+
+    # Interactive provisioning loop.
+    any_action = False
+
+    for agent in agents:
+        name = agent["name"]
+        label = _agent_label(name)
+        installed = agent.get("installed", False)
+        authenticated = agent.get("authenticated", False)
+        install_cmd = agent.get("install_command")
+        version = agent.get("version")
+
+        # Determine if we need to do anything.
+        needs_install = not installed and install_cmd
+        needs_creds = installed and not authenticated and _has_local_credentials(name)
+        # If just installed, also check creds afterwards.
+
+        if not needs_install and not needs_creds:
+            continue
+
+        print()
+
+        if needs_install:
+            if not _prompt(f"Install {label}?"):
+                continue
+
+            any_action = True
+            print(f"  Installing {label} on {server_label}...")
+
+            try:
+                resp_data = _post_json(f"/api/setup/agents/{name}/install", {})
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                _handle_connection_error()
+                return
+
+            new_version = resp_data.get("version")
+            if new_version:
+                print(f"  Installed {label} v{new_version}")
+            else:
+                print(f"  Installed {label}")
+
+            # Re-probe: now offer credentials if applicable.
+            installed = True
+            version = new_version
+
+        # Offer to push credentials if we have them locally.
+        creds_files = _read_local_credentials(name)
+        if installed and creds_files and not authenticated:
+            if not _prompt(f"Push {label} credentials from local machine?"):
+                continue
+
+            any_action = True
+            print(f"  Pushing credentials to {server_label}...")
+
+            try:
+                _post_json(
+                    f"/api/setup/agents/{name}/credentials",
+                    {"files": creds_files},
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                _handle_connection_error()
+                return
+
+            print("  Credentials installed")
+
+        # Verify.
+        if installed:
+            print(f"  Verifying {label}...")
+            try:
+                verify = _post_json(f"/api/setup/agents/{name}/verify", {})
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                _handle_connection_error()
+                return
+
+            if verify.get("ok"):
+                print(f"  {label}: authenticated \u2713")
+            else:
+                print(f"  {label}: {verify.get('message', 'verification failed')}")
+
+    if any_action:
+        print("\nSetup complete. You can now run:")
+        print('  tether new --adapter claude_auto -m "fix the thing"')
+
+
+# ---------------------------------------------------------------------------
+# setup helpers
+# ---------------------------------------------------------------------------
+
+
+def _server_label() -> str:
+    """Return a short label for the currently active server (host:port)."""
+    host = os.environ.get("TETHER_AGENT_HOST", "127.0.0.1")
+    port = os.environ.get("TETHER_AGENT_PORT", "8787")
+    if host in ("127.0.0.1", "0.0.0.0", "localhost"):
+        return "local"
+    return f"{host}:{port}"
+
+
+def _agent_label(name: str) -> str:
+    """Return a human-readable label for an agent name."""
+    labels = {
+        "claude_code": "Claude Code",
+        "opencode": "OpenCode",
+        "pi": "pi",
+    }
+    return labels.get(name, name)
+
+
+def _print_agents_status(agents: list[dict]) -> None:
+    """Print a status table of agents."""
+    label_width = max(len(_agent_label(a["name"])) for a in agents) if agents else 10
+    for agent in agents:
+        label = _agent_label(agent["name"]).ljust(label_width)
+        if agent.get("installed"):
+            ver = agent.get("version") or ""
+            ver_str = f" v{ver}" if ver else ""
+            auth = (
+                " (authenticated)"
+                if agent.get("authenticated")
+                else " (not authenticated)"
+            )
+            status = f"installed{ver_str}{auth}"
+        else:
+            status = "not installed"
+        print(f"  {label}  {status}")
+
+
+def _has_local_credentials(agent_name: str) -> bool:
+    """Return True if local credential files exist for the agent."""
+    return bool(_read_local_credentials(agent_name))
+
+
+def _read_local_credentials(agent_name: str) -> dict[str, str]:
+    """Read local credential files for an agent and return {rel_path: content}.
+
+    Currently only claude_code is supported (reads ~/.claude/.credentials.json).
+    Returns an empty dict if no credentials are found locally.
+    """
+    if agent_name != "claude_code":
+        return {}
+
+    home = os.path.expanduser("~")
+    creds_path = os.path.join(home, ".claude", ".credentials.json")
+
+    if not os.path.exists(creds_path):
+        return {}
+
+    try:
+        with open(creds_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return {}
+
+    rel = ".claude/.credentials.json"
+    return {rel: content}
+
+
+def _prompt(question: str, default: bool = True) -> bool:
+    """Ask a yes/no question. Returns True for yes, False for no."""
+    hint = "[Y/n]" if default else "[y/N]"
+    try:
+        answer = input(f"{question} {hint} ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    if answer == "":
+        return default
+    return answer in ("y", "yes")
+
+
+def _post_json(path: str, body: dict) -> dict:
+    """POST JSON and return the response dict, exiting on HTTP errors."""
+    with _client() as c:
+        resp = c.post(path, json=body)
+        _check_response(resp)
+        return resp.json()
+
+
 def cmd_status() -> None:
     """Print server health and session summary."""
     try:
@@ -129,7 +347,8 @@ def cmd_status() -> None:
         by_state[state] = by_state.get(state, 0) + 1
     if by_state:
         parts = [
-            f"{count} {_format_state(state)}" for state, count in sorted(by_state.items())
+            f"{count} {_format_state(state)}"
+            for state, count in sorted(by_state.items())
         ]
         print(f"          {', '.join(parts)}")
 
@@ -217,7 +436,8 @@ def cmd_attach(
         if not external_id:
             cwd = os.getcwd()
             local = [
-                s for s in ext_sessions
+                s
+                for s in ext_sessions
                 if s.get("directory", "").rstrip("/") == cwd.rstrip("/")
             ]
             if not local:
@@ -319,7 +539,10 @@ def cmd_new(
                     msg = (resp.json().get("error") or {}).get("message", "")
                 except Exception:
                     msg = ""
-                if "no default adapter" in msg.lower() or "not configured" in msg.lower():
+                if (
+                    "no default adapter" in msg.lower()
+                    or "not configured" in msg.lower()
+                ):
                     print(
                         "Error: No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not set.\n"
                         "Use -a to specify one: tether new . -a claude_auto\n"
@@ -388,7 +611,9 @@ def cmd_input(session_id: str, text: str) -> None:
         _handle_connection_error()
         return
 
-    print(f"Sent to {_short_id(session_id)} ({_format_state(session.get('state', '?'))})")
+    print(
+        f"Sent to {_short_id(session_id)} ({_format_state(session.get('state', '?'))})"
+    )
 
 
 def cmd_sync(session_id: str) -> None:
@@ -411,7 +636,9 @@ def cmd_sync(session_id: str) -> None:
     if synced == 0:
         print(f"Already up to date ({total} message{'s' if total != 1 else ''} total)")
     else:
-        print(f"Synced {synced} new message{'s' if synced != 1 else ''} ({total} total)")
+        print(
+            f"Synced {synced} new message{'s' if synced != 1 else ''} ({total} total)"
+        )
 
 
 def cmd_interrupt(session_id: str) -> None:
@@ -464,7 +691,9 @@ def cmd_watch(session_id: str) -> None:
 
         if resp.status != 200:
             body = resp.read().decode("utf-8", errors="replace")
-            print(f"Error: server returned {resp.status}: {body[:200]}", file=sys.stderr)
+            print(
+                f"Error: server returned {resp.status}: {body[:200]}", file=sys.stderr
+            )
             return
 
         if conn.sock:
@@ -585,10 +814,7 @@ def _filter_sessions(
         items = [s for s in items if s.get("state", "").upper() == state_upper]
     if directory:
         norm_dir = os.path.abspath(directory).rstrip("/")
-        items = [
-            s for s in items
-            if s.get("directory", "").rstrip("/") == norm_dir
-        ]
+        items = [s for s in items if s.get("directory", "").rstrip("/") == norm_dir]
     return items
 
 
@@ -649,7 +875,9 @@ def _print_sessions_table(items: list[dict]) -> None:
     # Within each state group, reverse activity order so newest is first
     sorted_items: list[dict] = []
     for _, group in groupby(items, key=lambda s: state_order.get(s["state"], 9)):
-        sorted_items.extend(sorted(group, key=lambda s: s.get("last_activity_at") or "", reverse=True))
+        sorted_items.extend(
+            sorted(group, key=lambda s: s.get("last_activity_at") or "", reverse=True)
+        )
     items = sorted_items
 
     # Use terminal width for directory column, minimum 30, maximum 50
