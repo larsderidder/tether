@@ -11,6 +11,7 @@ from tether.api.external_sessions import router as external_sessions_router
 from tether.api.git import router as git_router
 from tether.api.health import router as health_router
 from tether.api.sessions import router as sessions_router
+from tether.api.setup import router as setup_router
 from tether.api.spa import router as spa_router
 from tether.api.status import router as status_router
 
@@ -23,6 +24,7 @@ api_router.include_router(debug_router)
 api_router.include_router(health_router)
 api_router.include_router(events_router)
 api_router.include_router(status_router)
+api_router.include_router(setup_router)
 
 root_router = APIRouter()
 root_router.include_router(spa_router)

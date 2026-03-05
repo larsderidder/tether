@@ -128,6 +128,23 @@ def main(argv: list[str] | None = None) -> None:
     # tether init
     sub.add_parser("init", help="Interactive setup wizard")
 
+    # tether setup <subcommand>
+    setup_parser = sub.add_parser("setup", help="Provision the remote Tether server")
+    setup_sub = setup_parser.add_subparsers(dest="setup_command")
+    agents_parser = setup_sub.add_parser(
+        "agents", help="Install and configure agent CLIs on the remote server"
+    )
+    agents_parser.add_argument(
+        "agent",
+        nargs="?",
+        help="Limit setup to a specific agent (claude_code, opencode, pi)",
+    )
+    agents_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Only show agent status; do not install or push credentials",
+    )
+
     # tether status
     sub.add_parser("status", help="Server health and session summary")
 
@@ -428,6 +445,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_context(args)
     elif args.command == "server":
         _run_server(args)
+    elif args.command == "setup":
+        _run_setup(args)
     elif args.command in (
         "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
         "watch", "git", "workspaces",
@@ -533,6 +552,32 @@ def _run_context(args: argparse.Namespace) -> None:
                 print(f"{active} ({host}:{port})")
             else:
                 print(f"{active} (not found in servers.yaml)")
+
+
+def _run_setup(args: argparse.Namespace) -> None:
+    """Handle ``tether setup`` subcommands."""
+    cmd = getattr(args, "setup_command", None)
+    if cmd is None:
+        print("Usage: tether setup <subcommand>")
+        print("Subcommands:")
+        print("  agents   Install and configure agent CLIs on the remote server")
+        sys.exit(0)
+
+    if cmd == "agents":
+        from tether.config import load_config
+
+        load_config()
+
+        from tether.cli_client import cmd_setup_agents
+
+        cmd_setup_agents(
+            agent_filter=getattr(args, "agent", None),
+            check_only=getattr(args, "check", False),
+        )
+    else:
+        print(f"Unknown setup subcommand: {cmd}", file=sys.stderr)
+        sys.exit(1)
+
 
 
 def _run_client(args: argparse.Namespace) -> None:
