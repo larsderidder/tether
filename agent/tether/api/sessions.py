@@ -216,44 +216,71 @@ async def create_session(
         store.update_session(session)
         store.set_workdir(session.id, normalized_directory, managed=False)
     elif payload.clone_url:
-        # Clone the repo into a managed workspace
-        dest = _workspace.workspace_path(session.id)
-        try:
-            cloned_path = _workspace.clone_repo(
-                payload.clone_url,
-                dest,
-                branch=payload.clone_branch or None,
-                shallow=payload.shallow,
-            )
-        except WorkspaceError as exc:
-            store.delete_session(session.id)
-            raise_http_error("CLONE_ERROR", str(exc), 422)
-        session.repo_ref_type = "url"
-        session.repo_ref_value = payload.clone_url
-        session.repo_display = _short_repo_name(payload.clone_url)
-
-        # Auto-branch: create a working branch after clone
+        # Create a managed workspace for this session.
+        # create_workspace() reuses a shared clone via git worktree when the
+        # repo has been cloned before; force_clone=True falls back to a full
+        # standalone clone (useful for fully isolated workspaces).
         from tether.settings import settings as _settings
+
+        working_branch: str | None = None
         if payload.auto_branch or _settings.git_auto_branch():
             working_branch = _make_working_branch_name(
                 session.id, _settings.git_branch_pattern()
             )
-            try:
-                git_create_branch(cloned_path, working_branch, checkout=True)
-                session.working_branch = working_branch
-                logger.info(
-                    "Auto-branch created",
-                    session_id=session.id,
-                    branch=working_branch,
-                )
-            except Exception as exc:
-                # Non-fatal: log and continue without working branch
-                logger.warning(
-                    "Auto-branch failed",
-                    session_id=session.id,
-                    error=str(exc),
-                )
 
+        if payload.force_clone:
+            # Standalone clone path: bypass the repo registry entirely.
+            dest = _workspace.workspace_path(session.id)
+            try:
+                cloned_path = _workspace.clone_repo(
+                    payload.clone_url,
+                    dest,
+                    branch=payload.clone_branch or None,
+                    shallow=payload.shallow,
+                )
+            except WorkspaceError as exc:
+                store.delete_session(session.id)
+                raise_http_error("CLONE_ERROR", str(exc), 422)
+            if working_branch:
+                try:
+                    git_create_branch(cloned_path, working_branch, checkout=True)
+                    session.working_branch = working_branch
+                    logger.info(
+                        "Auto-branch created",
+                        session_id=session.id,
+                        branch=working_branch,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Auto-branch failed",
+                        session_id=session.id,
+                        error=str(exc),
+                    )
+        else:
+            # Worktree path: reuse shared clone when available.
+            try:
+                ws_result = _workspace.create_workspace(
+                    url=payload.clone_url,
+                    session_id=session.id,
+                    branch=payload.clone_branch or None,
+                    shallow=payload.shallow,
+                    working_branch=working_branch,
+                )
+                cloned_path = ws_result.path
+                if working_branch:
+                    session.working_branch = working_branch
+                    logger.info(
+                        "Auto-branch created via worktree",
+                        session_id=session.id,
+                        branch=working_branch,
+                    )
+            except WorkspaceError as exc:
+                store.delete_session(session.id)
+                raise_http_error("CLONE_ERROR", str(exc), 422)
+
+        session.repo_ref_type = "url"
+        session.repo_ref_value = payload.clone_url
+        session.repo_display = _short_repo_name(payload.clone_url)
         store.update_session(session)
         store.set_workdir(session.id, cloned_path, managed=True)
     else:

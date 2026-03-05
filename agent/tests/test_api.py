@@ -595,19 +595,25 @@ class TestConcurrentStartPrevention:
 class TestCreateSessionClone:
     """Tests for clone_url-based session creation."""
 
+    def _make_workspace_result(self, path: str):
+        """Return a WorkspaceResult pointing at *path*."""
+        from tether.workspace import WorkspaceResult
+        return WorkspaceResult(path=path, is_worktree=True, repo_hash="a1b2c3d4")
+
     @pytest.mark.anyio
     async def test_create_session_with_clone_url(
         self, api_client: httpx.AsyncClient, tmp_path, monkeypatch
     ) -> None:
-        """Creating a session with clone_url clones the repo and sets directory."""
+        """Creating a session with clone_url creates a workspace and sets directory."""
         monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
 
         cloned_path = str(tmp_path / "cloned")
         import os
         os.makedirs(cloned_path)
 
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=cloned_path) as mock_clone, \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=cloned_path):
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   return_value=self._make_workspace_result(cloned_path)) as mock_cw:
             response = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git"},
@@ -618,21 +624,22 @@ class TestCreateSessionClone:
         assert session["state"] == "CREATED"
         assert session["directory"] == cloned_path
         assert session["clone_url"] == "https://github.com/owner/repo.git"
-        mock_clone.assert_called_once()
+        mock_cw.assert_called_once()
 
     @pytest.mark.anyio
     async def test_create_session_with_clone_url_and_branch(
         self, api_client: httpx.AsyncClient, tmp_path, monkeypatch
     ) -> None:
-        """clone_branch is passed to clone_repo."""
+        """clone_branch is forwarded to create_workspace."""
         monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
 
         cloned_path = str(tmp_path / "cloned")
         import os
         os.makedirs(cloned_path)
 
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=cloned_path) as mock_clone, \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=cloned_path):
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   return_value=self._make_workspace_result(cloned_path)) as mock_cw:
             response = await api_client.post(
                 "/api/sessions",
                 json={
@@ -642,10 +649,8 @@ class TestCreateSessionClone:
             )
 
         assert response.status_code == 201
-        call_kwargs = mock_clone.call_args
-        assert call_kwargs.kwargs.get("branch") == "feature" or (
-            len(call_kwargs.args) >= 3 and call_kwargs.args[2] == "feature"
-        )
+        call_kwargs = mock_cw.call_args
+        assert call_kwargs.kwargs.get("branch") == "feature"
 
     @pytest.mark.anyio
     async def test_clone_url_and_directory_mutually_exclusive(
@@ -681,13 +686,14 @@ class TestCreateSessionClone:
     async def test_clone_failure_returns_error_and_cleans_up(
         self, api_client: httpx.AsyncClient, tmp_path, monkeypatch, fresh_store
     ) -> None:
-        """A clone error returns 422 and the session is deleted."""
+        """A workspace error returns 422 and the session is deleted."""
         monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
 
         from tether.workspace import WorkspaceError
 
-        with patch("tether.api.sessions._workspace.clone_repo", side_effect=WorkspaceError("clone failed")), \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=str(tmp_path / "ws" / "sess_x")):
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   side_effect=WorkspaceError("clone failed")):
             response = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git"},
@@ -703,14 +709,15 @@ class TestCreateSessionClone:
     ) -> None:
         """SessionResponse.clone_url is populated when repo_ref_type is url."""
         monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
 
         import os
         cloned_path = str(tmp_path / "cloned")
         os.makedirs(cloned_path)
 
         url = "git@github.com:owner/repo.git"
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=cloned_path), \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=cloned_path):
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   return_value=self._make_workspace_result(cloned_path)):
             response = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": url},
@@ -718,6 +725,52 @@ class TestCreateSessionClone:
 
         assert response.status_code == 201
         assert response.json()["clone_url"] == url
+
+    @pytest.mark.anyio
+    async def test_force_clone_uses_clone_repo(
+        self, api_client: httpx.AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        """force_clone=True bypasses create_workspace and calls clone_repo directly."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+        import os
+        cloned_path = str(tmp_path / "cloned")
+        os.makedirs(cloned_path)
+
+        with patch("tether.api.sessions._workspace.clone_repo", return_value=cloned_path) as mock_clone, \
+             patch("tether.api.sessions._workspace.workspace_path", return_value=cloned_path), \
+             patch("tether.api.sessions._workspace.create_workspace") as mock_cw:
+            response = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git", "force_clone": True},
+            )
+
+        assert response.status_code == 201
+        mock_clone.assert_called_once()
+        mock_cw.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_force_clone_error_returns_422(
+        self, api_client: httpx.AsyncClient, tmp_path, monkeypatch, fresh_store
+    ) -> None:
+        """force_clone=True: a clone_repo failure still returns 422 and cleans up."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+        from tether.workspace import WorkspaceError
+
+        with patch("tether.api.sessions._workspace.clone_repo",
+                   side_effect=WorkspaceError("network error")), \
+             patch("tether.api.sessions._workspace.workspace_path",
+                   return_value=str(tmp_path / "ws" / "sess_x")):
+            response = await api_client.post(
+                "/api/sessions",
+                json={"clone_url": "https://github.com/owner/repo.git", "force_clone": True},
+            )
+
+        assert response.status_code == 422
+        assert fresh_store.list_sessions() == []
 
 
 class TestAutobranchOnClone:
@@ -737,16 +790,30 @@ class TestAutobranchOnClone:
         subprocess.run(["git", "-C", path, "commit", "-m", "init"], check=True, capture_output=True)
         return path
 
+    def _make_workspace_result(self, path: str, branch: str | None = None):
+        """Return a WorkspaceResult for the given path."""
+        from tether.workspace import WorkspaceResult
+        return WorkspaceResult(path=path, is_worktree=True, repo_hash="a1b2c3d4")
+
     @pytest.mark.anyio
     async def test_auto_branch_creates_working_branch(
         self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
     ) -> None:
-        """auto_branch=True creates a tether/<short_id> branch in the clone."""
-        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir), \
-             monkeypatch.context() as m:
-            m.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
+        """auto_branch=True passes working_branch to create_workspace and sets it on the session."""
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+        clone_dir = str(tmp_path / "clone")
+        import os
+        os.makedirs(clone_dir)
+
+        captured: dict = {}
+
+        def fake_create_workspace(**kwargs):
+            captured["working_branch"] = kwargs.get("working_branch")
+            return self._make_workspace_result(clone_dir)
+
+        monkeypatch.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   side_effect=fake_create_workspace):
             resp = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": True},
@@ -755,16 +822,22 @@ class TestAutobranchOnClone:
         session = resp.json()
         assert session["working_branch"] is not None
         assert session["working_branch"].startswith("tether/")
+        # working_branch was forwarded to create_workspace
+        assert captured["working_branch"] == session["working_branch"]
 
     @pytest.mark.anyio
     async def test_auto_branch_via_setting(
         self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
     ) -> None:
         """TETHER_GIT_AUTO_BRANCH=1 triggers auto-branch even without request flag."""
-        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
         monkeypatch.setenv("TETHER_GIT_AUTO_BRANCH", "1")
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+        clone_dir = str(tmp_path / "clone")
+        import os
+        os.makedirs(clone_dir)
+
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   return_value=self._make_workspace_result(clone_dir)):
             resp = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git"},
@@ -777,10 +850,14 @@ class TestAutobranchOnClone:
         self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
     ) -> None:
         """working_branch is None when auto_branch is False and setting is off."""
-        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
         monkeypatch.setenv("TETHER_GIT_AUTO_BRANCH", "0")
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+        clone_dir = str(tmp_path / "clone")
+        import os
+        os.makedirs(clone_dir)
+
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   return_value=self._make_workspace_result(clone_dir)):
             resp = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": False},
@@ -792,12 +869,22 @@ class TestAutobranchOnClone:
     async def test_custom_branch_pattern(
         self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
     ) -> None:
-        """TETHER_GIT_BRANCH_PATTERN controls the branch name."""
-        clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        """TETHER_GIT_BRANCH_PATTERN controls the branch name passed to create_workspace."""
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
         monkeypatch.setenv("TETHER_GIT_BRANCH_PATTERN", "work/{session_id}")
         monkeypatch.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
-        with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
-             patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
+        clone_dir = str(tmp_path / "clone")
+        import os
+        os.makedirs(clone_dir)
+
+        captured: dict = {}
+
+        def fake_create_workspace(**kwargs):
+            captured["working_branch"] = kwargs.get("working_branch")
+            return self._make_workspace_result(clone_dir)
+
+        with patch("tether.api.sessions._workspace.create_workspace",
+                   side_effect=fake_create_workspace):
             resp = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": True},
@@ -806,20 +893,26 @@ class TestAutobranchOnClone:
         branch = resp.json()["working_branch"]
         assert branch is not None
         assert branch.startswith("work/")
+        assert captured["working_branch"] == branch
 
     @pytest.mark.anyio
-    async def test_auto_branch_checkout_active(
+    async def test_auto_branch_checkout_active_force_clone(
         self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
     ) -> None:
-        """The working branch is the current branch in the cloned workspace."""
+        """With force_clone=True, the working branch is checked out in the standalone clone."""
         import subprocess
         clone_dir = self._make_git_repo(str(tmp_path / "clone"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
         monkeypatch.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
         with patch("tether.api.sessions._workspace.clone_repo", return_value=clone_dir), \
              patch("tether.api.sessions._workspace.workspace_path", return_value=clone_dir):
             resp = await api_client.post(
                 "/api/sessions",
-                json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": True},
+                json={
+                    "clone_url": "https://github.com/owner/repo.git",
+                    "auto_branch": True,
+                    "force_clone": True,
+                },
             )
         assert resp.status_code == 201
         session = resp.json()

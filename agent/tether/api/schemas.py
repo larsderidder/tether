@@ -32,6 +32,7 @@ class CreateSessionRequest(BaseModel):
     clone_branch: str | None = None
     shallow: bool = False
     auto_branch: bool = False  # create a working branch after clone
+    force_clone: bool = False  # skip worktree optimisation; always do a full clone
     # External agent fields
     agent_name: str | None = None
     agent_type: str | None = None
