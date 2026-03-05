@@ -112,7 +112,7 @@ def main() -> None:
     async def call_tool(name: str, arguments: dict | None) -> Any:
         return await execute_tool(name, arguments or {})
 
-    _stderr("Registered MCP tools: 4")
+    _stderr(f"Registered MCP tools: {len(get_tool_definitions())}")
 
     async def _run_stdio() -> None:
         async with _stdio_server() as (read_stream, write_stream):
