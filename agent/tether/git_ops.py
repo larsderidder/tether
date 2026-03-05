@@ -114,6 +114,44 @@ def git_status(path: str) -> GitStatus:
     )
 
 
+class GitDiffResult(BaseModel):
+    """Result of a git diff operation."""
+
+    patch: str
+    """Full unified diff output (empty string when there are no changes)."""
+
+    stat: str
+    """Output of ``git diff --stat`` (file names and line-change counts)."""
+
+    staged: bool
+    """True when staged (cached) changes were diffed; False for unstaged."""
+
+
+def git_diff(path: str, *, staged: bool = False) -> GitDiffResult:
+    """Return a diff of the working tree (or staged changes) for *path*.
+
+    Args:
+        path: Absolute path to a git repository root.
+        staged: When True, diff staged changes (``git diff --cached``).
+
+    Returns:
+        A ``GitDiffResult`` with the full unified patch and a ``--stat`` summary.
+
+    Raises:
+        ValueError: *path* is not a git repository or git is unavailable.
+    """
+    _require_git(path)
+
+    base_cmd = ["git", "diff"]
+    if staged:
+        base_cmd.append("--cached")
+
+    patch = _run_silent([*base_cmd], cwd=path, strip=False)
+    stat = _run_silent([*base_cmd, "--stat"], cwd=path)
+
+    return GitDiffResult(patch=patch, stat=stat, staged=staged)
+
+
 def git_log(path: str, count: int = 10) -> list[GitCommit]:
     """Return the most recent commits from the repository at *path*.
 

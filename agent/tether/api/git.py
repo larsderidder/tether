@@ -11,6 +11,7 @@ from tether.api.errors import raise_http_error
 from tether.git import has_git_repository
 from tether.git_ops import (
     GitCommit,
+    GitDiffResult,
     GitPushResult,
     GitStatus,
     PrResult,
@@ -18,6 +19,7 @@ from tether.git_ops import (
     git_checkout,
     git_commit,
     git_create_branch,
+    git_diff,
     git_log,
     git_push,
     git_status,
@@ -132,6 +134,51 @@ async def get_git_log(
 
     logger.info("Git log retrieved", session_id=session_id, count=len(commits))
     return commits
+
+
+@router.get("/sessions/{session_id}/git/diff", response_model=GitDiffResult)
+async def get_git_diff(
+    session_id: str,
+    staged: bool = Query(default=False),
+    _: None = Depends(require_token),
+) -> GitDiffResult:
+    """Return a unified diff for a session's workspace.
+
+    By default returns unstaged changes. Pass ``?staged=true`` to diff
+    staged (cached) changes instead.
+
+    Raises 404 if the session does not exist.
+    Raises 422 if the session has no directory or the directory has no git repo.
+    """
+    session = store.get_session(session_id)
+    if not session:
+        raise_http_error("NOT_FOUND", "Session not found", 404)
+
+    directory = session.directory
+    if not directory:
+        raise_http_error(
+            "VALIDATION_ERROR", "Session has no directory assigned", 422
+        )
+
+    if not has_git_repository(directory):
+        raise_http_error(
+            "VALIDATION_ERROR",
+            f"Directory '{directory}' is not a git repository",
+            422,
+        )
+
+    try:
+        result = git_diff(directory, staged=staged)
+    except ValueError as exc:
+        raise_http_error("GIT_ERROR", str(exc), 422)
+
+    logger.info(
+        "Git diff retrieved",
+        session_id=session_id,
+        staged=staged,
+        patch_bytes=len(result.patch),
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -378,6 +378,31 @@ async def _git_pr(
     return response.json()
 
 
+async def _git_diff(session_id: str) -> dict:
+    """Get a unified diff for a session's workspace."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/git/diff",
+            headers=_api_headers(),
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
+async def _git_log(session_id: str, count: int = 5) -> list:
+    """Get recent commits for a session's workspace."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"http://localhost:{settings.port()}/api/sessions/{session_id}/git/log",
+            headers=_api_headers(),
+            params={"count": count},
+            timeout=15.0,
+        )
+        response.raise_for_status()
+    return response.json()
+
+
 async def _sync_session(session_id: str) -> dict:
     """Pull new messages from an attached external session."""
 
@@ -438,6 +463,8 @@ def make_bridge_callbacks() -> BridgeCallbacks:
         git_commit=_git_commit,
         git_push=_git_push,
         git_pr=_git_pr,
+        git_diff=_git_diff,
+        git_log=_git_log,
     )
 
 
