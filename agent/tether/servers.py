@@ -88,6 +88,43 @@ def get_default_server(*, path: Path | None = None) -> dict[str, str] | None:
     return get_server(str(default_name), path=path)
 
 
+def write_server(
+    name: str,
+    entry: dict[str, str],
+    *,
+    path: Path | None = None,
+    set_default: bool = False,
+) -> None:
+    """Write or update a server entry in servers.yaml.
+
+    Creates the file if it does not exist.  Existing entries for other
+    servers are preserved.  If *set_default* is True, the ``default``
+    key is updated to *name*.
+    """
+    target = path or default_servers_path()
+    data = load_servers(path=target)
+
+    # Ensure the top-level shape is correct.
+    if not isinstance(data.get("servers"), dict):
+        data["servers"] = {}
+
+    data["servers"][name] = {k: v for k, v in entry.items()}
+
+    if set_default:
+        data["default"] = name
+
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyYAML is required to write servers.yaml. "
+            "Install it with: pip install pyyaml"
+        ) from exc
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # Active context (persistent context switching)
 # ---------------------------------------------------------------------------

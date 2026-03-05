@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 
 from tether.servers import (
@@ -143,9 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="List discoverable external sessions instead of Tether sessions",
     )
-    list_parser.add_argument(
-        "--directory", "-d", help="Filter sessions by directory"
-    )
+    list_parser.add_argument("--directory", "-d", help="Filter sessions by directory")
     list_parser.add_argument(
         "--runner-type",
         "-r",
@@ -198,15 +197,18 @@ def main(argv: list[str] | None = None) -> None:
         help="Session template name or path (overrides can be mixed with other flags)",
     )
     new_parser.add_argument(
-        "--adapter", "-a",
+        "--adapter",
+        "-a",
         help="Agent adapter (claude_auto, opencode, pi, codex, ...)",
     )
     new_parser.add_argument(
-        "--prompt", "-m",
+        "--prompt",
+        "-m",
         help="Start the session immediately with this prompt",
     )
     new_parser.add_argument(
-        "--platform", "-p",
+        "--platform",
+        "-p",
         help="Bind to a messaging platform (telegram, slack, discord)",
     )
     new_parser.add_argument(
@@ -248,18 +250,12 @@ def main(argv: list[str] | None = None) -> None:
     input_parser.add_argument("text", help="Text to send")
 
     # tether interrupt
-    interrupt_parser = sub.add_parser(
-        "interrupt", help="Interrupt a running session"
-    )
-    interrupt_parser.add_argument(
-        "session_id", help="Session ID (prefix is fine)"
-    )
+    interrupt_parser = sub.add_parser("interrupt", help="Interrupt a running session")
+    interrupt_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
     # tether delete
     delete_parser = sub.add_parser("delete", help="Delete a session")
-    delete_parser.add_argument(
-        "session_id", help="Session ID (prefix is fine)"
-    )
+    delete_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
     # tether sync
     sync_parser = sub.add_parser(
@@ -367,6 +363,59 @@ def main(argv: list[str] | None = None) -> None:
         "context_name", help="Context name (use 'local' for local server)"
     )
 
+    # tether server <init|status|upgrade|logs>
+    server_parser = sub.add_parser("server", help="Manage remote Tether servers")
+    server_sub = server_parser.add_subparsers(dest="server_command")
+
+    # tether server init <host>
+    server_init_p = server_sub.add_parser(
+        "init", help="Bootstrap a remote Tether server over SSH"
+    )
+    server_init_p.add_argument(
+        "host", help="SSH host (name, IP, or Tailscale hostname)"
+    )
+    server_init_p.add_argument(
+        "--name", help="Local alias for this server (default: host)"
+    )
+    server_init_p.add_argument("--user", "-u", help="SSH user (default: current user)")
+    server_init_p.add_argument(
+        "--port",
+        type=int,
+        default=8787,
+        help="Port for Tether to listen on (default: 8787)",
+    )
+
+    # tether server status <name>
+    server_status_p = server_sub.add_parser(
+        "status", help="Check health of a registered remote server"
+    )
+    server_status_p.add_argument("name", help="Server alias from servers.yaml")
+
+    # tether server upgrade <name>
+    server_upgrade_p = server_sub.add_parser(
+        "upgrade", help="Upgrade tether-ai on a remote server"
+    )
+    server_upgrade_p.add_argument("name", help="Server alias from servers.yaml")
+
+    # tether server logs <name>
+    server_logs_p = server_sub.add_parser(
+        "logs", help="Stream systemd logs from a remote server"
+    )
+    server_logs_p.add_argument("name", help="Server alias from servers.yaml")
+    server_logs_p.add_argument(
+        "--lines",
+        "-n",
+        type=int,
+        default=50,
+        help="Number of recent lines (default: 50)",
+    )
+    server_logs_p.add_argument(
+        "--follow",
+        "-f",
+        action="store_true",
+        help="Follow log output (like journalctl -f)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "start":
@@ -377,6 +426,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_templates(args)
     elif args.command == "context":
         _run_context(args)
+    elif args.command == "server":
+        _run_server(args)
     elif args.command in (
         "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
         "watch", "git", "workspaces",
@@ -647,6 +698,267 @@ def _run_client(args: argparse.Namespace) -> None:
             cmd_workspaces_clean()
         else:
             cmd_workspaces(stale_only=getattr(args, "stale", False))
+
+
+def _run_server(args: argparse.Namespace) -> None:
+    """Handle ``tether server`` subcommands."""
+    cmd = getattr(args, "server_command", None)
+
+    if cmd is None:
+        # Ran ``tether server`` with no subcommand.
+        print("Usage: tether server <init|status|upgrade|logs>")
+        sys.exit(1)
+
+    if cmd == "init":
+        _run_server_init(args)
+    elif cmd == "status":
+        _run_server_status(args)
+    elif cmd == "upgrade":
+        _run_server_upgrade(args)
+    elif cmd == "logs":
+        _run_server_logs(args)
+    else:
+        print(f"Unknown server command: {cmd}")
+        sys.exit(1)
+
+
+def _run_server_init(args: argparse.Namespace) -> None:
+    """Handle ``tether server init <host>``."""
+    import getpass
+
+    from tether.server_init import run_server_init
+
+    host = args.host
+    name = getattr(args, "name", None) or host
+    user = getattr(args, "user", None)
+    port = getattr(args, "port", 8787)
+
+    # Interactive prompts
+    print()
+    print(f"Initialising remote Tether server on {host}")
+    print()
+
+    # Confirm name
+    suggested_name = name
+    try:
+        entered = input(f"  Server alias [{suggested_name}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    if entered:
+        name = entered
+
+    # Confirm user
+    default_user = user or getpass.getuser()
+    try:
+        entered = input(f"  SSH user [{default_user}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    if entered:
+        user = entered
+    elif user is None:
+        user = None  # let ssh config decide
+
+    # Confirm port
+    try:
+        entered = input(f"  Tether port [{port}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    if entered:
+        try:
+            port = int(entered)
+        except ValueError:
+            print(f"  Invalid port number: {entered}", file=sys.stderr)
+            sys.exit(1)
+
+    # Optional Telegram bridge
+    telegram_token = None
+    telegram_group_id = None
+    try:
+        want_tg = input("  Configure Telegram bridge? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    if want_tg in ("y", "yes"):
+        try:
+            telegram_token = input("    Telegram bot token: ").strip() or None
+            telegram_group_id = input("    Telegram forum group ID: ").strip() or None
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+
+    print()
+    print(f"  Host:    {host}")
+    print(f"  Alias:   {name}")
+    if user:
+        print(f"  SSH user: {user}")
+    print(f"  Port:    {port}")
+    if telegram_token:
+        print(f"  Telegram: configured")
+    print()
+
+    try:
+        confirm = input("Proceed? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    if confirm and confirm not in ("y", "yes"):
+        print("Aborted.")
+        sys.exit(0)
+
+    print()
+
+    try:
+        result = run_server_init(
+            host,
+            name=name,
+            user=user,
+            port=port,
+            telegram_token=telegram_token,
+            telegram_group_id=telegram_group_id,
+            log=print,
+        )
+    except ConnectionError as exc:
+        print(f"\nError: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as exc:
+        print(f"\nError: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print()
+    print(f"Done! Remote Tether server '{result.name}' is ready.")
+    print()
+    print(f"  Host:  {result.host}:{result.port}")
+    print(f"  Token: {result.token[:8]}... (saved to ~/.config/tether/servers.yaml)")
+    print()
+    print("To switch to this server:")
+    print(f"  tether context use {result.name}")
+    print(f"  tether status")
+
+
+def _run_server_status(args: argparse.Namespace) -> None:
+    """Handle ``tether server status <name>``."""
+    from tether.servers import get_server
+    from tether.server_init import ssh_run
+
+    name = args.name
+    profile = get_server(name)
+    if profile is None:
+        print(
+            f"Error: unknown server '{name}'. Check ~/.config/tether/servers.yaml.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    host = profile.get("host", name)
+    port = profile.get("port", "8787")
+
+    print(f"Checking {name} ({host}:{port})...")
+    rc, out, _ = ssh_run(
+        host,
+        f"curl -sf http://127.0.0.1:{port}/api/health 2>/dev/null",
+        quiet=True,
+    )
+    if rc == 0 and out:
+        print(f"  Status: healthy")
+        try:
+            import json
+
+            data = json.loads(out)
+            if "version" in data:
+                print(f"  Version: {data['version']}")
+        except Exception:
+            pass
+    else:
+        # Try via systemd
+        rc2, svc_out, _ = ssh_run(
+            host,
+            "systemctl is-active tether 2>/dev/null || systemctl --user is-active tether 2>/dev/null",
+            quiet=True,
+        )
+        svc_state = svc_out.strip() if svc_out.strip() else "unknown"
+        print(f"  Status: unreachable (service: {svc_state})")
+        sys.exit(1)
+
+
+def _run_server_upgrade(args: argparse.Namespace) -> None:
+    """Handle ``tether server upgrade <name>``."""
+    from tether.servers import get_server
+    from tether.server_init import ssh_run
+
+    name = args.name
+    profile = get_server(name)
+    if profile is None:
+        print(
+            f"Error: unknown server '{name}'. Check ~/.config/tether/servers.yaml.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    host = profile.get("host", name)
+
+    print(f"Upgrading tether-ai on {name} ({host})...")
+    rc, out, stderr = ssh_run(
+        host,
+        "~/.local/bin/pipx upgrade tether-ai 2>&1 || pipx upgrade tether-ai 2>&1",
+        timeout=180,
+    )
+    if rc != 0:
+        print(f"Error: upgrade failed: {stderr}", file=sys.stderr)
+        sys.exit(1)
+    if out:
+        print(out)
+    print("Restarting service...")
+    rc2, _, _ = ssh_run(
+        host,
+        f"sudo systemctl restart tether 2>/dev/null || systemctl --user restart tether 2>/dev/null",
+        quiet=True,
+    )
+    if rc2 == 0:
+        print("Service restarted.")
+    else:
+        print("Could not restart the service automatically. Restart it manually.")
+
+
+def _run_server_logs(args: argparse.Namespace) -> None:
+    """Handle ``tether server logs <name>``."""
+    from tether.servers import get_server
+    from tether.server_init import ssh_run
+
+    name = args.name
+    profile = get_server(name)
+    if profile is None:
+        print(
+            f"Error: unknown server '{name}'. Check ~/.config/tether/servers.yaml.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    host = profile.get("host", name)
+    lines = getattr(args, "lines", 50)
+    follow = getattr(args, "follow", False)
+
+    follow_flag = "-f " if follow else ""
+    journalctl_cmd = (
+        f"sudo journalctl -u tether {follow_flag}-n {lines} 2>/dev/null || "
+        f"journalctl --user -u tether {follow_flag}-n {lines} 2>/dev/null"
+    )
+
+    if follow:
+        # Stream interactively
+        user = profile.get("user")
+        target = f"{user}@{host}" if user else host
+        cmd = ["ssh", "-o", "BatchMode=yes", target, journalctl_cmd]
+        try:
+            subprocess.run(cmd)
+        except KeyboardInterrupt:
+            pass
+    else:
+        rc, out, _ = ssh_run(host, journalctl_cmd, timeout=30)
+        if out:
+            print(out)
 
 
 if __name__ == "__main__":
