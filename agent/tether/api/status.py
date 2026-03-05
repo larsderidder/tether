@@ -237,6 +237,47 @@ async def get_workspace_usage(
     )
 
 
+# ---------------------------------------------------------------------------
+# Shared repo clone status
+# ---------------------------------------------------------------------------
+
+
+class RepoInfo(BaseModel):
+    """Info for one shared repo clone."""
+
+    url: str
+    hash: str
+    path: str
+    size_bytes: int
+    worktree_count: int
+    last_used_at: str
+
+
+class RepoUsageResponse(BaseModel):
+    """Response for GET /status/repos."""
+
+    repos: list[RepoInfo]
+    total_bytes: int
+
+
+@router.get("/repos", response_model=RepoUsageResponse)
+async def get_repo_usage(
+    _: None = Depends(require_token),
+) -> RepoUsageResponse:
+    """List shared git clone directories with disk usage and worktree counts.
+
+    Shared clones are the on-disk repositories used as bases for git worktrees.
+    Each entry shows how many active worktrees (sessions) currently reference
+    the clone and when it was last used.
+    """
+    from tether.workspace import list_repo_usage
+
+    raw = list_repo_usage()
+    repos = [RepoInfo(**r) for r in raw]
+    total_bytes = sum(r.size_bytes for r in repos)
+    return RepoUsageResponse(repos=repos, total_bytes=total_bytes)
+
+
 @router.delete("/workspaces/orphans", response_model=dict)
 async def cleanup_orphan_workspaces(
     _: None = Depends(require_token),

@@ -183,6 +183,36 @@ class Settings:
         return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
 
     @staticmethod
+    def git_fetch_timeout() -> int:
+        """Timeout in seconds for git fetch operations on shared clones.
+
+        Env: TETHER_GIT_FETCH_TIMEOUT (default: 60)
+        """
+        return _get_int("TETHER_GIT_FETCH_TIMEOUT", default=60)
+
+    @staticmethod
+    def git_fetch_cache_seconds() -> int:
+        """Minimum seconds between fetches for the same shared clone.
+
+        If a fetch for a shared clone ran less than this many seconds ago, the
+        next call to _fetch_origin() is skipped.  Set to 0 to disable caching.
+
+        Env: TETHER_GIT_FETCH_CACHE_SECONDS (default: 300)
+        """
+        return _get_int("TETHER_GIT_FETCH_CACHE_SECONDS", default=300)
+
+    @staticmethod
+    def repo_retention_days() -> int:
+        """Days to keep a shared clone after its last worktree is removed.
+
+        Shared clones with zero active worktrees that have not been used for
+        longer than this period are eligible for automatic cleanup.
+
+        Env: TETHER_REPO_RETENTION_DAYS (default: 7)
+        """
+        return _get_int("TETHER_REPO_RETENTION_DAYS", default=7)
+
+    @staticmethod
     def workspace_max_disk_gb() -> float | None:
         """Optional disk-usage warning threshold for managed workspaces (GB).
 

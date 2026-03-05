@@ -37,6 +37,10 @@ async def maintenance_loop() -> None:
             removed = store.prune_sessions(retention_days)
             if removed:
                 logger.info("Pruned sessions", count=removed)
+            from tether.workspace import prune_stale_repos
+            repos_removed = prune_stale_repos()
+            if repos_removed:
+                logger.info("Pruned stale shared repo clones", count=repos_removed)
             if idle_timeout_s > 0:
                 now_ts = time.time()
                 for session in list(store.list_sessions()):

@@ -20,9 +20,20 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
+
+# ---------------------------------------------------------------------------
+# Module-level fetch cache
+# ---------------------------------------------------------------------------
+
+# Maps resolved repo path -> epoch seconds of last successful fetch attempt.
+# Protected by _fetch_cache_lock.
+_fetch_cache: dict[str, float] = {}
+_fetch_cache_lock = threading.Lock()
 
 
 class WorkspaceError(Exception):
@@ -223,6 +234,118 @@ def create_workspace(
     return WorkspaceResult(path=dest, is_worktree=True, repo_hash=url_hash)
 
 
+def prune_worktrees(shared_clone_path: str) -> None:
+    """Run ``git worktree prune`` on a shared clone to remove stale refs.
+
+    Git worktrees that were deleted without ``git worktree remove`` (for
+    example after a server crash) leave behind stale administrative entries
+    under ``.git/worktrees/``.  Pruning repairs this.
+
+    Failures are silently ignored so the maintenance loop is not disrupted.
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", shared_clone_path, "worktree", "prune"],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+
+def prune_stale_repos(retention_days: int | None = None) -> int:
+    """Remove shared clones that have had zero worktrees past the retention period.
+
+    A shared clone is eligible for removal when:
+    - Its ``worktree_count`` in the registry is 0, AND
+    - Its ``last_used_at`` timestamp is older than *retention_days* days.
+
+    Also runs ``git worktree prune`` on every remaining shared clone to keep
+    their worktree metadata tidy.
+
+    Args:
+        retention_days: Override for the retention period.  When ``None``,
+            ``settings.repo_retention_days()`` is used.
+
+    Returns:
+        Number of shared clones removed.
+    """
+    from tether.repo_registry import RepoRegistry
+    from tether.settings import settings
+
+    if retention_days is None:
+        retention_days = settings.repo_retention_days()
+
+    registry = RepoRegistry(settings.data_dir())
+    cutoff = time.time() - retention_days * 86400
+    removed = 0
+
+    for entry in registry.list_repos():
+        clone_path = entry.path
+        # Prune stale worktree refs on all remaining clones.
+        if Path(clone_path).exists():
+            prune_worktrees(clone_path)
+
+        if entry.worktree_count > 0:
+            continue
+
+        # Parse last_used_at to determine age.
+        try:
+            import datetime as _dt
+
+            last_used = _dt.datetime.fromisoformat(entry.last_used_at)
+            last_ts = last_used.timestamp()
+        except Exception:
+            continue
+
+        if last_ts < cutoff:
+            registry.remove(entry.url)
+            removed += 1
+
+    return removed
+
+
+def list_repo_usage() -> list[dict]:
+    """Return disk usage and metadata for all registered shared clones.
+
+    Each entry is a dict::
+
+        {
+            "url": str,
+            "hash": str,
+            "path": str,
+            "size_bytes": int,
+            "worktree_count": int,
+            "last_used_at": str,
+        }
+
+    Sorted by ``size_bytes`` descending.
+    """
+    from tether.repo_registry import RepoRegistry, repo_url_hash
+    from tether.settings import settings
+
+    registry = RepoRegistry(settings.data_dir())
+    entries = registry.list_repos()
+
+    result: list[dict] = []
+    for entry in entries:
+        size = dir_size_bytes(entry.path)
+        url_hash = repo_url_hash(entry.url)
+        result.append(
+            {
+                "url": entry.url,
+                "hash": url_hash,
+                "path": entry.path,
+                "size_bytes": size,
+                "worktree_count": entry.worktree_count,
+                "last_used_at": entry.last_used_at,
+            }
+        )
+
+    result.sort(key=lambda r: r["size_bytes"], reverse=True)
+    return result
+
+
 def clone_repo(
     url: str,
     target_dir: str,
@@ -402,12 +525,31 @@ def _fetch_origin(repo_path: str) -> None:
     Fetching before a worktree add ensures the new worktree starts from a
     reasonably up-to-date state.  Network failures or missing remotes are not
     fatal; the worktree will simply be based on the last locally known state.
+
+    A per-process cache prevents re-fetching the same clone within
+    TETHER_GIT_FETCH_CACHE_SECONDS (default 300 s / 5 min).  Set to 0 to
+    disable the cache.
     """
+    from tether.settings import settings
+
+    resolved = str(Path(repo_path).resolve())
+    cache_ttl = settings.git_fetch_cache_seconds()
+    now = time.monotonic()
+
+    if cache_ttl > 0:
+        with _fetch_cache_lock:
+            last = _fetch_cache.get(resolved, 0.0)
+            if now - last < cache_ttl:
+                return  # Recent fetch; skip.
+            # Mark as fetched optimistically before the network call so that
+            # concurrent callers don't all pile in at once.
+            _fetch_cache[resolved] = now
+
     try:
         subprocess.run(
             ["git", "-C", repo_path, "fetch", "origin"],
             capture_output=True,
-            timeout=_clone_timeout(),
+            timeout=settings.git_fetch_timeout(),
         )
     except Exception:
         pass
