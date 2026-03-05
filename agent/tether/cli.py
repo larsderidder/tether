@@ -564,6 +564,8 @@ def _run_setup(args: argparse.Namespace) -> None:
         sys.exit(0)
 
     if cmd == "agents":
+        _apply_connection_args(args)
+
         from tether.config import load_config
 
         load_config()
