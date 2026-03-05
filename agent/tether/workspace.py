@@ -2,6 +2,17 @@
 
 Handles git clone, cleanup, and workspace lifecycle for sessions that run
 against cloned repositories rather than local directories.
+
+Worktree support
+----------------
+When a repo URL is encountered for the first time, a full clone is placed in
+{data_dir}/repos/{url_hash}/ and registered in the repo registry.  Subsequent
+sessions for the same URL create a lightweight git worktree from that shared
+clone instead of cloning again.
+
+Detection at cleanup time relies on the ``.git`` file vs ``.git`` directory
+distinction: worktrees have a ``.git`` *file*; standalone clones have a
+``.git`` *directory*.
 """
 
 from __future__ import annotations
@@ -11,9 +22,24 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pydantic import BaseModel
+
 
 class WorkspaceError(Exception):
     """Raised when a workspace operation fails."""
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceResult(BaseModel):
+    """Result returned by :func:`create_workspace`."""
+
+    path: str
+    is_worktree: bool
+    repo_hash: str | None = None  # None for legacy standalone clones
 
 
 # ---------------------------------------------------------------------------
@@ -120,12 +146,81 @@ def managed_workspaces_dir() -> str:
     return str(root)
 
 
+def managed_repos_dir() -> str:
+    """Return the shared-clone root directory, creating it if needed.
+
+    Shared clones (used as worktree bases) live under {data_dir}/repos/.
+    """
+    from tether.settings import settings
+
+    root = Path(settings.data_dir()) / "repos"
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
 def workspace_path(session_id: str) -> str:
     """Return the workspace path for a session.
 
     Returns {managed_workspaces_dir}/{session_id}/ without creating it.
     """
     return str(Path(managed_workspaces_dir()) / session_id)
+
+
+def create_workspace(
+    url: str,
+    session_id: str,
+    branch: str | None = None,
+    shallow: bool = False,
+    working_branch: str | None = None,
+) -> WorkspaceResult:
+    """Create a workspace for a session, reusing a shared clone when possible.
+
+    On the first call for a given repository URL a full clone is placed in
+    {data_dir}/repos/{url_hash}/ and registered in the repo registry.  All
+    calls (including the first) create a git worktree from that shared clone
+    into the managed workspaces directory.
+
+    Args:
+        url: Repository URL (HTTPS or SSH).
+        session_id: Session identifier; used to name the workspace directory.
+        branch: Branch or ref to base the worktree on (default: remote HEAD).
+        shallow: Perform a shallow clone if this is the first clone for the URL.
+        working_branch: Name for the new branch created in the worktree.
+            When omitted a name is generated from session_id.
+
+    Returns:
+        WorkspaceResult with the workspace path, is_worktree=True, and the
+        repo hash key.
+
+    Raises:
+        WorkspaceError: Any git operation fails.
+    """
+    from tether.repo_registry import RepoRegistry, repo_url_hash
+    from tether.settings import settings
+
+    registry = RepoRegistry(settings.data_dir())
+    url_hash = repo_url_hash(url)
+    dest = workspace_path(session_id)
+
+    existing = registry.get(url)
+    if existing is None:
+        # First clone: full clone into the shared repos dir.
+        clone_target = str(Path(managed_repos_dir()) / url_hash)
+        clone_repo(url, clone_target, branch=branch, shallow=shallow)
+        registry.register(url, clone_target)
+        shared_path = clone_target
+    else:
+        shared_path = existing.path
+        # Fetch latest from origin so the worktree gets recent commits.
+        _fetch_origin(shared_path)
+
+    # Create the worktree.
+    branch_name = working_branch or f"tether/{session_id[-6:]}"
+    _worktree_add(shared_path, dest, branch_name, base_ref=branch)
+    _configure_git_identity(dest)
+    registry.increment_worktrees(url)
+
+    return WorkspaceResult(path=dest, is_worktree=True, repo_hash=url_hash)
 
 
 def clone_repo(
@@ -195,6 +290,11 @@ def clone_repo(
 def cleanup_workspace(path: str) -> None:
     """Remove a workspace directory.
 
+    For git worktrees (detected by the presence of a ``.git`` *file* rather
+    than a ``.git`` *directory*), ``git worktree remove --force`` is used and
+    the worktree count in the repo registry is decremented.  For ordinary
+    standalone clones the directory is removed with ``shutil.rmtree``.
+
     A safety check ensures the path is located under the managed workspaces
     root before deletion, preventing accidental removal of arbitrary
     directories.
@@ -220,6 +320,26 @@ def cleanup_workspace(path: str) -> None:
     if not target.exists():
         return
 
+    if _is_worktree(str(target)):
+        try:
+            main_repo = _worktree_main_repo(str(target))
+        except WorkspaceError:
+            main_repo = None
+
+        try:
+            _run(["git", "worktree", "remove", "--force", str(target)], cwd=main_repo or str(target))
+        except WorkspaceError:
+            # Fall back to plain rmtree if git worktree remove fails.
+            shutil.rmtree(str(target), ignore_errors=True)
+
+        if main_repo:
+            from tether.repo_registry import RepoRegistry
+            from tether.settings import settings
+
+            registry = RepoRegistry(settings.data_dir())
+            registry.decrement_worktrees_by_path(main_repo)
+        return
+
     try:
         shutil.rmtree(str(target))
     except OSError as exc:
@@ -229,6 +349,135 @@ def cleanup_workspace(path: str) -> None:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_worktree(path: str) -> bool:
+    """Return True if *path* is a git worktree (has a .git *file*, not dir)."""
+    git_path = Path(path) / ".git"
+    return git_path.is_file()
+
+
+def _worktree_main_repo(path: str) -> str:
+    """Return the root path of the main repository for a worktree.
+
+    A worktree's .git file contains a line like::
+
+        gitdir: /abs/path/to/main/.git/worktrees/<name>
+
+    We walk two levels up from that gitdir to reach the main .git directory,
+    then one more level to the repository root.
+
+    Raises:
+        WorkspaceError: The .git file cannot be parsed or the derived path
+            does not look like a git repository.
+    """
+    git_file = Path(path) / ".git"
+    try:
+        content = git_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise WorkspaceError(f"Cannot read .git file in '{path}': {exc}") from exc
+
+    if not content.startswith("gitdir: "):
+        raise WorkspaceError(
+            f"Unexpected .git file format in '{path}': {content!r}"
+        )
+
+    gitdir = Path(content[len("gitdir: "):].strip())
+    # gitdir points to something like /main/.git/worktrees/<name>
+    # .parent -> /main/.git/worktrees
+    # .parent.parent -> /main/.git
+    # .parent.parent.parent -> /main   (repo root)
+    main_repo = gitdir.parent.parent.parent
+    if not (main_repo / ".git").exists():
+        raise WorkspaceError(
+            f"Could not determine main repo from worktree .git file: "
+            f"'{main_repo}' does not appear to be a git repository"
+        )
+    return str(main_repo)
+
+
+def _fetch_origin(repo_path: str) -> None:
+    """Run ``git fetch origin`` in *repo_path*, ignoring failures silently.
+
+    Fetching before a worktree add ensures the new worktree starts from a
+    reasonably up-to-date state.  Network failures or missing remotes are not
+    fatal; the worktree will simply be based on the last locally known state.
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", repo_path, "fetch", "origin"],
+            capture_output=True,
+            timeout=_clone_timeout(),
+        )
+    except Exception:
+        pass
+
+
+def _worktree_add(
+    main_repo: str,
+    dest: str,
+    branch_name: str,
+    base_ref: str | None = None,
+) -> None:
+    """Run ``git worktree add`` to create a new worktree at *dest*.
+
+    A fresh branch *branch_name* is created in the worktree.  If *base_ref*
+    is given the worktree starts at that ref; otherwise it uses the current
+    HEAD of the shared clone.
+
+    Raises:
+        WorkspaceError: The git command fails.
+    """
+    cmd = ["git", "-C", main_repo, "worktree", "add", dest, "-b", branch_name]
+    if base_ref:
+        cmd.append(base_ref)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_clone_timeout(),
+        )
+    except FileNotFoundError:
+        raise WorkspaceError(
+            "git binary not found; ensure git is installed and on PATH"
+        )
+    except subprocess.TimeoutExpired:
+        raise WorkspaceError(
+            f"git worktree add timed out after {_clone_timeout()} seconds"
+        )
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise WorkspaceError(
+            f"git worktree add failed (exit {result.returncode}): {stderr}"
+        )
+
+
+def _run(cmd: list[str], cwd: str | None = None) -> None:
+    """Run a subprocess command, raising WorkspaceError on failure."""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=_clone_timeout(),
+        )
+    except FileNotFoundError:
+        raise WorkspaceError(
+            f"Command not found: {cmd[0]}"
+        )
+    except subprocess.TimeoutExpired:
+        raise WorkspaceError(
+            f"Command timed out: {' '.join(cmd)}"
+        )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise WorkspaceError(
+            f"Command failed (exit {result.returncode}): {' '.join(cmd)}: {stderr}"
+        )
 
 
 def _clone_timeout() -> int:

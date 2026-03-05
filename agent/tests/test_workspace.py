@@ -9,10 +9,15 @@ import pytest
 
 from tether.workspace import (
     WorkspaceError,
+    WorkspaceResult,
     cleanup_workspace,
     clone_repo,
+    create_workspace,
     managed_workspaces_dir,
+    managed_repos_dir,
     workspace_path,
+    _is_worktree,
+    _worktree_main_repo,
 )
 
 
@@ -355,3 +360,275 @@ class TestGitIdentityAfterClone:
             capture_output=True, text=True,
         )
         assert result.returncode == 0, f"commit failed: {result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# Worktree detection helpers
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeDetection:
+    def test_is_worktree_false_for_standalone_clone(self, tmp_path, monkeypatch):
+        """A full clone has a .git directory, so is_worktree returns False."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        dest = workspace_path("sess_detect_clone")
+        clone_repo(src, dest)
+
+        assert not _is_worktree(dest)
+
+    def test_is_worktree_true_for_worktree(self, tmp_path, monkeypatch):
+        """A git worktree has a .git file, so is_worktree returns True."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        # Create a standalone clone first, then add a worktree from it.
+        shared = str(tmp_path / "shared_clone")
+        clone_repo(src, shared)
+
+        wt = str(tmp_path / "ws" / "my_worktree")
+        subprocess.run(
+            ["git", "-C", shared, "worktree", "add", wt, "-b", "tether/wt1"],
+            check=True, capture_output=True,
+        )
+
+        assert _is_worktree(wt)
+
+    def test_worktree_main_repo_resolves_correctly(self, tmp_path, monkeypatch):
+        """_worktree_main_repo returns the path of the shared clone."""
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        shared = str(tmp_path / "shared_clone")
+        clone_repo(src, shared)
+
+        wt = str(tmp_path / "ws" / "my_worktree2")
+        subprocess.run(
+            ["git", "-C", shared, "worktree", "add", wt, "-b", "tether/wt2"],
+            check=True, capture_output=True,
+        )
+
+        main_repo = _worktree_main_repo(wt)
+        # Both paths should resolve to the same directory.
+        import pathlib
+        assert pathlib.Path(main_repo).resolve() == pathlib.Path(shared).resolve()
+
+    def test_worktree_main_repo_raises_for_non_worktree(self, tmp_path):
+        """_worktree_main_repo raises WorkspaceError if there is no .git file."""
+        non_wt = str(tmp_path / "random_dir")
+        os.makedirs(non_wt)
+        with pytest.raises(WorkspaceError):
+            _worktree_main_repo(non_wt)
+
+
+# ---------------------------------------------------------------------------
+# create_workspace
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWorkspace:
+    def _setup(self, tmp_path, monkeypatch):
+        ws_dir = str(tmp_path / "ws")
+        data_dir = str(tmp_path / "data")
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", ws_dir)
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", data_dir)
+        return ws_dir, data_dir
+
+    def test_first_session_creates_shared_clone_and_worktree(self, tmp_path, monkeypatch):
+        """First call for a URL creates a shared clone and a worktree."""
+        ws_dir, data_dir = self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result = create_workspace(src, "sess_first")
+
+        assert isinstance(result, WorkspaceResult)
+        assert result.is_worktree is True
+        assert result.repo_hash is not None
+
+        # Workspace directory should exist and be a worktree.
+        assert os.path.isdir(result.path)
+        assert _is_worktree(result.path)
+
+        # Shared clone should exist under repos/.
+        repos_root = os.path.join(data_dir, "repos", result.repo_hash)
+        assert os.path.isdir(repos_root)
+        assert not _is_worktree(repos_root)
+
+    def test_second_session_reuses_shared_clone(self, tmp_path, monkeypatch):
+        """Second call for the same URL adds a worktree without cloning again."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result1 = create_workspace(src, "sess_reuse_a")
+        result2 = create_workspace(src, "sess_reuse_b")
+
+        assert result1.repo_hash == result2.repo_hash
+        # Both are worktrees.
+        assert _is_worktree(result1.path)
+        assert _is_worktree(result2.path)
+        # They should point to different directories.
+        assert result1.path != result2.path
+
+    def test_second_session_same_shared_clone_path(self, tmp_path, monkeypatch):
+        """Both worktrees share the same underlying clone directory."""
+        ws_dir, data_dir = self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result1 = create_workspace(src, "sess_shared_a")
+        result2 = create_workspace(src, "sess_shared_b")
+
+        main1 = _worktree_main_repo(result1.path)
+        main2 = _worktree_main_repo(result2.path)
+        import pathlib
+        assert pathlib.Path(main1).resolve() == pathlib.Path(main2).resolve()
+
+    def test_workspace_contains_repo_files(self, tmp_path, monkeypatch):
+        """The worktree contains the repository files."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result = create_workspace(src, "sess_files")
+        assert os.path.isfile(os.path.join(result.path, "README.md"))
+
+    def test_registry_worktree_count_incremented(self, tmp_path, monkeypatch):
+        """The repo registry tracks the number of live worktrees."""
+        ws_dir, data_dir = self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result1 = create_workspace(src, "sess_count_a")
+        result2 = create_workspace(src, "sess_count_b")
+
+        from tether.repo_registry import RepoRegistry
+        registry = RepoRegistry(data_dir)
+        entry = registry.get(src)
+        assert entry is not None
+        assert entry.worktree_count == 2
+
+    def test_working_branch_named_correctly(self, tmp_path, monkeypatch):
+        """The worktree branch uses the session ID suffix by default."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result = create_workspace(src, "sess_branch_test")
+
+        branch_result = subprocess.run(
+            ["git", "-C", result.path, "branch", "--show-current"],
+            capture_output=True, text=True,
+        )
+        branch = branch_result.stdout.strip()
+        assert branch.startswith("tether/")
+
+    def test_custom_working_branch(self, tmp_path, monkeypatch):
+        """The caller can specify an explicit working branch name."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result = create_workspace(src, "sess_custom_branch", working_branch="my-custom-branch")
+
+        branch_result = subprocess.run(
+            ["git", "-C", result.path, "branch", "--show-current"],
+            capture_output=True, text=True,
+        )
+        assert branch_result.stdout.strip() == "my-custom-branch"
+
+    def test_git_identity_configured_in_worktree(self, tmp_path, monkeypatch):
+        """Git user.name and user.email are written into the worktree local config."""
+        self._setup(tmp_path, monkeypatch)
+        monkeypatch.setenv("TETHER_GIT_USER_NAME", "Tether Bot")
+        monkeypatch.setenv("TETHER_GIT_USER_EMAIL", "bot@tether.test")
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result = create_workspace(src, "sess_identity_wt")
+
+        name = subprocess.run(
+            ["git", "-C", result.path, "config", "--local", "user.name"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        assert name == "Tether Bot"
+
+
+# ---------------------------------------------------------------------------
+# cleanup_workspace: worktree-aware
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupWorktreeAware:
+    def test_cleanup_worktree_removes_directory(self, tmp_path, monkeypatch):
+        """cleanup_workspace removes a worktree directory."""
+        ws_dir = str(tmp_path / "ws")
+        data_dir = str(tmp_path / "data")
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", ws_dir)
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", data_dir)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        result = create_workspace(src, "sess_cleanup_wt")
+        assert os.path.isdir(result.path)
+
+        cleanup_workspace(result.path)
+        assert not os.path.exists(result.path)
+
+    def test_cleanup_worktree_decrements_count(self, tmp_path, monkeypatch):
+        """cleanup_workspace decrements the registry worktree count."""
+        ws_dir = str(tmp_path / "ws")
+        data_dir = str(tmp_path / "data")
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", ws_dir)
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", data_dir)
+
+        src = str(tmp_path / "source")
+        _make_source_repo(src)
+
+        r1 = create_workspace(src, "sess_decr_a")
+        r2 = create_workspace(src, "sess_decr_b")
+
+        cleanup_workspace(r1.path)
+
+        from tether.repo_registry import RepoRegistry
+        registry = RepoRegistry(data_dir)
+        entry = registry.get(src)
+        assert entry.worktree_count == 1
+
+        cleanup_workspace(r2.path)
+        entry = registry.get(src)
+        assert entry.worktree_count == 0
+
+    def test_cleanup_fallback_on_plain_directory(self, tmp_path, monkeypatch):
+        """cleanup_workspace still works for non-worktree managed directories."""
+        ws_dir = str(tmp_path / "ws")
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", ws_dir)
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+        # Create a plain managed directory (no git worktree).
+        plain = os.path.join(ws_dir, "sess_plain")
+        os.makedirs(plain)
+        open(os.path.join(plain, "f.txt"), "w").close()
+
+        cleanup_workspace(plain)
+        assert not os.path.exists(plain)

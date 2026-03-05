@@ -629,7 +629,12 @@ class SessionStore:
             return
         path = session.directory
         if path and session.workdir_managed:
-            shutil.rmtree(path, ignore_errors=True)
+            from tether.workspace import WorkspaceError, cleanup_workspace
+
+            try:
+                cleanup_workspace(path)
+            except WorkspaceError:
+                shutil.rmtree(path, ignore_errors=True)
         session.directory = None
         session.workdir_managed = False
 
