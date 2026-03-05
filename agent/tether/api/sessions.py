@@ -258,6 +258,9 @@ async def create_session(
                     )
         else:
             # Worktree path: reuse shared clone when available.
+            # create_workspace() always creates a unique working branch in the
+            # worktree (git requires it). If the caller did not request one,
+            # an auto-generated name is used and branch_was_forced is True.
             try:
                 ws_result = _workspace.create_workspace(
                     url=payload.clone_url,
@@ -267,12 +270,20 @@ async def create_session(
                     working_branch=working_branch,
                 )
                 cloned_path = ws_result.path
-                if working_branch:
-                    session.working_branch = working_branch
+                # Always record the working branch from the worktree result,
+                # even when the caller did not explicitly request auto-branch.
+                session.working_branch = ws_result.working_branch
+                if ws_result.branch_was_forced:
+                    logger.info(
+                        "Working branch auto-created for worktree session (required for shared repo)",
+                        session_id=session.id,
+                        branch=ws_result.working_branch,
+                    )
+                else:
                     logger.info(
                         "Auto-branch created via worktree",
                         session_id=session.id,
-                        branch=working_branch,
+                        branch=ws_result.working_branch,
                     )
             except WorkspaceError as exc:
                 store.delete_session(session.id)

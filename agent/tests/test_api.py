@@ -595,10 +595,16 @@ class TestConcurrentStartPrevention:
 class TestCreateSessionClone:
     """Tests for clone_url-based session creation."""
 
-    def _make_workspace_result(self, path: str):
+    def _make_workspace_result(self, path: str, branch: str = "tether/abc123"):
         """Return a WorkspaceResult pointing at *path*."""
         from tether.workspace import WorkspaceResult
-        return WorkspaceResult(path=path, is_worktree=True, repo_hash="a1b2c3d4")
+        return WorkspaceResult(
+            path=path,
+            is_worktree=True,
+            repo_hash="a1b2c3d4",
+            working_branch=branch,
+            branch_was_forced=False,
+        )
 
     @pytest.mark.anyio
     async def test_create_session_with_clone_url(
@@ -790,10 +796,16 @@ class TestAutobranchOnClone:
         subprocess.run(["git", "-C", path, "commit", "-m", "init"], check=True, capture_output=True)
         return path
 
-    def _make_workspace_result(self, path: str, branch: str | None = None):
+    def _make_workspace_result(self, path: str, branch: str = "tether/abc123"):
         """Return a WorkspaceResult for the given path."""
         from tether.workspace import WorkspaceResult
-        return WorkspaceResult(path=path, is_worktree=True, repo_hash="a1b2c3d4")
+        return WorkspaceResult(
+            path=path,
+            is_worktree=True,
+            repo_hash="a1b2c3d4",
+            working_branch=branch,
+            branch_was_forced=False,
+        )
 
     @pytest.mark.anyio
     async def test_auto_branch_creates_working_branch(
@@ -808,8 +820,9 @@ class TestAutobranchOnClone:
         captured: dict = {}
 
         def fake_create_workspace(**kwargs):
-            captured["working_branch"] = kwargs.get("working_branch")
-            return self._make_workspace_result(clone_dir)
+            branch = kwargs.get("working_branch") or "tether/forced"
+            captured["working_branch"] = branch
+            return self._make_workspace_result(clone_dir, branch=branch)
 
         monkeypatch.delenv("TETHER_GIT_AUTO_BRANCH", raising=False)
         with patch("tether.api.sessions._workspace.create_workspace",
@@ -822,7 +835,7 @@ class TestAutobranchOnClone:
         session = resp.json()
         assert session["working_branch"] is not None
         assert session["working_branch"].startswith("tether/")
-        # working_branch was forwarded to create_workspace
+        # working_branch was forwarded to create_workspace and stored on session
         assert captured["working_branch"] == session["working_branch"]
 
     @pytest.mark.anyio
@@ -846,24 +859,39 @@ class TestAutobranchOnClone:
         assert resp.json()["working_branch"] is not None
 
     @pytest.mark.anyio
-    async def test_no_auto_branch_by_default(
+    async def test_worktree_always_has_working_branch(
         self, api_client: httpx.AsyncClient, fresh_store, tmp_path, monkeypatch
     ) -> None:
-        """working_branch is None when auto_branch is False and setting is off."""
+        """working_branch is always set for worktree sessions, even without auto_branch.
+
+        Git worktrees require a unique branch per worktree, so create_workspace()
+        always creates one. The session stores the branch regardless of the
+        auto_branch flag.
+        """
         monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
         monkeypatch.setenv("TETHER_GIT_AUTO_BRANCH", "0")
         clone_dir = str(tmp_path / "clone")
         import os
         os.makedirs(clone_dir)
 
+        # Simulate create_workspace returning a forced branch (branch_was_forced=True).
+        from tether.workspace import WorkspaceResult
+        forced_result = WorkspaceResult(
+            path=clone_dir,
+            is_worktree=True,
+            repo_hash="a1b2c3d4",
+            working_branch="tether/forced99",
+            branch_was_forced=True,
+        )
         with patch("tether.api.sessions._workspace.create_workspace",
-                   return_value=self._make_workspace_result(clone_dir)):
+                   return_value=forced_result):
             resp = await api_client.post(
                 "/api/sessions",
                 json={"clone_url": "https://github.com/owner/repo.git", "auto_branch": False},
             )
         assert resp.status_code == 201
-        assert resp.json()["working_branch"] is None
+        # Branch is always stored, even when auto_branch was not requested.
+        assert resp.json()["working_branch"] == "tether/forced99"
 
     @pytest.mark.anyio
     async def test_custom_branch_pattern(
@@ -880,8 +908,9 @@ class TestAutobranchOnClone:
         captured: dict = {}
 
         def fake_create_workspace(**kwargs):
-            captured["working_branch"] = kwargs.get("working_branch")
-            return self._make_workspace_result(clone_dir)
+            branch = kwargs.get("working_branch") or "tether/forced"
+            captured["working_branch"] = branch
+            return self._make_workspace_result(clone_dir, branch=branch)
 
         with patch("tether.api.sessions._workspace.create_workspace",
                    side_effect=fake_create_workspace):

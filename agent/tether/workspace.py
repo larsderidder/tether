@@ -51,6 +51,8 @@ class WorkspaceResult(BaseModel):
     path: str
     is_worktree: bool
     repo_hash: str | None = None  # None for legacy standalone clones
+    working_branch: str  # Branch created in the worktree (always set for worktrees)
+    branch_was_forced: bool = False  # True when the caller did not supply working_branch
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +193,12 @@ def create_workspace(
     calls (including the first) create a git worktree from that shared clone
     into the managed workspaces directory.
 
+    A working branch is **always** created in the worktree.  Git worktrees
+    cannot share branches, so a unique branch is required for each session.
+    When the caller omits *working_branch*, one is generated automatically
+    (``tether/<last-6-chars-of-session-id>``) and ``WorkspaceResult.branch_was_forced``
+    is set to ``True`` so the caller can log or surface this to the user.
+
     Args:
         url: Repository URL (HTTPS or SSH).
         session_id: Session identifier; used to name the workspace directory.
@@ -200,8 +208,9 @@ def create_workspace(
             When omitted a name is generated from session_id.
 
     Returns:
-        WorkspaceResult with the workspace path, is_worktree=True, and the
-        repo hash key.
+        WorkspaceResult with the workspace path, is_worktree=True, the repo
+        hash key, the working branch name, and a flag indicating whether the
+        branch was auto-generated.
 
     Raises:
         WorkspaceError: Any git operation fails.
@@ -212,6 +221,11 @@ def create_workspace(
     registry = RepoRegistry(settings.data_dir())
     url_hash = repo_url_hash(url)
     dest = workspace_path(session_id)
+
+    # Determine the working branch name.  For worktrees a branch is mandatory:
+    # git rejects creating a worktree without a distinct branch.
+    branch_was_forced = working_branch is None
+    branch_name = working_branch or f"tether/{session_id[-6:]}"
 
     existing = registry.get(url)
     if existing is None:
@@ -225,13 +239,18 @@ def create_workspace(
         # Fetch latest from origin so the worktree gets recent commits.
         _fetch_origin(shared_path)
 
-    # Create the worktree.
-    branch_name = working_branch or f"tether/{session_id[-6:]}"
+    # Create the worktree with the (possibly auto-generated) branch.
     _worktree_add(shared_path, dest, branch_name, base_ref=branch)
     _configure_git_identity(dest)
     registry.increment_worktrees(url)
 
-    return WorkspaceResult(path=dest, is_worktree=True, repo_hash=url_hash)
+    return WorkspaceResult(
+        path=dest,
+        is_worktree=True,
+        repo_hash=url_hash,
+        working_branch=branch_name,
+        branch_was_forced=branch_was_forced,
+    )
 
 
 def prune_worktrees(shared_clone_path: str) -> None:

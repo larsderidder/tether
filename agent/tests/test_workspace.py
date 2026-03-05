@@ -632,3 +632,114 @@ class TestCleanupWorktreeAware:
 
         cleanup_workspace(plain)
         assert not os.path.exists(plain)
+
+
+# ---------------------------------------------------------------------------
+# Enforced auto-branch for worktrees
+# ---------------------------------------------------------------------------
+
+
+class TestEnforcedWorkingBranch:
+    """Verify that create_workspace always creates a working branch."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TETHER_WORKSPACE_DIR", str(tmp_path / "ws"))
+        monkeypatch.setenv("TETHER_AGENT_DATA_DIR", str(tmp_path / "data"))
+
+    def _make_source_repo(self, path: str) -> None:
+        import subprocess
+        subprocess.run(["git", "init", "-b", "main", path], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "config", "user.email", "t@t.t"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "config", "user.name", "T"], check=True, capture_output=True)
+        with open(os.path.join(path, "README.md"), "w") as f:
+            f.write("# test\n")
+        subprocess.run(["git", "-C", path, "add", "."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "commit", "-m", "init"], check=True, capture_output=True)
+
+    def test_working_branch_returned_when_caller_supplies_it(self, tmp_path, monkeypatch):
+        """WorkspaceResult.working_branch matches the caller-supplied value."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "src")
+        self._make_source_repo(src)
+
+        from tether.workspace import _fetch_cache, _fetch_cache_lock
+        with _fetch_cache_lock:
+            _fetch_cache.clear()
+
+        result = create_workspace(src, "sess_explicit", working_branch="my-explicit-branch")
+
+        assert result.working_branch == "my-explicit-branch"
+        assert result.branch_was_forced is False
+
+    def test_working_branch_auto_generated_when_not_supplied(self, tmp_path, monkeypatch):
+        """WorkspaceResult.working_branch is set and branch_was_forced=True when no branch given."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "src")
+        self._make_source_repo(src)
+
+        from tether.workspace import _fetch_cache, _fetch_cache_lock
+        with _fetch_cache_lock:
+            _fetch_cache.clear()
+
+        result = create_workspace(src, "sess_noarg")
+
+        assert result.working_branch is not None
+        assert result.working_branch.startswith("tether/")
+        assert result.branch_was_forced is True
+
+    def test_auto_generated_branch_is_unique_per_session(self, tmp_path, monkeypatch):
+        """Two sessions for the same repo get distinct auto-generated branches."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "src")
+        self._make_source_repo(src)
+
+        from tether.workspace import _fetch_cache, _fetch_cache_lock
+        with _fetch_cache_lock:
+            _fetch_cache.clear()
+
+        # Use session IDs whose last 6 chars differ.
+        r1 = create_workspace(src, "sess_aaaaaa111111")
+        r2 = create_workspace(src, "sess_bbbbbb222222")
+
+        assert r1.working_branch != r2.working_branch
+
+    def test_second_session_also_gets_forced_branch(self, tmp_path, monkeypatch):
+        """branch_was_forced is True for subsequent sessions that omit working_branch."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "src")
+        self._make_source_repo(src)
+
+        from tether.workspace import _fetch_cache, _fetch_cache_lock
+        with _fetch_cache_lock:
+            _fetch_cache.clear()
+
+        create_workspace(src, "sess_first_cc1111")
+
+        # Second session, no working_branch passed.
+        r2 = create_workspace(src, "sess_second_dd2222")
+        assert r2.branch_was_forced is True
+        assert r2.working_branch.startswith("tether/")
+
+    def test_worktree_is_on_correct_branch(self, tmp_path, monkeypatch):
+        """The worktree is checked out on the working branch returned in the result."""
+        self._setup(tmp_path, monkeypatch)
+
+        src = str(tmp_path / "src")
+        self._make_source_repo(src)
+
+        from tether.workspace import _fetch_cache, _fetch_cache_lock
+        with _fetch_cache_lock:
+            _fetch_cache.clear()
+
+        result = create_workspace(src, "sess_branch_verify")
+
+        import subprocess
+        current = subprocess.run(
+            ["git", "-C", result.path, "branch", "--show-current"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        assert current == result.working_branch
