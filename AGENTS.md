@@ -114,12 +114,18 @@ tether delete <session-id>           # Delete a session
 tether sync <session-id>             # Pull new messages from an attached external session
 tether watch <session-id>            # Stream live output to the terminal
 
-# Remote server
+# Context switching (kubectx style)
+tether context                       # Show active context
+tether context list                  # List all contexts (local + servers)
+tether context use <name>            # Switch active context
+tether context use local             # Switch back to local
+
+# Remote server (one-time override)
 tether -H my-server list             # Connect to a remote Tether server
 tether --server work list            # Use a named server from ~/.config/tether/servers.yaml
 ```
 
-Config precedence: env vars > local `.env` > `~/.config/tether/config.env`.
+Connection precedence: `--host/--port/--token` > `--server` > active context > `default` in servers.yaml > env vars > defaults.
 
 ## Running Tests
 

@@ -98,6 +98,27 @@ def _get_json(path: str, *, params: dict[str, str] | None = None) -> list | dict
 
 
 # ---------------------------------------------------------------------------
+# Context banner
+# ---------------------------------------------------------------------------
+
+
+def _print_context_banner() -> None:
+    """Print the active context as a one-liner when using a remote server."""
+    from tether.servers import get_active_context, get_server
+
+    active = get_active_context()
+    if active is None:
+        return
+    profile = get_server(active)
+    if profile:
+        host = profile.get("host", "?")
+        port = profile.get("port", "8787")
+        print(f"\u27f6 {active} ({host}:{port})")
+    else:
+        print(f"\u27f6 {active}")
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -111,6 +132,7 @@ def cmd_open() -> None:
 
 def cmd_status() -> None:
     """Print server health and session summary."""
+    _print_context_banner()
     try:
         h = _get_json("/api/health")
         items = _get_json("/api/sessions")
@@ -157,6 +179,7 @@ def cmd_list(
     directory: str | None = None,
 ) -> None:
     """List Tether sessions as a table."""
+    _print_context_banner()
     try:
         items = _get_json("/api/sessions")
     except (httpx.ConnectError, httpx.ConnectTimeout):

@@ -14,7 +14,11 @@ import argparse
 import os
 import sys
 
-from tether.servers import get_default_server, get_server
+from tether.servers import (
+    get_active_context_server,
+    get_default_server,
+    get_server,
+)
 
 
 def _apply_connection_args(args: argparse.Namespace) -> None:
@@ -23,8 +27,10 @@ def _apply_connection_args(args: argparse.Namespace) -> None:
     Precedence (highest to lowest):
     1. Explicit ``--host``, ``--port``, ``--token`` CLI flags
     2. ``--server <name>`` profile from ``~/.config/tether/servers.yaml``
-    3. Existing env vars / config file (already loaded by ``load_config``)
-    4. Built-in defaults (127.0.0.1:8787)
+    3. Active context from ``~/.config/tether/context``
+    4. ``default`` key in servers.yaml
+    5. Existing env vars / config file (already loaded by ``load_config``)
+    6. Built-in defaults (127.0.0.1:8787)
     """
     host = getattr(args, "remote_host", None)
     port = getattr(args, "remote_port", None)
@@ -43,8 +49,19 @@ def _apply_connection_args(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
     elif not host and not port and not token:
-        # No explicit connection flags; check for a configured default server.
-        profile = get_default_server()
+        # No explicit connection flags; check active context, then default.
+        ctx_name, ctx_profile = get_active_context_server()
+        if ctx_name and ctx_profile:
+            profile = ctx_profile
+        elif ctx_name and ctx_profile is None:
+            print(
+                f"Error: active context '{ctx_name}' not found in "
+                "~/.config/tether/servers.yaml.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            profile = get_default_server()
 
     if profile:
         if "host" in profile and not host:
@@ -337,6 +354,19 @@ def main(argv: list[str] | None = None) -> None:
         "clean", help="Remove orphaned workspace directories"
     )
 
+    # tether context [list|use <name>]
+    context_parser = sub.add_parser(
+        "context", help="Show or switch the active server context"
+    )
+    context_sub = context_parser.add_subparsers(dest="context_command")
+    context_sub.add_parser("list", help="List all available contexts")
+    context_use_p = context_sub.add_parser(
+        "use", help="Switch to a named context"
+    )
+    context_use_p.add_argument(
+        "context_name", help="Context name (use 'local' for local server)"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "start":
@@ -345,6 +375,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_init()
     elif args.command == "templates":
         _run_templates(args)
+    elif args.command == "context":
+        _run_context(args)
     elif args.command in (
         "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
         "watch", "git", "workspaces",
@@ -395,6 +427,61 @@ def _run_templates(args: argparse.Namespace) -> None:
     else:
         print("Usage: tether templates <list|show>", file=sys.stderr)
         sys.exit(1)
+
+
+def _run_context(args: argparse.Namespace) -> None:
+    """Handle ``tether context`` subcommands (no server connection needed)."""
+    from tether.servers import (
+        get_active_context,
+        get_server,
+        list_contexts,
+        set_active_context,
+    )
+
+    cmd = getattr(args, "context_command", None)
+
+    if cmd == "list":
+        contexts = list_contexts()
+        # Column widths
+        max_name = max(len(c["name"]) for c in contexts)
+        max_host = max(len(c["host"]) for c in contexts)
+        for ctx in contexts:
+            marker = "*" if ctx["active"] else " "
+            name = ctx["name"].ljust(max_name)
+            host_port = f'{ctx["host"]}:{ctx["port"]}'.ljust(max_host + 6)
+            print(f"  {marker} {name}  {host_port}")
+    elif cmd == "use":
+        name = args.context_name
+        if name != "local":
+            profile = get_server(name)
+            if profile is None:
+                print(
+                    f"Error: unknown context '{name}'. "
+                    "Check ~/.config/tether/servers.yaml.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        set_active_context(name)
+        if name == "local":
+            print("Switched to local context.")
+        else:
+            profile = get_server(name) or {}
+            host = profile.get("host", "?")
+            port = profile.get("port", "8787")
+            print(f"Switched to context '{name}' ({host}:{port}).")
+    else:
+        # No subcommand: show active context
+        active = get_active_context()
+        if active is None:
+            print("local")
+        else:
+            profile = get_server(active)
+            if profile:
+                host = profile.get("host", "?")
+                port = profile.get("port", "8787")
+                print(f"{active} ({host}:{port})")
+            else:
+                print(f"{active} (not found in servers.yaml)")
 
 
 def _run_client(args: argparse.Namespace) -> None:
