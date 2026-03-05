@@ -672,3 +672,189 @@ class TestGitCheckoutEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json()["branch"] == "other-branch"
+
+
+# ---------------------------------------------------------------------------
+# Worktree-specific tests
+# ---------------------------------------------------------------------------
+
+
+def _make_worktree(main_repo: str, worktree_path: str, branch: str) -> None:
+    """Create a git worktree at *worktree_path* on a new branch."""
+    subprocess.run(
+        ["git", "-C", main_repo, "worktree", "add", worktree_path, "-b", branch],
+        check=True, capture_output=True,
+    )
+
+
+class TestHasGitRepositoryWorktree:
+    """Verify has_git_repository returns True for worktrees."""
+
+    def test_returns_true_for_worktree(self, tmp_path):
+        """has_git_repository detects a worktree (.git file) correctly."""
+        from tether.git import has_git_repository
+
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/test-branch")
+
+        assert has_git_repository(wt) is True
+
+    def test_returns_false_for_plain_directory(self, tmp_path):
+        """A plain directory without .git returns False."""
+        from tether.git import has_git_repository
+
+        plain = str(tmp_path / "plain")
+        os.makedirs(plain)
+        assert has_git_repository(plain) is False
+
+
+class TestGitStatusWorktree:
+    """Verify git_status works correctly inside a git worktree."""
+
+    def test_is_worktree_false_for_standalone_clone(self, tmp_path):
+        """GitStatus.is_worktree is False for a regular clone."""
+        repo = str(tmp_path / "repo")
+        _init_repo(repo)
+        status = git_status(repo)
+        assert status.is_worktree is False
+
+    def test_is_worktree_true_for_worktree(self, tmp_path):
+        """GitStatus.is_worktree is True when run in a worktree directory."""
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/wt-status")
+
+        status = git_status(wt)
+        assert status.is_worktree is True
+
+    def test_branch_is_correct_in_worktree(self, tmp_path):
+        """Each worktree reports its own branch."""
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/my-branch")
+
+        status = git_status(wt)
+        assert status.branch == "tether/my-branch"
+
+    def test_commit_and_status_in_worktree(self, tmp_path):
+        """git_commit and git_status work independently in each worktree."""
+        from tether.git_ops import git_commit
+
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/commit-test")
+
+        # Make a change in the worktree
+        new_file = os.path.join(wt, "new.txt")
+        with open(new_file, "w") as f:
+            f.write("hello from worktree\n")
+
+        commit = git_commit(wt, "Add new file")
+        assert commit.hash
+        assert commit.message == "Add new file"
+
+        # Main repo should still be on main without the new file
+        status_main = git_status(main)
+        assert status_main.branch == "main"
+        assert not os.path.exists(os.path.join(main, "new.txt"))
+
+    def test_dirty_flag_in_worktree(self, tmp_path):
+        """Unstaged changes in a worktree are correctly reflected."""
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/dirty-test")
+
+        # Worktree should be clean initially.
+        assert not git_status(wt).dirty
+
+        # Make an untracked change.
+        with open(os.path.join(wt, "untracked.txt"), "w") as f:
+            f.write("untracked\n")
+
+        assert git_status(wt).dirty
+
+
+class TestWorktreeBranchConflicts:
+    """Verify user-friendly errors when a branch is in use by another worktree."""
+
+    def test_checkout_already_checked_out_branch_gives_clear_error(self, tmp_path):
+        """git_checkout raises with a clear message when the branch is in use."""
+        from tether.git_ops import git_checkout
+
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        # Create a worktree that checks out "tether/in-use"
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/in-use")
+
+        # Trying to check out the same branch from main should fail.
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="already checked out in another worktree"):
+            git_checkout(main, "tether/in-use")
+
+    def test_create_branch_already_checked_out_gives_clear_error(self, tmp_path):
+        """_enhance_worktree_error improves git's 'already checked out' messages."""
+        from tether.git_ops import _enhance_worktree_error
+
+        # Older git phrasing
+        raw1 = "Could not create branch 'x': git command failed: fatal: 'x' is already checked out at '/path'"
+        enhanced1 = _enhance_worktree_error(raw1, "x")
+        assert "already checked out in another worktree" in enhanced1
+        assert "Each session needs its own branch" in enhanced1
+
+        # Newer git phrasing
+        raw2 = "Could not create branch 'x': git command failed: fatal: 'x' is already used by worktree at '/path'"
+        enhanced2 = _enhance_worktree_error(raw2, "x")
+        assert "already checked out in another worktree" in enhanced2
+        assert "Each session needs its own branch" in enhanced2
+
+    def test_enhance_worktree_error_passthrough_for_unrelated_errors(self):
+        """_enhance_worktree_error leaves unrelated error messages untouched."""
+        from tether.git_ops import _enhance_worktree_error
+
+        msg = "Could not create branch 'x': branch already exists"
+        assert _enhance_worktree_error(msg, "x") == msg
+
+
+class TestIsWorktreeHelper:
+    """Unit tests for the _is_worktree helper."""
+
+    def test_returns_false_for_git_directory(self, tmp_path):
+        """_is_worktree returns False when .git is a directory."""
+        from tether.git_ops import _is_worktree
+
+        repo = str(tmp_path / "repo")
+        _init_repo(repo)
+        assert _is_worktree(repo) is False
+
+    def test_returns_true_for_worktree(self, tmp_path):
+        """_is_worktree returns True when .git is a file."""
+        from tether.git_ops import _is_worktree
+
+        main = str(tmp_path / "main")
+        _init_repo(main)
+
+        wt = str(tmp_path / "wt")
+        _make_worktree(main, wt, "tether/is-wt")
+
+        assert _is_worktree(wt) is True
+
+    def test_returns_false_for_plain_directory(self, tmp_path):
+        """_is_worktree returns False for a directory with no .git at all."""
+        from tether.git_ops import _is_worktree
+
+        plain = str(tmp_path / "plain")
+        os.makedirs(plain)
+        assert _is_worktree(plain) is False

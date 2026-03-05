@@ -44,9 +44,9 @@ class TestHasGitRepository:
         """Returns False for nonexistent paths."""
         assert has_git_repository("/nonexistent/path") is False
 
-    def test_returns_false_when_git_is_file(self, tmp_path) -> None:
-        """Returns False when .git is a file, not directory."""
+    def test_returns_true_when_git_is_file(self, tmp_path) -> None:
+        """Returns True when .git is a file (git worktree)."""
         git_file = tmp_path / ".git"
-        git_file.write_text("gitdir: /some/path")
+        git_file.write_text("gitdir: /some/path/.git/worktrees/myworktree")
 
-        assert has_git_repository(str(tmp_path)) is False
+        assert has_git_repository(str(tmp_path)) is True

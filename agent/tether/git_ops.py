@@ -47,6 +47,7 @@ class GitStatus(BaseModel):
     unstaged_count: int
     untracked_count: int
     last_commit: GitCommit | None
+    is_worktree: bool = False  # True when the workspace is a git worktree
 
 
 class GitPushResult(BaseModel):
@@ -109,6 +110,7 @@ def git_status(path: str) -> GitStatus:
         unstaged_count=len(unstaged),
         untracked_count=len(untracked),
         last_commit=last_commit,
+        is_worktree=_is_worktree(path),
     )
 
 
@@ -224,6 +226,8 @@ def git_create_branch(path: str, name: str, checkout: bool = True) -> str:
 
     Raises:
         ValueError: Branch already exists, invalid name, or git fails.
+            A user-friendly message is provided when a branch is already
+            checked out by another worktree.
     """
     _require_git(path)
     _validate_branch_name(name)
@@ -232,12 +236,16 @@ def git_create_branch(path: str, name: str, checkout: bool = True) -> str:
         try:
             _run(["git", "checkout", "-b", name], cwd=path)
         except ValueError as exc:
-            raise ValueError(f"Could not create branch '{name}': {exc}") from exc
+            raise ValueError(
+                _enhance_worktree_error(f"Could not create branch '{name}': {exc}", name)
+            ) from exc
     else:
         try:
             _run(["git", "branch", name], cwd=path)
         except ValueError as exc:
-            raise ValueError(f"Could not create branch '{name}': {exc}") from exc
+            raise ValueError(
+                _enhance_worktree_error(f"Could not create branch '{name}': {exc}", name)
+            ) from exc
 
     return name
 
@@ -329,14 +337,18 @@ def git_checkout(path: str, branch: str) -> str:
         The name of the checked-out branch.
 
     Raises:
-        ValueError: Branch does not exist or checkout fails.
+        ValueError: Branch does not exist, is checked out in another worktree,
+            or checkout fails.  A user-friendly message is provided for the
+            worktree conflict case.
     """
     _require_git(path)
 
     try:
         _run(["git", "checkout", branch], cwd=path)
     except ValueError as exc:
-        raise ValueError(f"Could not checkout '{branch}': {exc}") from exc
+        raise ValueError(
+            _enhance_worktree_error(f"Could not checkout '{branch}': {exc}", branch)
+        ) from exc
 
     return branch
 
@@ -344,6 +356,29 @@ def git_checkout(path: str, branch: str) -> str:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_worktree(path: str) -> bool:
+    """Return True if *path* is a git worktree (has a .git *file*, not dir)."""
+    import os as _os
+
+    git_path = _os.path.join(path, ".git")
+    return _os.path.isfile(git_path)
+
+
+def _enhance_worktree_error(message: str, branch: str) -> str:
+    """Return a clearer error message when git reports a worktree conflict.
+
+    Git may report either "already checked out" or "already used by worktree"
+    depending on the git version.  Both indicate the same problem: the branch
+    is currently in use by another worktree.
+    """
+    if "already checked out" in message or "already used by worktree" in message:
+        return (
+            f"Branch '{branch}' is already checked out in another worktree. "
+            "Each session needs its own branch when using shared repositories."
+        )
+    return message
 
 
 _INVALID_BRANCH_CHARS_RE = re.compile(r"[ \t\n\x00]")

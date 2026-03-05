@@ -16,10 +16,14 @@ def normalize_directory_path(path: str) -> str:
 
 
 def has_git_repository(path: str) -> bool:
-    """Return True if the directory contains a Git repository."""
+    """Return True if the directory contains a Git repository.
+
+    Accepts both standalone clones (which have a ``.git`` *directory*) and
+    git worktrees (which have a ``.git`` *file* pointing at the main repo).
+    """
     try:
         repo = Path(path)
-        git_dir = repo / ".git"
-        return git_dir.exists() and git_dir.is_dir()
+        git_path = repo / ".git"
+        return git_path.exists()  # True for both .git/ directory and .git file
     except Exception:
         return False
