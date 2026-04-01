@@ -39,7 +39,7 @@ classifiers = [
 ]
 dependencies = [
   "agent-tether[all]>=0.4.2",
-  "agent-sessions>=0.2.0",
+  "agent-sessions>=0.2.1",
   "fastapi>=0.110.0",
   "uvicorn>=0.27.0",
   "pydantic>=2.7.0",
