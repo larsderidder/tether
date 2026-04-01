@@ -2,7 +2,7 @@ name: Release Packages
 
 on:
   release:
-    types: [published, prereleased]
+    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -15,7 +15,7 @@ on:
       agent_sessions_ref:
         description: "Branch or tag to build from Adminrealagi/agent-sessions"
         required: false
-        default: "main"
+        default: ""
 
 permissions:
   contents: write
@@ -66,9 +66,55 @@ jobs:
         working-directory: agent
         run: python -m build
 
+      - name: Resolve agent-sessions ref
+        id: agent_sessions_ref
+        env:
+          INPUT_REF: ${{ inputs.agent_sessions_ref || '' }}
+          RELEASE_CHANNEL: ${{ github.event_name == 'release' && (github.event.release.prerelease && 'prerelease' || 'stable') || inputs.release_kind }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ -n "$INPUT_REF" ]]; then
+            echo "ref=$INPUT_REF" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          channel = os.environ["RELEASE_CHANNEL"]
+          token = os.environ.get("GITHUB_TOKEN", "")
+          request = urllib.request.Request(
+              "https://api.github.com/repos/Adminrealagi/agent-sessions/releases?per_page=20",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  **({"Authorization": f"Bearer {token}"} if token else {}),
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              releases = json.loads(response.read().decode("utf-8"))
+          match = None
+          for item in releases:
+              if not isinstance(item, dict) or item.get("draft"):
+                  continue
+              is_prerelease = bool(item.get("prerelease"))
+              if channel == "prerelease" and not is_prerelease:
+                  continue
+              if channel == "stable" and is_prerelease:
+                  continue
+              tag_name = item.get("tag_name")
+              if isinstance(tag_name, str) and tag_name:
+                  match = tag_name
+                  break
+          if match is None:
+              raise SystemExit(f"no {channel} agent-sessions release found")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"ref={match}\n")
+          PY
+
       - name: Build agent-sessions wheel
         env:
-          AGENT_SESSIONS_REF: ${{ inputs.agent_sessions_ref || github.event.release.target_commitish || 'main' }}
+          AGENT_SESSIONS_REF: ${{ steps.agent_sessions_ref.outputs.ref }}
         run: |
           git clone --depth 1 --branch "$AGENT_SESSIONS_REF" https://github.com/Adminrealagi/agent-sessions.git /tmp/agent-sessions
           python -m build /tmp/agent-sessions --outdir /tmp/agent-sessions-dist
