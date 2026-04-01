@@ -212,6 +212,10 @@ tether sync <session-id>             # Pull new messages from an attached extern
 
 Session IDs accept short prefixes (first few characters are enough as long as they are unique).
 
+Codex external sessions can be discovered and attached for history sync and bridge
+mirroring before the sidecar is reachable. Starting or resuming Codex execution
+still requires the sidecar backend to be running.
+
 ### Running in the background
 
 Tether does not have a built in daemon mode. To run it in the background:
