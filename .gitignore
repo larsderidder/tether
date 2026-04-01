@@ -20,6 +20,8 @@ ui/dev-dist/
 agent/tether/static_ui/
 agent/tether/sidecars/*.mjs
 agent/dist/
+dist-rc/
+dist-rc-local/
 
 # Agent data
 agent/data/

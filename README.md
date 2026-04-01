@@ -82,6 +82,11 @@ cp .env.example .env
 make start
 ```
 
+Release-candidate package assets are built by
+`.github/workflows/release-candidate.yml`. That workflow emits a Debian package,
+a Homebrew formula, and a bundled wheelhouse artifact so fleet installs can pin
+the exact candidate build.
+
 ## Attaching external sessions
 
 Tether discovers sessions from Claude Code, Codex, OpenCode, and Pi that are already running on your machine. Use the external session browser in the web UI, or from the CLI:

@@ -1,0 +1,105 @@
+name: Release Candidate Packages
+
+on:
+  release:
+    types: [prereleased]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to package (for formula URLs)"
+        required: true
+      agent_sessions_ref:
+        description: "Branch or tag to build from Adminrealagi/agent-sessions"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+
+jobs:
+  package-rc:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python build tools
+        run: python -m pip install --upgrade build
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
+      - name: Copy UI to agent
+        run: |
+          rm -rf agent/tether/static_ui
+          cp -r ui/dist agent/tether/static_ui
+
+      - name: Install sidecar dependencies
+        run: npm install --workspaces
+
+      - name: Build sidecar bundles
+        run: ./scripts/build-sidecars.sh
+
+      - name: Sync README for wheel build
+        run: |
+          cp README.md agent/README.md
+          sed -i 's|src="tether_compact_logo.png"|src="https://raw.githubusercontent.com/larsderidder/tether/main/tether_compact_logo.png"|' agent/README.md
+
+      - name: Build wheel
+        working-directory: agent
+        run: python -m build
+
+      - name: Build agent-sessions wheel
+        env:
+          AGENT_SESSIONS_REF: ${{ inputs.agent_sessions_ref || 'main' }}
+        run: |
+          git clone --depth 1 --branch "$AGENT_SESSIONS_REF" https://github.com/Adminrealagi/agent-sessions.git /tmp/agent-sessions
+          python -m build /tmp/agent-sessions --outdir /tmp/agent-sessions-dist
+
+      - name: Build RC assets
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          python scripts/build_rc_assets.py \
+            --dist-dir agent/dist \
+            --output-dir dist-rc \
+            --package-name tether-ai-rc \
+            --project-name tether-ai \
+            --display-name Tether \
+            --homepage https://gettether.dev \
+            --release-tag "$RELEASE_TAG" \
+            --repo-owner "$REPO_OWNER" \
+            --repo-name "$REPO_NAME" \
+            --install-extras discord \
+            --extra-requirement "discord.py>=2.3.0" \
+            --extra-wheel /tmp/agent-sessions-dist/agent_sessions-*.whl \
+            --primary-command tether=tether-rc \
+            --primary-command tether-mcp=tether-mcp-rc
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tether-rc-assets
+          path: dist-rc/*
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist-rc/*
