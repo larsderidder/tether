@@ -151,6 +151,60 @@ class DiscordBridge(UpstreamDiscordBridge):
                 code=self._pairing_code,
             )
 
+    def _should_defer_new_message_to_reaction(self, text: str) -> bool:
+        if not self._reaction_new_session_enabled:
+            return False
+        if "\n" not in text:
+            return False
+        try:
+            return parse_reaction_shortcut_message(text) is not None
+        except ReactionShortcutError:
+            return True
+
+    async def _handle_message(self, message: Any) -> None:
+        """Route incoming Discord messages to commands or session input."""
+        try:
+            import discord
+        except ImportError:
+            return
+
+        if message.author.bot:
+            return
+
+        text = message.content.strip()
+        if not text:
+            return
+
+        if text.lower().startswith(("!pair", "!setup")):
+            await self._dispatch_command(message, text)
+            return
+
+        if isinstance(message.channel, discord.Thread):
+            if text.startswith("!"):
+                await self._dispatch_command(message, text)
+                return
+            session_id = self._session_for_thread(message.channel.id)
+            if not session_id:
+                return
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._forward_input(message, session_id, text)
+            return
+
+        if (
+            self._channel_id
+            and message.channel.id == self._channel_id
+            and text.startswith("!")
+        ):
+            if text.lower().startswith("!new") and self._should_defer_new_message_to_reaction(text):
+                return
+            await self._dispatch_command(message, text)
+            return
+
+        if not self._channel_id and text.lower().startswith("!setup"):
+            await self._dispatch_command(message, text)
+
     async def create_thread(self, session_id: str, session_name: str) -> dict:
         if not self._client:
             raise RuntimeError("Discord client not initialized")

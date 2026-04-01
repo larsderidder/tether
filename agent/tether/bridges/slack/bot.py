@@ -96,10 +96,51 @@ class SlackBridge(UpstreamSlackBridge):
                     channel_id=self._channel_id,
                 )
         else:
-            logger.info(
-                "Slack bridge initialized (basic mode — set SLACK_APP_TOKEN for commands and input)",
-                channel_id=self._channel_id,
-            )
+                logger.info(
+                    "Slack bridge initialized (basic mode — set SLACK_APP_TOKEN for commands and input)",
+                    channel_id=self._channel_id,
+                )
+
+    def _should_defer_new_message_to_reaction(self, text: str) -> bool:
+        if not self._reaction_new_session_enabled:
+            return False
+        if "\n" not in text:
+            return False
+        try:
+            return parse_reaction_shortcut_message(text) is not None
+        except ReactionShortcutError:
+            return True
+
+    async def _handle_message(self, event: dict) -> None:
+        """Route incoming Slack messages to commands or session input."""
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
+            return
+
+        text = event.get("text", "").strip()
+        if not text:
+            return
+
+        thread_ts = event.get("thread_ts")
+        ts = event.get("ts")
+
+        if thread_ts:
+            if text.startswith("!"):
+                await self._dispatch_command(event, text)
+                return
+            session_id = self._session_for_thread(thread_ts)
+            if not session_id:
+                return
+            await self._forward_input(event, session_id, text)
+            return
+
+        if text.startswith("!"):
+            if (
+                text.lower().startswith("!new")
+                and self._should_defer_new_message_to_reaction(text)
+                and ts
+            ):
+                return
+            await self._dispatch_command(event, text)
 
     def _begin_reaction_shortcut(self, source_message_id: str) -> bool:
         if source_message_id in self._reaction_shortcuts_completed:

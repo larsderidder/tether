@@ -150,6 +150,23 @@ class TestStringSettings:
         clean_env.setenv("TETHER_CODEX_SIDECAR_TOKEN", "token123")
         assert Settings.codex_sidecar_token() == "token123"
 
+    def test_codex_sidecar_cli_fallback_settings(self, clean_env) -> None:
+        """Codex CLI fallback settings reuse the sidecar env namespace."""
+        assert Settings.codex_sidecar_codex_bin() == ""
+        assert Settings.codex_sidecar_model() == ""
+        assert Settings.codex_sidecar_sandbox_mode() == ""
+        assert Settings.codex_sidecar_approval_policy() == ""
+
+        clean_env.setenv("TETHER_CODEX_SIDECAR_CODEX_BIN", "/usr/local/bin/codex")
+        clean_env.setenv("TETHER_CODEX_SIDECAR_MODEL", "gpt-5.4")
+        clean_env.setenv("TETHER_CODEX_SIDECAR_SANDBOX_MODE", "workspace-write")
+        clean_env.setenv("TETHER_CODEX_SIDECAR_APPROVAL_POLICY", "never")
+
+        assert Settings.codex_sidecar_codex_bin() == "/usr/local/bin/codex"
+        assert Settings.codex_sidecar_model() == "gpt-5.4"
+        assert Settings.codex_sidecar_sandbox_mode() == "workspace-write"
+        assert Settings.codex_sidecar_approval_policy() == "never"
+
     def test_opencode_sidecar_settings(self, clean_env) -> None:
         """OpenCode sidecar settings have expected defaults and overrides."""
         assert Settings.opencode_sidecar_url() == "http://localhost:8790"

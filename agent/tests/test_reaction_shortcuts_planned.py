@@ -157,6 +157,29 @@ async def test_discord_checkmark_reaction_ignores_threads_unauthorized_users_and
 
 
 @pytest.mark.anyio
+async def test_discord_multiline_new_message_waits_for_reaction_instead_of_running_command() -> None:
+    from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
+
+    bridge = DiscordBridge(
+        bot_token="discord_bot_token",
+        channel_id=1234567890,
+        discord_config=DiscordConfig(reaction_new_session_enabled=True),
+        callbacks=_mock_callbacks(),
+    )
+    bridge._dispatch_command = AsyncMock()
+
+    message = MagicMock()
+    message.author.bot = False
+    message.content = "!new codex /repo\nFix the Discord reaction flow."
+    message.channel = MagicMock()
+    message.channel.id = 1234567890
+
+    await bridge._handle_message(message)
+
+    bridge._dispatch_command.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_channel_message() -> None:
     from tether.bridges.slack.bot import SlackBridge
 
@@ -255,3 +278,26 @@ async def test_slack_checkmark_reaction_ignores_non_checkmark_reactions_and_thre
 
     assert callbacks.create_session.await_count == 0
     assert callbacks.send_input.await_count == 0
+
+
+@pytest.mark.anyio
+async def test_slack_multiline_new_message_waits_for_reaction_instead_of_running_command() -> None:
+    from tether.bridges.slack.bot import SlackBridge
+
+    bridge = SlackBridge(
+        bot_token="xoxb-test-token",
+        channel_id="C01234567",
+        callbacks=_mock_callbacks(),
+        reaction_new_session_enabled=True,
+    )
+    bridge._dispatch_command = AsyncMock()
+
+    await bridge._handle_message(
+        {
+            "channel": "C01234567",
+            "ts": "111.222",
+            "text": "!new codex /repo\nFix the Slack reaction flow.",
+        }
+    )
+
+    bridge._dispatch_command.assert_not_awaited()

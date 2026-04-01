@@ -335,6 +335,38 @@ class Settings:
         return _get("TETHER_CODEX_SIDECAR_TOKEN")
 
     @staticmethod
+    def codex_sidecar_codex_bin() -> str:
+        """Optional Codex CLI path used by the direct runner fallback.
+
+        Env: TETHER_CODEX_SIDECAR_CODEX_BIN
+        """
+        return _get("TETHER_CODEX_SIDECAR_CODEX_BIN")
+
+    @staticmethod
+    def codex_sidecar_model() -> str:
+        """Optional model override for sidecar or CLI-backed Codex turns.
+
+        Env: TETHER_CODEX_SIDECAR_MODEL
+        """
+        return _get("TETHER_CODEX_SIDECAR_MODEL")
+
+    @staticmethod
+    def codex_sidecar_sandbox_mode() -> str:
+        """Optional sandbox mode override for sidecar or CLI-backed Codex turns.
+
+        Env: TETHER_CODEX_SIDECAR_SANDBOX_MODE
+        """
+        return _get("TETHER_CODEX_SIDECAR_SANDBOX_MODE")
+
+    @staticmethod
+    def codex_sidecar_approval_policy() -> str:
+        """Optional approval policy override for sidecar or CLI-backed Codex turns.
+
+        Env: TETHER_CODEX_SIDECAR_APPROVAL_POLICY
+        """
+        return _get("TETHER_CODEX_SIDECAR_APPROVAL_POLICY")
+
+    @staticmethod
     def opencode_sidecar_url() -> str:
         """Base URL for the OpenCode sidecar service.
 
