@@ -30,6 +30,136 @@ router = APIRouter(tags=["external-sessions"])
 logger = structlog.get_logger(__name__)
 
 
+def _format_history_user_text(text: str) -> str:
+    """Render imported user prompts clearly inside bridge threads."""
+    if "\n" in text:
+        return f"👤 User\n{text}"
+    return f"👤 User: {text}"
+
+
+def _get_bound_bridge(session) -> object | None:
+    """Return the active bridge for a platform-bound session, if available."""
+    platform = session.platform
+    if not platform:
+        return None
+
+    from tether.bridges.glue import bridge_manager
+
+    bridge = bridge_manager.get_bridge(platform)
+    if bridge is None:
+        logger.warning(
+            "Skipping history relay because bridge is unavailable",
+            session_id=session.id,
+            platform=platform,
+        )
+    return bridge
+
+
+async def _send_history_to_bridge(
+    *,
+    session,
+    bridge: object | None,
+    text: str,
+    metadata: dict,
+) -> None:
+    """Send one imported history chunk to the bound bridge thread."""
+    if bridge is None or not text.strip():
+        return
+
+    try:
+        await bridge.on_output(session.id, text, metadata=metadata)
+    except Exception:
+        logger.exception(
+            "Failed to relay external session history to bridge",
+            session_id=session.id,
+            platform=session.platform,
+            metadata=metadata,
+        )
+
+
+async def _relay_history_message_to_bridge(
+    *,
+    session,
+    bridge: object | None,
+    role: str,
+    content: str,
+    thinking: str | None = None,
+    is_final: bool = False,
+) -> None:
+    """Mirror one imported external-session message into the bridge thread."""
+    if role == "user":
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=_format_history_user_text(content),
+            metadata={"is_history": True, "role": "user"},
+        )
+        return
+
+    if thinking:
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=thinking,
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": "step",
+                "final": False,
+            },
+        )
+
+    if content:
+        kind = "final" if is_final else "step"
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=content,
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": kind,
+                "final": is_final,
+            },
+        )
+
+
+async def _replay_stored_history_to_bridge(*, session, bridge: object | None) -> None:
+    """Replay already-emitted imported history into a newly created bridge thread."""
+    if bridge is None:
+        return
+
+    history_events = [
+        event
+        for event in store.read_event_log(session.id, since_seq=0)
+        if (event.get("data") or {}).get("is_history")
+        and event.get("type") in {"user_input", "output"}
+    ]
+
+    for event in history_events:
+        data = event.get("data") or {}
+        if event.get("type") == "user_input":
+            await _send_history_to_bridge(
+                session=session,
+                bridge=bridge,
+                text=_format_history_user_text(str(data.get("text") or "")),
+                metadata={"is_history": True, "role": "user"},
+            )
+            continue
+
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=str(data.get("text") or ""),
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": data.get("kind"),
+                "final": bool(data.get("final")),
+            },
+        )
+
+
 @router.get("/external-sessions", response_model=list[ExternalSessionSummaryResponse])
 async def list_external_sessions(
     directory: str | None = Query(None, min_length=1),
@@ -214,6 +344,10 @@ async def attach_to_external_session(
                     )
                     existing_session.platform_thread_id = thread_info.get("thread_id")
                     store.update_session(existing_session)
+                    await _replay_stored_history_to_bridge(
+                        session=existing_session,
+                        bridge=_get_bound_bridge(existing_session),
+                    )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
             # Subscribe bridge if platform is bound
@@ -297,6 +431,7 @@ async def attach_to_external_session(
         from tether.bridges.glue import bridge_subscriber
 
         bridge_subscriber.subscribe(session.id, session.platform)
+    history_bridge = _get_bound_bridge(session)
 
     await emit_state(session)
 
@@ -318,6 +453,14 @@ async def attach_to_external_session(
             content=msg.content,
             thinking=msg.thinking,
             timestamp=msg.timestamp,
+            is_final=is_final,
+        )
+        await _relay_history_message_to_bridge(
+            session=session,
+            bridge=history_bridge,
+            role=msg.role,
+            content=msg.content,
+            thinking=msg.thinking,
             is_final=is_final,
         )
 
@@ -408,6 +551,7 @@ async def sync_external_session(
         return SyncResult(synced=0, total=len(messages))
 
     # Emit new messages
+    history_bridge = _get_bound_bridge(session)
     for i, msg in enumerate(new_messages):
         is_final = False
         if msg.role == "assistant":
@@ -422,6 +566,14 @@ async def sync_external_session(
             content=msg.content,
             thinking=msg.thinking,
             timestamp=msg.timestamp,
+            is_final=is_final,
+        )
+        await _relay_history_message_to_bridge(
+            session=session,
+            bridge=history_bridge,
+            role=msg.role,
+            content=msg.content,
+            thinking=msg.thinking,
             is_final=is_final,
         )
 
