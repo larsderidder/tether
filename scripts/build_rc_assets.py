@@ -52,35 +52,12 @@ def build_wheelhouse(
     extra_requirements: list[str],
     extra_wheels: list[Path],
 ) -> None:
+    del python_bin
+    del extra_requirements
     wheelhouse_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(primary_wheel, wheelhouse_dir / primary_wheel.name)
     for wheel in extra_wheels:
         shutil.copy2(wheel, wheelhouse_dir / wheel.name)
-    run(
-        [
-            python_bin,
-            "-m",
-            "pip",
-            "download",
-            "--dest",
-            str(wheelhouse_dir),
-            "--find-links",
-            str(wheelhouse_dir),
-            str(primary_wheel),
-        ]
-    )
-    for requirement in extra_requirements:
-        run(
-            [
-                python_bin,
-                "-m",
-                "pip",
-                "download",
-                "--dest",
-                str(wheelhouse_dir),
-                requirement,
-            ]
-        )
 
 
 def build_wheelhouse_archive(wheelhouse_dir: Path, archive_path: Path) -> None:
@@ -94,7 +71,9 @@ def create_deb(
     package_name: str,
     display_name: str,
     version: str,
-    install_spec: str,
+    project_name: str,
+    install_extras: str,
+    primary_wheel_name: str,
     wheelhouse_dir: Path,
     command_aliases: dict[str, str],
     output_path: Path,
@@ -140,11 +119,13 @@ def create_deb(
                 f'PREFIX="/opt/{package_name}"',
                 'VENV="$PREFIX/venv"',
                 f'SHARE="/usr/share/{package_name}/wheelhouse"',
+                f'INSTALL_TARGET="{project_name}'
+                + (f'[{install_extras}]' if install_extras else "")
+                + f' @ file://$SHARE/{primary_wheel_name}"',
                 'rm -rf "$VENV"',
                 'mkdir -p "$PREFIX" /usr/local/bin',
                 'python3 -m venv "$VENV"',
-                '"$VENV/bin/pip" install --no-index --find-links="$SHARE" '
-                + f'"{install_spec}"',
+                '"$VENV/bin/pip" install --find-links="$SHARE" "$INSTALL_TARGET"',
                 link_commands,
                 "",
             ]
@@ -183,7 +164,9 @@ def create_formula(
     version: str,
     wheelhouse_asset_url: str,
     wheelhouse_sha256: str,
-    install_spec: str,
+    project_name: str,
+    install_extras: str,
+    primary_wheel_name: str,
     command_aliases: dict[str, str],
     formula_path: Path,
 ) -> None:
@@ -208,8 +191,10 @@ def create_formula(
             "",
             "  def install",
             '    venv = virtualenv_create(libexec, "python3.12")',
-            '    system libexec/"bin/pip", "install", "--no-index", "--find-links=#{buildpath}", '
-            + f'"{install_spec}"',
+            '    system libexec/"bin/pip", "install", "--find-links=#{buildpath}", '
+            + f'"{project_name}'
+            + (f'[{install_extras}]' if install_extras else "")
+            + f' @ file://#{{buildpath}}/{primary_wheel_name}"',
             link_commands,
             "  end",
             "",
@@ -262,11 +247,6 @@ def main() -> int:
         raise SystemExit(f"no wheel files found in {args.dist_dir}")
     primary_wheel = wheels[0]
     _, package_version = parse_wheel_metadata(primary_wheel)
-    install_spec = args.project_name
-    if args.install_extras:
-        install_spec += f"[{args.install_extras}]"
-    install_spec += f"=={package_version}"
-
     command_aliases: dict[str, str] = {}
     for item in args.primary_command:
         src, sep, dst = item.partition("=")
@@ -305,7 +285,9 @@ def main() -> int:
         version=formula_version,
         wheelhouse_asset_url=wheelhouse_asset_url,
         wheelhouse_sha256=wheelhouse_digest,
-        install_spec=install_spec,
+        project_name=args.project_name,
+        install_extras=args.install_extras,
+        primary_wheel_name=primary_wheel.name,
         command_aliases=command_aliases,
         formula_path=formula_path,
     )
@@ -317,7 +299,9 @@ def main() -> int:
         package_name=args.package_name,
         display_name=args.display_name,
         version=debian_version(args.release_tag, package_version),
-        install_spec=install_spec,
+        project_name=args.project_name,
+        install_extras=args.install_extras,
+        primary_wheel_name=primary_wheel.name,
         wheelhouse_dir=wheelhouse_dir,
         command_aliases=command_aliases,
         output_path=deb_path,
