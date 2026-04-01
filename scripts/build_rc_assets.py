@@ -169,7 +169,7 @@ def create_deb(
                 'rm -rf "$VENV"',
                 'mkdir -p "$PREFIX" /usr/local/bin',
                 'python3 -m venv "$VENV"',
-                '"$VENV/bin/pip" install --no-index --find-links="$SHARE" "$INSTALL_TARGET"',
+                '"$VENV/bin/pip" install --find-links="$SHARE" "$INSTALL_TARGET"',
                 link_commands,
                 "",
             ]
@@ -235,7 +235,7 @@ def create_formula(
             "",
             "  def install",
             '    venv = virtualenv_create(libexec, "python3.12")',
-            '    system libexec/"bin/pip", "install", "--no-index", "--find-links=#{buildpath}", '
+            '    system libexec/"bin/pip", "install", "--find-links=#{buildpath}", '
             + f'"{project_name}'
             + (f'[{install_extras}]' if install_extras else "")
             + f' @ file://#{{buildpath}}/{primary_wheel_name}"',
