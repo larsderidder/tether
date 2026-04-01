@@ -19,6 +19,23 @@ WHEEL_RE = re.compile(
 )
 
 
+def release_tag_to_python_version(release_tag: str) -> str:
+    return release_tag.lstrip("v").replace("-rc", "rc")
+
+
+def validate_release_tag_matches_package_version(
+    release_tag: str,
+    package_version: str,
+) -> None:
+    expected_version = release_tag_to_python_version(release_tag)
+    if expected_version != package_version:
+        raise SystemExit(
+            "release tag/version mismatch: "
+            f"tag {release_tag!r} expects wheel version {expected_version!r}, "
+            f"found {package_version!r}"
+        )
+
+
 def run(cmd: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(cmd, check=True, cwd=str(cwd) if cwd else None)
 
@@ -49,12 +66,39 @@ def build_wheelhouse(
     python_bin: str,
     primary_wheel: Path,
     wheelhouse_dir: Path,
+    project_name: str,
+    install_extras: str,
     extra_requirements: list[str],
     extra_wheels: list[Path],
 ) -> None:
-    del python_bin
-    del extra_requirements
+    if wheelhouse_dir.exists():
+        shutil.rmtree(wheelhouse_dir)
     wheelhouse_dir.mkdir(parents=True, exist_ok=True)
+    install_target = (
+        f"{project_name}[{install_extras}] @ {primary_wheel.resolve().as_uri()}"
+        if install_extras
+        else primary_wheel.resolve().as_uri()
+    )
+    with tempfile.TemporaryDirectory(prefix="wheelhouse-seed-") as seed_root:
+        seed_dir = Path(seed_root)
+        shutil.copy2(primary_wheel, seed_dir / primary_wheel.name)
+        for wheel in extra_wheels:
+            shutil.copy2(wheel, seed_dir / wheel.name)
+        download_cmd = [
+            python_bin,
+            "-m",
+            "pip",
+            "download",
+            "--dest",
+            str(wheelhouse_dir),
+            "--only-binary=:all:",
+            "--find-links",
+            str(seed_dir),
+            install_target,
+            *extra_requirements,
+            *(wheel.resolve().as_uri() for wheel in extra_wheels),
+        ]
+        run(download_cmd)
     shutil.copy2(primary_wheel, wheelhouse_dir / primary_wheel.name)
     for wheel in extra_wheels:
         shutil.copy2(wheel, wheelhouse_dir / wheel.name)
@@ -125,7 +169,7 @@ def create_deb(
                 'rm -rf "$VENV"',
                 'mkdir -p "$PREFIX" /usr/local/bin',
                 'python3 -m venv "$VENV"',
-                '"$VENV/bin/pip" install --find-links="$SHARE" "$INSTALL_TARGET"',
+                '"$VENV/bin/pip" install --no-index --find-links="$SHARE" "$INSTALL_TARGET"',
                 link_commands,
                 "",
             ]
@@ -191,7 +235,7 @@ def create_formula(
             "",
             "  def install",
             '    venv = virtualenv_create(libexec, "python3.12")',
-            '    system libexec/"bin/pip", "install", "--find-links=#{buildpath}", '
+            '    system libexec/"bin/pip", "install", "--no-index", "--find-links=#{buildpath}", '
             + f'"{project_name}'
             + (f'[{install_extras}]' if install_extras else "")
             + f' @ file://#{{buildpath}}/{primary_wheel_name}"',
@@ -247,6 +291,7 @@ def main() -> int:
         raise SystemExit(f"no wheel files found in {args.dist_dir}")
     primary_wheel = wheels[0]
     _, package_version = parse_wheel_metadata(primary_wheel)
+    validate_release_tag_matches_package_version(args.release_tag, package_version)
     command_aliases: dict[str, str] = {}
     for item in args.primary_command:
         src, sep, dst = item.partition("=")
@@ -262,6 +307,8 @@ def main() -> int:
         args.python_bin,
         primary_wheel,
         wheelhouse_dir,
+        args.project_name,
+        args.install_extras,
         args.extra_requirement,
         args.extra_wheel,
     )
