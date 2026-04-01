@@ -64,7 +64,7 @@ jobs:
 
       - name: Build agent-sessions wheel
         env:
-          AGENT_SESSIONS_REF: ${{ inputs.agent_sessions_ref || 'main' }}
+          AGENT_SESSIONS_REF: ${{ inputs.agent_sessions_ref || github.event.release.target_commitish || 'main' }}
         run: |
           git clone --depth 1 --branch "$AGENT_SESSIONS_REF" https://github.com/Adminrealagi/agent-sessions.git /tmp/agent-sessions
           python -m build /tmp/agent-sessions --outdir /tmp/agent-sessions-dist
