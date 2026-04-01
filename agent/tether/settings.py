@@ -40,6 +40,23 @@ def _get_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _get_int_set(name: str) -> set[int]:
+    """Parse a comma-separated list of integer IDs."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return out
+
+
 class Settings:
     """Centralized settings for the Tether agent.
 
@@ -190,12 +207,84 @@ class Settings:
         return _get_int("TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS", default=30)
 
     @staticmethod
+    def bridge_reaction_new_session_enabled() -> bool:
+        """Enable the `!new` plus checkmark reaction shortcut in Slack/Discord.
+
+        When enabled, a top-level control-channel message whose first line starts
+        with ``!new`` can create and start a new session when reacted to with the
+        configured emoji.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED (default: 1)
+        """
+        return _get_bool("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", default=True)
+
+    @staticmethod
+    def bridge_reaction_new_session_emoji() -> str:
+        """Emoji or reaction name used to trigger the new-session shortcut.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI (default: ✅)
+        """
+        return _get("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", default="✅")
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 
         Env: TETHER_AGENT_TURN_TIMEOUT_SECONDS (default: 0)
         """
         return _get_int("TETHER_AGENT_TURN_TIMEOUT_SECONDS", default=0)
+
+    # -------------------------------------------------------------------------
+    # SSH Access Settings
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def ssh_enabled() -> bool:
+        """Enable the optional SSH control server.
+
+        Env: TETHER_SSH_ENABLED (default: 0)
+        """
+        return _get_bool("TETHER_SSH_ENABLED", default=False)
+
+    @staticmethod
+    def ssh_host() -> str:
+        """Host to bind the SSH control server to.
+
+        Env: TETHER_SSH_HOST (default: 0.0.0.0)
+        """
+        return _get("TETHER_SSH_HOST", default="0.0.0.0")
+
+    @staticmethod
+    def ssh_port() -> int:
+        """Port to bind the SSH control server to.
+
+        Env: TETHER_SSH_PORT (default: 8822)
+        """
+        return _get_int("TETHER_SSH_PORT", default=8822)
+
+    @staticmethod
+    def ssh_host_key_path() -> str:
+        """Path to the SSH host private key.
+
+        Env: TETHER_SSH_HOST_KEY_PATH
+        Default: <data_dir>/ssh_host_ed25519_key
+        """
+        configured = _get("TETHER_SSH_HOST_KEY_PATH")
+        if configured:
+            return os.path.abspath(configured)
+        return os.path.join(settings.data_dir(), "ssh_host_ed25519_key")
+
+    @staticmethod
+    def ssh_authorized_keys_path() -> str:
+        """Path to the authorized client public keys file.
+
+        Env: TETHER_SSH_AUTHORIZED_KEYS_PATH
+        Default: <data_dir>/ssh_authorized_keys
+        """
+        configured = _get("TETHER_SSH_AUTHORIZED_KEYS_PATH")
+        if configured:
+            return os.path.abspath(configured)
+        return os.path.join(settings.data_dir(), "ssh_authorized_keys")
 
     # -------------------------------------------------------------------------
     # Claude Runner Settings
@@ -389,6 +478,20 @@ class Settings:
             return 0
 
     @staticmethod
+    def discord_guild_id() -> int:
+        """Discord guild ID used for automatic control-channel bootstrap.
+
+        Env: DISCORD_GUILD_ID
+        """
+        value = os.environ.get("DISCORD_GUILD_ID", "").strip()
+        if not value:
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
+    @staticmethod
     def discord_require_pairing() -> bool:
         """Require Discord users to pair before using the bot.
 
@@ -416,19 +519,15 @@ class Settings:
 
         Env: DISCORD_ALLOWED_USER_IDS (e.g. "123,456")
         """
-        raw = os.environ.get("DISCORD_ALLOWED_USER_IDS", "").strip()
-        if not raw:
-            return set()
-        out: set[int] = set()
-        for part in raw.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                out.add(int(part))
-            except ValueError:
-                continue
-        return out
+        return _get_int_set("DISCORD_ALLOWED_USER_IDS")
+
+    @staticmethod
+    def discord_auto_pair_user_ids() -> set[int]:
+        """Comma-separated Discord user IDs to pre-authorize as paired.
+
+        Env: DISCORD_AUTO_PAIR_USER_IDS (e.g. "123,456")
+        """
+        return _get_int_set("DISCORD_AUTO_PAIR_USER_IDS")
 
 
 # Singleton instance for convenient imports

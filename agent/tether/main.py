@@ -117,12 +117,14 @@ async def _init_bridges() -> None:
     slack_channel = settings.slack_channel_id()
     if slack_token and slack_channel:
         try:
-            from agent_tether import SlackBridge
+            from tether.bridges.slack.bot import SlackBridge
 
             bridge = SlackBridge(
                 bot_token=slack_token,
                 channel_id=slack_channel,
                 slack_app_token=settings.slack_app_token(),
+                reaction_new_session_enabled=settings.bridge_reaction_new_session_enabled(),
+                reaction_new_session_emoji=settings.bridge_reaction_new_session_emoji(),
                 config=config,
                 callbacks=callbacks,
                 get_session_directory=get_session_directory,
@@ -141,8 +143,7 @@ async def _init_bridges() -> None:
     discord_channel = settings.discord_channel_id()
     if discord_token:
         try:
-            from agent_tether import DiscordBridge
-            from agent_tether.discord.bot import DiscordConfig
+            from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
 
             bridge = DiscordBridge(
                 bot_token=discord_token,
@@ -150,7 +151,11 @@ async def _init_bridges() -> None:
                 discord_config=DiscordConfig(
                     require_pairing=settings.discord_require_pairing(),
                     allowed_user_ids=settings.discord_allowed_user_ids(),
+                    auto_pair_user_ids=settings.discord_auto_pair_user_ids(),
                     pairing_code=settings.discord_pairing_code(),
+                    guild_id=settings.discord_guild_id(),
+                    reaction_new_session_enabled=settings.bridge_reaction_new_session_enabled(),
+                    reaction_new_session_emoji=settings.bridge_reaction_new_session_emoji(),
                 ),
                 config=config,
                 callbacks=callbacks,
@@ -162,11 +167,19 @@ async def _init_bridges() -> None:
             bridge.restore_thread_mappings(sessions)
             bridge_manager.register_bridge("discord", bridge)
             if not discord_channel:
-                pairing_code = settings.discord_pairing_code() or bridge._pairing_code
-                logger.info(
-                    "Discord bridge started. Run !setup in your Discord channel to configure it.",
-                    code=pairing_code,
-                )
+                guild_id = settings.discord_guild_id()
+                if guild_id:
+                    logger.info(
+                        "Discord bridge started. The control channel will be auto-created or reused after the bot connects.",
+                        guild_id=guild_id,
+                        channel_name=bridge._control_channel_name,
+                    )
+                else:
+                    pairing_code = settings.discord_pairing_code() or bridge._pairing_code
+                    logger.info(
+                        "Discord bridge started. Run !setup in your Discord channel to configure it.",
+                        code=pairing_code,
+                    )
             else:
                 logger.info("Discord bridge registered and started")
         except Exception:
@@ -263,7 +276,7 @@ def run() -> None:
                 logger.error(
                     "Port already in use. Is Tether already running?",
                     port=port,
-                    hint=f"Stop the other process or use: tether start --port <other>",
+                    hint="Stop the other process or use: tether start --port <other>",
                 )
                 sys.exit(1)
         raise
