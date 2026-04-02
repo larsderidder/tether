@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 from typing import Any
 
 import structlog
 from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
+from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
     parse_reaction_shortcut_message,
     reaction_matches,
 )
+from tether.output_postprocess import PublishedAttachment
+from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+_ERROR_ATTACHMENT_DELAY_S = 0.35
 
 
 class SlackBridge(UpstreamSlackBridge):
@@ -34,6 +41,7 @@ class SlackBridge(UpstreamSlackBridge):
         *,
         reaction_new_session_enabled: bool = True,
         reaction_new_session_emoji: str = "✅",
+        reaction_new_session_allow_plain_messages: bool = False,
     ) -> None:
         super().__init__(
             bot_token=bot_token,
@@ -47,8 +55,18 @@ class SlackBridge(UpstreamSlackBridge):
         )
         self._reaction_new_session_enabled = reaction_new_session_enabled
         self._reaction_new_session_emoji = reaction_new_session_emoji or "✅"
+        self._reaction_new_session_allow_plain_messages = (
+            reaction_new_session_allow_plain_messages
+        )
         self._reaction_shortcuts_completed: set[str] = set()
         self._reaction_shortcuts_in_progress: set[str] = set()
+        self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
+
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        await super().on_output(session_id, text, metadata=metadata)
+        await self._send_requested_output_attachments(session_id, metadata=metadata)
 
     async def start(self) -> None:
         """Initialize Slack client and socket mode."""
@@ -96,10 +114,10 @@ class SlackBridge(UpstreamSlackBridge):
                     channel_id=self._channel_id,
                 )
         else:
-                logger.info(
-                    "Slack bridge initialized (basic mode — set SLACK_APP_TOKEN for commands and input)",
-                    channel_id=self._channel_id,
-                )
+            logger.info(
+                "Slack bridge initialized (basic mode — set SLACK_APP_TOKEN for commands and input)",
+                channel_id=self._channel_id,
+            )
 
     def _should_defer_new_message_to_reaction(self, text: str) -> bool:
         if not self._reaction_new_session_enabled:
@@ -142,6 +160,180 @@ class SlackBridge(UpstreamSlackBridge):
                 return
             await self._dispatch_command(event, text)
 
+    async def _cancel_pending_error_attachment_task(self, session_id: str) -> None:
+        task = self._pending_error_attachment_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _send_requested_output_attachments(
+        self,
+        session_id: str,
+        *,
+        metadata: dict | None = None,
+    ) -> None:
+        if not self._client:
+            return
+
+        attachments = [
+            attachment
+            for attachment in (
+                PublishedAttachment.from_metadata(item)
+                for item in (metadata or {}).get("attachments") or []
+            )
+            if attachment is not None
+        ]
+        if not attachments:
+            return
+
+        thread_ts = self._thread_ts.get(session_id)
+        if not thread_ts:
+            return
+
+        failures: list[str] = []
+        for attachment in attachments:
+            try:
+                await self._client.files_upload_v2(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    file=attachment.path,
+                    filename=attachment.filename,
+                    title=attachment.title or attachment.filename,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to upload Slack output attachment",
+                    session_id=session_id,
+                    attachment_path=attachment.path,
+                )
+                failures.append(attachment.filename)
+
+        if failures:
+            try:
+                await self._client.chat_postMessage(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    text="Attachment upload failed: " + ", ".join(failures),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send Slack attachment failure notice",
+                    session_id=session_id,
+                )
+
+    async def _send_error_attachment_bundle(
+        self,
+        session_id: str,
+        metadata: dict | None = None,
+    ) -> bool:
+        if not self._client:
+            return False
+
+        thread_ts = self._thread_ts.get(session_id)
+        if not thread_ts:
+            return False
+
+        if not self._should_send_error_status(session_id):
+            return True
+
+        bundle = build_error_debug_bundle(session_id, metadata=metadata)
+        try:
+            first = True
+            for attachment in bundle.attachments:
+                kwargs = {
+                    "channel": self._channel_id,
+                    "thread_ts": thread_ts,
+                    "filename": attachment.filename,
+                    "title": attachment.title or attachment.filename,
+                    "content": attachment.content,
+                    "snippet_type": "text",
+                }
+                if first:
+                    kwargs["initial_comment"] = bundle.message
+                await self._client.files_upload_v2(**kwargs)
+                first = False
+
+            if first:
+                await self._client.chat_postMessage(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    text=bundle.message,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to send Slack error attachment bundle",
+                session_id=session_id,
+            )
+            try:
+                await self._client.chat_postMessage(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    text=":x: Status: error",
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send Slack fallback error status",
+                    session_id=session_id,
+                )
+        return True
+
+    def _schedule_error_attachment_bundle(
+        self,
+        session_id: str,
+        metadata: dict | None = None,
+    ) -> None:
+        existing = self._pending_error_attachment_tasks.pop(session_id, None)
+        if existing and not existing.done():
+            existing.cancel()
+
+        async def _delayed_send() -> None:
+            try:
+                await asyncio.sleep(_ERROR_ATTACHMENT_DELAY_S)
+                handled = await self._send_error_attachment_bundle(
+                    session_id,
+                    metadata=metadata,
+                )
+                if not handled:
+                    await super(SlackBridge, self).on_status_change(
+                        session_id,
+                        "error",
+                        metadata=metadata,
+                    )
+            except asyncio.CancelledError:
+                return
+            finally:
+                self._pending_error_attachment_tasks.pop(session_id, None)
+
+        self._pending_error_attachment_tasks[session_id] = asyncio.create_task(
+            _delayed_send()
+        )
+
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
+        if status != "error" or not settings.debug_attach_logs():
+            await self._cancel_pending_error_attachment_task(session_id)
+            await super().on_status_change(session_id, status, metadata=metadata)
+            return
+
+        message = str((metadata or {}).get("message") or "").strip()
+        if message:
+            await self._cancel_pending_error_attachment_task(session_id)
+            handled = await self._send_error_attachment_bundle(
+                session_id,
+                metadata=metadata,
+            )
+            if not handled:
+                await super().on_status_change(session_id, status, metadata=metadata)
+            return
+
+        self._schedule_error_attachment_bundle(session_id, metadata=metadata)
+
+    async def on_session_removed(self, session_id: str) -> None:
+        await self._cancel_pending_error_attachment_task(session_id)
+        await super().on_session_removed(session_id)
+
     def _begin_reaction_shortcut(self, source_message_id: str) -> bool:
         if source_message_id in self._reaction_shortcuts_completed:
             return False
@@ -156,6 +348,17 @@ class SlackBridge(UpstreamSlackBridge):
         self._reaction_shortcuts_in_progress.discard(source_message_id)
         if persist:
             self._reaction_shortcuts_completed.add(source_message_id)
+
+    async def _resolve_reaction_shortcut_target(
+        self, shortcut
+    ) -> tuple[str | None, str]:
+        if shortcut.args is not None:
+            return await self._parse_new_args(shortcut.args, base_session_id=None)
+        directory = await self._resolve_directory_arg(
+            os.getcwd(),
+            base_directory=None,
+        )
+        return self._config.default_adapter, directory
 
     @staticmethod
     def _is_top_level_source_message(message: dict) -> bool:
@@ -208,14 +411,14 @@ class SlackBridge(UpstreamSlackBridge):
             if not self._is_top_level_source_message(message):
                 return
 
-            shortcut = parse_reaction_shortcut_message(str(message.get("text") or ""))
+            shortcut = parse_reaction_shortcut_message(
+                str(message.get("text") or ""),
+                allow_plain_message=self._reaction_new_session_allow_plain_messages,
+            )
             if shortcut is None:
                 return
 
-            adapter, directory = await self._parse_new_args(
-                shortcut.args,
-                base_session_id=None,
-            )
+            adapter, directory = await self._resolve_reaction_shortcut_target(shortcut)
             dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
             agent_label = (
                 self._adapter_label(adapter)

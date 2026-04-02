@@ -199,7 +199,9 @@ class TestDiscordBridgePoC:
         from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
         from agent_tether.base import BridgeConfig
 
-        monkeypatch.setattr("tether.bridges.discord.bot.socket.gethostname", lambda: "box4080")
+        monkeypatch.setattr(
+            "tether.bridges.discord.bot.socket.gethostname", lambda: "box4080"
+        )
 
         mock_client = MagicMock()
         existing_channel = MagicMock()
@@ -232,7 +234,9 @@ class TestDiscordBridgePoC:
         from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
         from agent_tether.base import BridgeConfig
 
-        monkeypatch.setattr("tether.bridges.discord.bot.socket.gethostname", lambda: "kali14")
+        monkeypatch.setattr(
+            "tether.bridges.discord.bot.socket.gethostname", lambda: "kali14"
+        )
 
         mock_client = MagicMock()
         created_channel = MagicMock()
@@ -267,7 +271,9 @@ class TestDiscordBridgePoC:
         from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
         from agent_tether.base import BridgeConfig
 
-        monkeypatch.setattr("tether.bridges.discord.bot.socket.gethostname", lambda: "thinkpad1")
+        monkeypatch.setattr(
+            "tether.bridges.discord.bot.socket.gethostname", lambda: "thinkpad1"
+        )
 
         session = fresh_store.create_session("repo_test", "main")
 
@@ -412,6 +418,8 @@ class TestDiscordBridgePoC:
         from tether.bridges.discord.bot import DiscordBridge
         from agent_tether.base import BridgeConfig
 
+        monkeypatch.setenv("TETHER_DEBUG_ATTACH_LOGS", "0")
+
         session = fresh_store.create_session("repo_test", "main")
         session.platform = "discord"
         fresh_store.update_session(session)
@@ -438,6 +446,77 @@ class TestDiscordBridgePoC:
 
         # Only the first error should be sent within debounce window.
         assert mock_thread.send.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_error_status_uploads_debug_attachments_when_enabled(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        """Error status uploads Discord file attachments when enabled."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setenv("TETHER_DEBUG_ATTACH_LOGS", "1")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        await bridge.on_status_change(
+            session.id,
+            "error",
+            metadata={"message": "Process crashed"},
+        )
+
+        assert mock_thread.send.called
+        kwargs = mock_thread.send.call_args.kwargs
+        assert "files" in kwargs
+        assert kwargs["files"]
+        assert "Process crashed" in mock_thread.send.call_args.args[0]
+
+    @pytest.mark.anyio
+    async def test_error_status_falls_back_to_plain_status_when_disabled(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        """Disabling debug attachments restores the plain error status message."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setenv("TETHER_DEBUG_ATTACH_LOGS", "0")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        await bridge.on_status_change(
+            session.id,
+            "error",
+            metadata={"message": "Process crashed"},
+        )
+
+        assert mock_thread.send.called
+        assert "files" not in mock_thread.send.call_args.kwargs
 
     @pytest.mark.anyio
     async def test_on_approval_request_sends_message(
@@ -692,9 +771,7 @@ class TestDiscordBridgePoC:
         callbacks.list_sessions.assert_called_once()
 
     @pytest.mark.anyio
-    async def test_auto_pair_user_ids_authorize_commands(
-        self, tmp_path
-    ) -> None:
+    async def test_auto_pair_user_ids_authorize_commands(self, tmp_path) -> None:
         from agent_tether.base import BridgeConfig
         from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
 
@@ -722,7 +799,9 @@ class TestDiscordBridgePoC:
 
         assert 222 in bridge._paired_user_ids
         callbacks.list_sessions.assert_called_once()
-        pairing_payload = json.loads((tmp_path / "discord_pairing.json").read_text("utf-8"))
+        pairing_payload = json.loads(
+            (tmp_path / "discord_pairing.json").read_text("utf-8")
+        )
         assert pairing_payload["paired_user_ids"] == [222]
 
     @pytest.mark.anyio

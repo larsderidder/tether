@@ -227,6 +227,33 @@ class Settings:
         return _get("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", default="✅")
 
     @staticmethod
+    def bridge_reaction_new_session_allow_plain_messages() -> bool:
+        """Allow plain reacted control-channel messages to create new sessions.
+
+        When enabled, a top-level reacted control-channel message that does not
+        start with ``!`` uses its full text as the initial prompt. The session
+        runs in the Tether server's current working directory and uses the
+        configured default adapter.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES (default: 0)
+        """
+        return _get_bool(
+            "TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES",
+            default=False,
+        )
+
+    @staticmethod
+    def debug_attach_logs() -> bool:
+        """Attach diagnostic text files for bridge error delivery.
+
+        When enabled, Slack and Discord error notifications upload a diagnostic
+        bundle instead of emitting only a plain text status message.
+
+        Env: TETHER_DEBUG_ATTACH_LOGS (default: 1)
+        """
+        return _get_bool("TETHER_DEBUG_ATTACH_LOGS", default=True)
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 

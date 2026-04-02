@@ -20,6 +20,7 @@ from tether.store import store
 
 # Import at end to avoid circular dependency
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from tether.api.runner_registry import RunnerRegistry
 
@@ -113,12 +114,23 @@ class ApiRunnerEvents:
             if not session:
                 return
             # Already in a terminal or idle state
-            if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR):
+            if session.state in (
+                SessionState.AWAITING_INPUT,
+                SessionState.INTERRUPTING,
+                SessionState.ERROR,
+            ):
                 return
             # Non-zero exit code indicates an error
             if exit_code not in (0, None):
-                transition(session, SessionState.ERROR, ended_at=True, exit_code=exit_code)
+                transition(
+                    session, SessionState.ERROR, ended_at=True, exit_code=exit_code
+                )
                 await emit_state(session)
+                await emit_error(
+                    session,
+                    "RUNNER_EXIT",
+                    f"Runner exited with code {exit_code}",
+                )
 
     async def on_awaiting_input(self, session_id: str) -> None:
         """Handle runner signaling it's waiting for user input."""
@@ -205,6 +217,7 @@ def get_runner_registry() -> "RunnerRegistry":
     global _registry
     if _registry is None:
         from tether.api.runner_registry import RunnerRegistry
+
         _registry = RunnerRegistry(ApiRunnerEvents())
     return _registry
 
