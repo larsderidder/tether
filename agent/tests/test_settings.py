@@ -174,12 +174,15 @@ class TestStringSettings:
         """Reaction shortcut settings have safe defaults and overrides."""
         assert Settings.bridge_reaction_new_session_enabled() is True
         assert Settings.bridge_reaction_new_session_emoji() == "✅"
+        assert Settings.bridge_reaction_new_session_allow_plain_messages() is False
 
         clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", "0")
         clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", "white_check_mark")
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES", "1")
 
         assert Settings.bridge_reaction_new_session_enabled() is False
         assert Settings.bridge_reaction_new_session_emoji() == "white_check_mark"
+        assert Settings.bridge_reaction_new_session_allow_plain_messages() is True
 
 
 class TestDataDir:

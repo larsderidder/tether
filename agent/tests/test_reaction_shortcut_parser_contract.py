@@ -92,6 +92,27 @@ def test_parse_reaction_shortcut_message_extracts_args_and_prompt() -> None:
     assert shortcut.prompt == "Fix the failing Discord tests."
 
 
+def test_parse_reaction_shortcut_message_can_accept_plain_prompts_when_enabled() -> None:
+    shortcut = parse_reaction_shortcut_message(
+        "Fix the failing Discord tests.",
+        allow_plain_message=True,
+    )
+
+    assert shortcut is not None
+    assert shortcut.args is None
+    assert shortcut.prompt == "Fix the failing Discord tests."
+
+
+def test_parse_reaction_shortcut_message_ignores_other_commands_in_plain_mode() -> None:
+    assert (
+        parse_reaction_shortcut_message(
+            "!usage",
+            allow_plain_message=True,
+        )
+        is None
+    )
+
+
 def test_reaction_matches_accepts_slack_and_discord_checkmark_forms() -> None:
     assert reaction_matches("✅", "white_check_mark") is True
     assert reaction_matches("white_check_mark", "✅") is True

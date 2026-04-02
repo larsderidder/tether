@@ -16,9 +16,9 @@ _CHECKMARK_ALIASES = {
 
 @dataclass(frozen=True)
 class ReactionShortcutRequest:
-    """Parsed ``!new`` reaction shortcut payload."""
+    """Parsed reaction shortcut payload."""
 
-    args: str
+    args: str | None
     prompt: str
 
 
@@ -42,7 +42,11 @@ def reaction_matches(configured_reaction: str, actual_reaction: str) -> bool:
     )
 
 
-def parse_reaction_shortcut_message(text: str) -> ReactionShortcutRequest | None:
+def parse_reaction_shortcut_message(
+    text: str,
+    *,
+    allow_plain_message: bool = False,
+) -> ReactionShortcutRequest | None:
     """Parse a top-level control-channel message for the reaction shortcut.
 
     Returns ``None`` when the message is not a shortcut candidate. Raises
@@ -56,6 +60,10 @@ def parse_reaction_shortcut_message(text: str) -> ReactionShortcutRequest | None
     lines = normalized.splitlines()
     header = lines[0].strip()
     if not header.lower().startswith("!new"):
+        if header.startswith("!"):
+            return None
+        if allow_plain_message:
+            return ReactionShortcutRequest(args=None, prompt=normalized)
         return None
 
     args = header[4:].strip()

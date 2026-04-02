@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import os
 import re
 import socket
 from typing import Any
@@ -49,6 +50,7 @@ class DiscordConfig:
     guild_id: int = 0
     reaction_new_session_enabled: bool = True
     reaction_new_session_emoji: str = "✅"
+    reaction_new_session_allow_plain_messages: bool = False
 
 
 class DiscordBridge(UpstreamDiscordBridge):
@@ -101,6 +103,9 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         self._reaction_new_session_emoji = (
             getattr(local_config, "reaction_new_session_emoji", "✅") or "✅"
+        )
+        self._reaction_new_session_allow_plain_messages = bool(
+            getattr(local_config, "reaction_new_session_allow_plain_messages", False)
         )
         self._reaction_shortcuts_completed: set[int] = set()
         self._reaction_shortcuts_in_progress: set[int] = set()
@@ -225,6 +230,60 @@ class DiscordBridge(UpstreamDiscordBridge):
                 code=self._pairing_code,
             )
 
+    def _should_defer_new_message_to_reaction(self, text: str) -> bool:
+        if not self._reaction_new_session_enabled:
+            return False
+        if "\n" not in text:
+            return False
+        try:
+            return parse_reaction_shortcut_message(text) is not None
+        except ReactionShortcutError:
+            return True
+
+    async def _handle_message(self, message: Any) -> None:
+        """Route incoming Discord messages to commands or session input."""
+        try:
+            import discord
+        except ImportError:
+            return
+
+        if message.author.bot:
+            return
+
+        text = message.content.strip()
+        if not text:
+            return
+
+        if text.lower().startswith(("!pair", "!setup")):
+            await self._dispatch_command(message, text)
+            return
+
+        if isinstance(message.channel, discord.Thread):
+            if text.startswith("!"):
+                await self._dispatch_command(message, text)
+                return
+            session_id = self._session_for_thread(message.channel.id)
+            if not session_id:
+                return
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._forward_input(message, session_id, text)
+            return
+
+        if (
+            self._channel_id
+            and message.channel.id == self._channel_id
+            and text.startswith("!")
+        ):
+            if text.lower().startswith("!new") and self._should_defer_new_message_to_reaction(text):
+                return
+            await self._dispatch_command(message, text)
+            return
+
+        if not self._channel_id and text.lower().startswith("!setup"):
+            await self._dispatch_command(message, text)
+
     def _session_for_thread(self, thread_id: int) -> str | None:
         session_id = super()._session_for_thread(thread_id)
         if session_id:
@@ -293,6 +352,15 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._reaction_shortcuts_in_progress.discard(source_message_id)
         if persist:
             self._reaction_shortcuts_completed.add(source_message_id)
+
+    async def _resolve_reaction_shortcut_target(self, shortcut) -> tuple[str | None, str]:
+        if shortcut.args is not None:
+            return await self._parse_new_args(shortcut.args, base_session_id=None)
+        directory = await self._resolve_directory_arg(
+            os.getcwd(),
+            base_directory=None,
+        )
+        return self._config.default_adapter, directory
 
     async def _resolve_bootstrap_guild(self) -> Any | None:
         if not self._client:
@@ -420,14 +488,14 @@ class DiscordBridge(UpstreamDiscordBridge):
             if getattr(getattr(message, "author", None), "bot", False):
                 return
 
-            shortcut = parse_reaction_shortcut_message(getattr(message, "content", ""))
+            shortcut = parse_reaction_shortcut_message(
+                getattr(message, "content", ""),
+                allow_plain_message=self._reaction_new_session_allow_plain_messages,
+            )
             if shortcut is None:
                 return
 
-            adapter, directory = await self._parse_new_args(
-                shortcut.args,
-                base_session_id=None,
-            )
+            adapter, directory = await self._resolve_reaction_shortcut_target(shortcut)
             dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
             agent_label = (
                 self._adapter_label(adapter)

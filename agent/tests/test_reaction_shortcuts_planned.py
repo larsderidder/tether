@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -74,6 +76,63 @@ async def test_discord_checkmark_reaction_creates_and_starts_session_from_contro
     )
     control_channel.send.assert_awaited()
     assert "<#333>" in control_channel.send.await_args.args[0]
+
+
+@pytest.mark.anyio
+async def test_discord_checkmark_reaction_can_use_plain_control_channel_messages_when_enabled(
+    monkeypatch,
+) -> None:
+    from agent_tether.base import BridgeConfig
+    from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
+
+    callbacks = _mock_callbacks(
+        create_session=AsyncMock(
+            return_value={"id": "sess_discord", "platform_thread_id": "333"}
+        ),
+    )
+    bridge = DiscordBridge(
+        bot_token="discord_bot_token",
+        channel_id=1234567890,
+        discord_config=DiscordConfig(
+            reaction_new_session_enabled=True,
+            reaction_new_session_emoji="✅",
+            reaction_new_session_allow_plain_messages=True,
+        ),
+        callbacks=callbacks,
+        config=BridgeConfig(default_adapter="codex_sdk_sidecar"),
+    )
+
+    monkeypatch.setattr(os, "getcwd", lambda: "/worktrees/plain-discord")
+
+    control_channel = AsyncMock()
+    control_channel.id = 1234567890
+    source_message = MagicMock()
+    source_message.content = "Fix the Discord reaction flow."
+    source_message.author.bot = False
+    control_channel.fetch_message = AsyncMock(return_value=source_message)
+
+    mock_client = MagicMock()
+    mock_client.user = MagicMock(id=9999)
+    mock_client.get_channel.return_value = control_channel
+    bridge._client = mock_client
+
+    payload = MagicMock()
+    payload.channel_id = 1234567890
+    payload.message_id = 4445
+    payload.user_id = 1111
+    payload.emoji = MagicMock()
+    payload.emoji.name = "✅"
+
+    await bridge._handle_raw_reaction_add(payload)
+
+    create_kwargs = callbacks.create_session.await_args.kwargs
+    assert create_kwargs["directory"] == "/worktrees/plain-discord"
+    assert create_kwargs["platform"] == "discord"
+    assert create_kwargs["adapter"] == "codex_sdk_sidecar"
+    assert callbacks.send_input.await_args.args == (
+        "sess_discord",
+        "Fix the Discord reaction flow.",
+    )
 
 
 @pytest.mark.anyio
@@ -157,6 +216,29 @@ async def test_discord_checkmark_reaction_ignores_threads_unauthorized_users_and
 
 
 @pytest.mark.anyio
+async def test_discord_multiline_new_message_waits_for_reaction_instead_of_running_command() -> None:
+    from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
+
+    bridge = DiscordBridge(
+        bot_token="discord_bot_token",
+        channel_id=1234567890,
+        discord_config=DiscordConfig(reaction_new_session_enabled=True),
+        callbacks=_mock_callbacks(),
+    )
+    bridge._dispatch_command = AsyncMock()
+
+    message = MagicMock()
+    message.author.bot = False
+    message.content = "!new codex /repo\nFix the Discord reaction flow."
+    message.channel = MagicMock()
+    message.channel.id = 1234567890
+
+    await bridge._handle_message(message)
+
+    bridge._dispatch_command.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_channel_message() -> None:
     from tether.bridges.slack.bot import SlackBridge
 
@@ -203,6 +285,60 @@ async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_
     )
     assert mock_client.chat_postMessage.await_count == 1
     assert "New Codex session created in repo" in mock_client.chat_postMessage.await_args.kwargs["text"]
+
+
+@pytest.mark.anyio
+async def test_slack_checkmark_reaction_can_use_plain_control_channel_messages_when_enabled(
+    monkeypatch,
+) -> None:
+    from agent_tether.base import BridgeConfig
+    from tether.bridges.slack.bot import SlackBridge
+
+    callbacks = _mock_callbacks(
+        create_session=AsyncMock(
+            return_value={"id": "sess_slack", "platform_thread_id": "555.666"}
+        ),
+    )
+    bridge = SlackBridge(
+        bot_token="xoxb-test-token",
+        channel_id="C01234567",
+        callbacks=callbacks,
+        reaction_new_session_enabled=True,
+        reaction_new_session_emoji="✅",
+        reaction_new_session_allow_plain_messages=True,
+        config=BridgeConfig(default_adapter="codex_sdk_sidecar"),
+    )
+
+    monkeypatch.setattr(os, "getcwd", lambda: "/worktrees/plain-slack")
+
+    mock_client = AsyncMock()
+    mock_client.conversations_history.return_value = {
+        "ok": True,
+        "messages": [
+            {
+                "text": "Fix the Slack reaction flow.",
+                "ts": "111.222",
+            }
+        ],
+    }
+    bridge._client = mock_client
+
+    await bridge._handle_reaction_added(
+        {
+            "reaction": "white_check_mark",
+            "item": {"channel": "C01234567", "ts": "111.222"},
+            "user": "U123",
+        }
+    )
+
+    create_kwargs = callbacks.create_session.await_args.kwargs
+    assert create_kwargs["directory"] == "/worktrees/plain-slack"
+    assert create_kwargs["platform"] == "slack"
+    assert create_kwargs["adapter"] == "codex_sdk_sidecar"
+    assert callbacks.send_input.await_args.args == (
+        "sess_slack",
+        "Fix the Slack reaction flow.",
+    )
 
 
 @pytest.mark.anyio
@@ -255,3 +391,26 @@ async def test_slack_checkmark_reaction_ignores_non_checkmark_reactions_and_thre
 
     assert callbacks.create_session.await_count == 0
     assert callbacks.send_input.await_count == 0
+
+
+@pytest.mark.anyio
+async def test_slack_multiline_new_message_waits_for_reaction_instead_of_running_command() -> None:
+    from tether.bridges.slack.bot import SlackBridge
+
+    bridge = SlackBridge(
+        bot_token="xoxb-test-token",
+        channel_id="C01234567",
+        callbacks=_mock_callbacks(),
+        reaction_new_session_enabled=True,
+    )
+    bridge._dispatch_command = AsyncMock()
+
+    await bridge._handle_message(
+        {
+            "channel": "C01234567",
+            "ts": "111.222",
+            "text": "!new codex /repo\nFix the Slack reaction flow.",
+        }
+    )
+
+    bridge._dispatch_command.assert_not_awaited()

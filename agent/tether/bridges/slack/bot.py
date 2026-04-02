@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import structlog
@@ -34,6 +35,7 @@ class SlackBridge(UpstreamSlackBridge):
         *,
         reaction_new_session_enabled: bool = True,
         reaction_new_session_emoji: str = "✅",
+        reaction_new_session_allow_plain_messages: bool = False,
     ) -> None:
         super().__init__(
             bot_token=bot_token,
@@ -47,6 +49,9 @@ class SlackBridge(UpstreamSlackBridge):
         )
         self._reaction_new_session_enabled = reaction_new_session_enabled
         self._reaction_new_session_emoji = reaction_new_session_emoji or "✅"
+        self._reaction_new_session_allow_plain_messages = (
+            reaction_new_session_allow_plain_messages
+        )
         self._reaction_shortcuts_completed: set[str] = set()
         self._reaction_shortcuts_in_progress: set[str] = set()
 
@@ -101,6 +106,47 @@ class SlackBridge(UpstreamSlackBridge):
                 channel_id=self._channel_id,
             )
 
+    def _should_defer_new_message_to_reaction(self, text: str) -> bool:
+        if not self._reaction_new_session_enabled:
+            return False
+        if "\n" not in text:
+            return False
+        try:
+            return parse_reaction_shortcut_message(text) is not None
+        except ReactionShortcutError:
+            return True
+
+    async def _handle_message(self, event: dict) -> None:
+        """Route incoming Slack messages to commands or session input."""
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
+            return
+
+        text = event.get("text", "").strip()
+        if not text:
+            return
+
+        thread_ts = event.get("thread_ts")
+        ts = event.get("ts")
+
+        if thread_ts:
+            if text.startswith("!"):
+                await self._dispatch_command(event, text)
+                return
+            session_id = self._session_for_thread(thread_ts)
+            if not session_id:
+                return
+            await self._forward_input(event, session_id, text)
+            return
+
+        if text.startswith("!"):
+            if (
+                text.lower().startswith("!new")
+                and self._should_defer_new_message_to_reaction(text)
+                and ts
+            ):
+                return
+            await self._dispatch_command(event, text)
+
     def _begin_reaction_shortcut(self, source_message_id: str) -> bool:
         if source_message_id in self._reaction_shortcuts_completed:
             return False
@@ -115,6 +161,15 @@ class SlackBridge(UpstreamSlackBridge):
         self._reaction_shortcuts_in_progress.discard(source_message_id)
         if persist:
             self._reaction_shortcuts_completed.add(source_message_id)
+
+    async def _resolve_reaction_shortcut_target(self, shortcut) -> tuple[str | None, str]:
+        if shortcut.args is not None:
+            return await self._parse_new_args(shortcut.args, base_session_id=None)
+        directory = await self._resolve_directory_arg(
+            os.getcwd(),
+            base_directory=None,
+        )
+        return self._config.default_adapter, directory
 
     @staticmethod
     def _is_top_level_source_message(message: dict) -> bool:
@@ -167,14 +222,14 @@ class SlackBridge(UpstreamSlackBridge):
             if not self._is_top_level_source_message(message):
                 return
 
-            shortcut = parse_reaction_shortcut_message(str(message.get("text") or ""))
+            shortcut = parse_reaction_shortcut_message(
+                str(message.get("text") or ""),
+                allow_plain_message=self._reaction_new_session_allow_plain_messages,
+            )
             if shortcut is None:
                 return
 
-            adapter, directory = await self._parse_new_args(
-                shortcut.args,
-                base_session_id=None,
-            )
+            adapter, directory = await self._resolve_reaction_shortcut_target(shortcut)
             dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
             agent_label = (
                 self._adapter_label(adapter)
