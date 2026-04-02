@@ -70,6 +70,7 @@ Routes store events to bridge methods:
 - Auto-approve sends `✅ **Tool** — auto-approved (reason)` notification
 - Optional pairing/allowlist: when enabled, only authorized Discord user IDs can run commands or send input
 - Optional no-ID setup: if `DISCORD_CHANNEL_ID` is unset, run `!setup <code>` in the desired channel to configure it
+- Optional guild bootstrap: if `DISCORD_GUILD_ID` is set and `DISCORD_CHANNEL_ID` is unset, Tether will create or reuse a host-named control channel such as `🤖-kali14`
 
 ## Auto-Approve System
 
@@ -90,9 +91,11 @@ Stored in base class as in-memory dicts:
 | `SLACK_CHANNEL_ID` | Slack channel ID |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_CHANNEL_ID` | Discord channel ID (int) |
+| `DISCORD_GUILD_ID` | Discord guild/server ID used for automatic control-channel creation |
 | `DISCORD_REQUIRE_PAIRING` | Require pairing before using the Discord bot (0/1) |
 | `DISCORD_PAIRING_CODE` | Optional fixed pairing code (if unset and pairing is required, one is generated and logged) |
 | `DISCORD_ALLOWED_USER_IDS` | Comma-separated Discord user IDs that are always authorized |
+| `DISCORD_AUTO_PAIR_USER_IDS` | Comma-separated Discord user IDs to seed into the paired-user set at launch |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 

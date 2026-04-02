@@ -10,7 +10,7 @@ from tether.settings import Settings
 def clean_env(monkeypatch):
     """Remove all TETHER_ env vars for clean tests."""
     for key in list(os.environ.keys()):
-        if key.startswith("TETHER_") or key == "ANTHROPIC_API_KEY":
+        if key.startswith("TETHER_") or key.startswith("DISCORD_") or key == "ANTHROPIC_API_KEY":
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
 
@@ -170,7 +170,6 @@ class TestStringSettings:
         assert Settings.opencode_sidecar_cmd() == "my-opencode-sidecar --x"
         assert Settings.opencode_sidecar_startup_timeout_seconds() == 30
 
-
 class TestDataDir:
     """Test data directory setting."""
 
@@ -206,3 +205,11 @@ class TestDataDir:
 
         result = Settings.data_dir()
         assert result == str(tmp_path / "data" / "tether")
+
+
+class TestDiscordSettings:
+    """Test Discord-specific settings."""
+
+    def test_discord_auto_pair_user_ids(self, clean_env) -> None:
+        clean_env.setenv("DISCORD_AUTO_PAIR_USER_IDS", "123, nope, 456")
+        assert Settings.discord_auto_pair_user_ids() == {123, 456}
