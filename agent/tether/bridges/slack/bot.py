@@ -17,6 +17,7 @@ from tether.bridges.reaction_shortcuts import (
     parse_reaction_shortcut_message,
     reaction_matches,
 )
+from tether.output_postprocess import PublishedAttachment
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -60,6 +61,12 @@ class SlackBridge(UpstreamSlackBridge):
         self._reaction_shortcuts_completed: set[str] = set()
         self._reaction_shortcuts_in_progress: set[str] = set()
         self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
+
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        await super().on_output(session_id, text, metadata=metadata)
+        await self._send_requested_output_attachments(session_id, metadata=metadata)
 
     async def start(self) -> None:
         """Initialize Slack client and socket mode."""
@@ -159,6 +166,61 @@ class SlackBridge(UpstreamSlackBridge):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    async def _send_requested_output_attachments(
+        self,
+        session_id: str,
+        *,
+        metadata: dict | None = None,
+    ) -> None:
+        if not self._client:
+            return
+
+        attachments = [
+            attachment
+            for attachment in (
+                PublishedAttachment.from_metadata(item)
+                for item in (metadata or {}).get("attachments") or []
+            )
+            if attachment is not None
+        ]
+        if not attachments:
+            return
+
+        thread_ts = self._thread_ts.get(session_id)
+        if not thread_ts:
+            return
+
+        failures: list[str] = []
+        for attachment in attachments:
+            try:
+                await self._client.files_upload_v2(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    file=attachment.path,
+                    filename=attachment.filename,
+                    title=attachment.title or attachment.filename,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to upload Slack output attachment",
+                    session_id=session_id,
+                    attachment_path=attachment.path,
+                )
+                failures.append(attachment.filename)
+
+        if failures:
+            try:
+                await self._client.chat_postMessage(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    text="Attachment upload failed: " + ", ".join(failures),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send Slack attachment failure notice",
+                    session_id=session_id,
+                )
 
     async def _send_error_attachment_bundle(
         self,

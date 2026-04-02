@@ -47,6 +47,12 @@ class SessionRuntime:
     pending_inputs: list[str] = field(default_factory=list)
     recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=10))
     output_buffer: list[str] = field(default_factory=list)
+    pending_final_text: str | None = None
+    pending_final_attachments: list[dict] = field(default_factory=list)
+    pending_final_warnings: list[str] = field(default_factory=list)
+    duration_ms: int | None = None
+    last_heartbeat_elapsed_ms: int | None = None
+    turn_finalized: bool = False
     stop_requested: bool = False
     synced_message_count: int = 0
     synced_turn_count: int = 0  # Number of conversation turns (user messages)
@@ -197,7 +203,9 @@ class SessionStore:
         with self._db_lock:
             with get_db_session() as db:
                 # Delete messages first
-                messages = db.exec(select(Message).where(Message.session_id == session_id)).all()
+                messages = db.exec(
+                    select(Message).where(Message.session_id == session_id)
+                ).all()
                 for msg in messages:
                     db.delete(msg)
                 # Delete session
@@ -277,7 +285,9 @@ class SessionStore:
             await queue.put(event)
         self._append_event_log(session_id, event)
 
-    def _persist_session(self, session: Session, *, allow_runner_session_id_change: bool = False) -> None:
+    def _persist_session(
+        self, session: Session, *, allow_runner_session_id_change: bool = False
+    ) -> None:
         with self._db_lock:
             with get_db_session() as db:
                 # Low-level safety invariant: runner_session_id is immutable once
@@ -561,6 +571,86 @@ class SessionStore:
         runtime.output_buffer.clear()
         return combined
 
+    def set_pending_final_output(
+        self,
+        session_id: str,
+        *,
+        text: str,
+        attachments: list[dict] | tuple[dict, ...] | None = None,
+        warnings: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        """Store the final visible output until the turn is terminal."""
+        runtime = self._get_runtime(session_id)
+        runtime.pending_final_text = text
+        runtime.pending_final_attachments = list(attachments or [])
+        runtime.pending_final_warnings = list(warnings or [])
+        runtime.turn_finalized = False
+
+    def get_pending_final_output(
+        self, session_id: str
+    ) -> tuple[str | None, list[dict], list[str]]:
+        """Return the pending final output payload for a session."""
+        runtime = self._runtime.get(session_id)
+        if not runtime:
+            return None, [], []
+        return (
+            runtime.pending_final_text,
+            list(runtime.pending_final_attachments),
+            list(runtime.pending_final_warnings),
+        )
+
+    def clear_pending_final_output(self, session_id: str) -> None:
+        """Drop any pending final output payload."""
+        runtime = self._runtime.get(session_id)
+        if not runtime:
+            return
+        runtime.pending_final_text = None
+        runtime.pending_final_attachments.clear()
+        runtime.pending_final_warnings.clear()
+
+    def set_duration_ms(self, session_id: str, duration_ms: int) -> None:
+        """Store the latest final duration for a session turn."""
+        runtime = self._get_runtime(session_id)
+        runtime.duration_ms = max(0, int(duration_ms))
+
+    def get_duration_ms(self, session_id: str) -> int | None:
+        """Return the stored final duration, if any."""
+        runtime = self._runtime.get(session_id)
+        return runtime.duration_ms if runtime else None
+
+    def set_last_heartbeat_elapsed_ms(self, session_id: str, elapsed_ms: int) -> None:
+        """Store the most recent heartbeat elapsed time."""
+        runtime = self._get_runtime(session_id)
+        runtime.last_heartbeat_elapsed_ms = max(0, int(elapsed_ms))
+
+    def get_last_heartbeat_elapsed_ms(self, session_id: str) -> int | None:
+        """Return the most recent heartbeat elapsed time."""
+        runtime = self._runtime.get(session_id)
+        return runtime.last_heartbeat_elapsed_ms if runtime else None
+
+    def is_turn_finalized(self, session_id: str) -> bool:
+        """Return True once the current turn's STOP footer has been emitted."""
+        runtime = self._runtime.get(session_id)
+        return runtime.turn_finalized if runtime else False
+
+    def mark_turn_finalized(self, session_id: str) -> None:
+        """Mark the current turn as finalized."""
+        runtime = self._get_runtime(session_id)
+        runtime.turn_finalized = True
+
+    def clear_turn_state(self, session_id: str) -> None:
+        """Clear per-turn finalization state before a new run or input."""
+        runtime = self._runtime.get(session_id)
+        if not runtime:
+            return
+        runtime.output_buffer.clear()
+        runtime.pending_final_text = None
+        runtime.pending_final_attachments.clear()
+        runtime.pending_final_warnings.clear()
+        runtime.duration_ms = None
+        runtime.last_heartbeat_elapsed_ms = None
+        runtime.turn_finalized = False
+
     def _normalize_output(self, text: str) -> str:
         """Normalize output to de-duplicate noisy repeated lines.
 
@@ -673,7 +763,9 @@ class SessionStore:
         with self._db_lock:
             with get_db_session() as db:
                 rows = db.exec(
-                    select(Message).where(Message.session_id == session_id).order_by(Message.seq)
+                    select(Message)
+                    .where(Message.session_id == session_id)
+                    .order_by(Message.seq)
                 ).all()
                 messages = []
                 for row in rows:
@@ -689,7 +781,9 @@ class SessionStore:
         """
         with self._db_lock:
             with get_db_session() as db:
-                messages = db.exec(select(Message).where(Message.session_id == session_id)).all()
+                messages = db.exec(
+                    select(Message).where(Message.session_id == session_id)
+                ).all()
                 for msg in messages:
                     db.delete(msg)
                 db.commit()
@@ -863,7 +957,6 @@ class SessionStore:
         except OSError:
             return []
         return events
-
 
     def session_usage(self, session_id: str) -> dict:
         """Aggregate token and cost usage from the event log.

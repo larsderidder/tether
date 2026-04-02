@@ -28,6 +28,7 @@ from tether.bridges.reaction_shortcuts import (
     parse_reaction_shortcut_message,
     reaction_matches,
 )
+from tether.output_postprocess import PublishedAttachment
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -172,6 +173,7 @@ class DiscordBridge(UpstreamDiscordBridge):
     ) -> None:
         self._hydrate_thread_binding(session_id)
         await super().on_output(session_id, text, metadata=metadata)
+        await self._send_requested_output_attachments(session_id, metadata=metadata)
 
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
@@ -215,6 +217,92 @@ class DiscordBridge(UpstreamDiscordBridge):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    async def _send_requested_output_attachments(
+        self,
+        session_id: str,
+        *,
+        metadata: dict | None = None,
+    ) -> None:
+        if not self._client:
+            return
+
+        attachments = [
+            attachment
+            for attachment in (
+                PublishedAttachment.from_metadata(item)
+                for item in (metadata or {}).get("attachments") or []
+            )
+            if attachment is not None
+        ]
+        if not attachments:
+            return
+
+        thread_id = self._hydrate_thread_binding(session_id)
+        if not thread_id:
+            return
+
+        thread = self._client.get_channel(thread_id)
+        if thread is None:
+            try:
+                thread = await self._client.fetch_channel(thread_id)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch Discord thread for output attachments",
+                    session_id=session_id,
+                    thread_id=thread_id,
+                )
+                return
+
+        failures: list[str] = []
+        try:
+            import discord
+        except ImportError:
+            logger.error("discord.py not installed for output attachment upload")
+            return
+
+        files = []
+        for attachment in attachments:
+            try:
+                files.append(
+                    discord.File(
+                        attachment.path,
+                        filename=attachment.filename,
+                        description=attachment.title or attachment.filename,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to prepare Discord output attachment",
+                    session_id=session_id,
+                    attachment_path=attachment.path,
+                )
+                failures.append(attachment.filename)
+
+        if files:
+            try:
+                await thread.send(files=files)
+            except Exception:
+                logger.exception(
+                    "Failed to upload Discord output attachments",
+                    session_id=session_id,
+                )
+                failures.extend(
+                    attachment.filename
+                    for attachment in attachments
+                    if attachment.filename not in failures
+                )
+
+        if failures:
+            try:
+                await thread.send(
+                    "Attachment upload failed: " + ", ".join(sorted(set(failures)))
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send Discord attachment failure notice",
+                    session_id=session_id,
+                )
 
     async def _send_error_attachment_bundle(
         self,

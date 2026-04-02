@@ -13,8 +13,8 @@ import httpx
 import structlog
 
 from agent_tether import BridgeCallbacks, BridgeConfig, BridgeManager
-from agent_tether.subscriber import BridgeSubscriber
 from agent_tether.thread_naming import format_thread_name
+from tether.bridges.subscriber import BridgeSubscriber
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -57,7 +57,9 @@ def get_session_info(session_id: str) -> dict | None:
     }
 
 
-async def on_session_bound(session_id: str, platform: str, thread_id: str | None) -> None:
+async def on_session_bound(
+    session_id: str, platform: str, thread_id: str | None
+) -> None:
     """Callback: bind session to platform and start subscriber."""
     from tether.store import store
 
@@ -68,6 +70,7 @@ async def on_session_bound(session_id: str, platform: str, thread_id: str | None
         store.update_session(db_session)
 
     bridge_subscriber.subscribe(session_id, platform)
+
 
 def make_thread_name(
     *,
@@ -94,11 +97,13 @@ def get_sessions_for_restore() -> list[dict]:
 
     result = []
     for session in store.list_sessions():
-        result.append({
-            "id": session.id,
-            "platform": session.platform,
-            "platform_thread_id": session.platform_thread_id,
-        })
+        result.append(
+            {
+                "id": session.id,
+                "platform": session.platform,
+                "platform_thread_id": session.platform_thread_id,
+            }
+        )
     return result
 
 
@@ -149,9 +154,7 @@ async def _send_input(session_id: str, text: str) -> None:
         else:
             # Surface the server's error message as a plain RuntimeError so
             # bridge handlers can relay it to the user instead of crashing.
-            raise RuntimeError(
-                message or f"Agent request failed ({status})"
-            ) from e
+            raise RuntimeError(message or f"Agent request failed ({status})") from e
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
@@ -196,7 +199,8 @@ async def _respond_to_permission(
             json={
                 "request_id": request_id,
                 "allow": allow,
-                "message": message or ("Approved" if allow else "User denied permission"),
+                "message": message
+                or ("Approved" if allow else "User denied permission"),
             },
             headers=_api_headers(),
             timeout=10.0,
@@ -305,7 +309,9 @@ async def _attach_external(**kwargs) -> dict:
                 msg = body.get("detail", {}).get("error", {}).get("message", "")
             except Exception:
                 msg = ""
-            raise RuntimeError(msg or f"Attach failed with status {response.status_code}")
+            raise RuntimeError(
+                msg or f"Attach failed with status {response.status_code}"
+            )
     return response.json()
 
 
