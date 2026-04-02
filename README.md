@@ -82,10 +82,9 @@ cp .env.example .env
 make start
 ```
 
-Release-candidate package assets are built by
-`.github/workflows/release-candidate.yml`. That workflow emits a Debian package,
-a Homebrew formula, and a bundled wheelhouse artifact so fleet installs can pin
-the exact candidate build.
+Release package assets are built by `.github/workflows/release-assets.yml`. That
+workflow emits a Debian package, a Homebrew formula, and a bundled wheelhouse
+artifact so fleet installs can pin the exact published build.
 
 ## Attaching external sessions
 

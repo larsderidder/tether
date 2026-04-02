@@ -1,4 +1,4 @@
-name: Release Packages
+name: Release Assets
 
 on:
   release:
@@ -8,10 +8,6 @@ on:
       release_tag:
         description: "Release tag to package (for formula URLs)"
         required: true
-      release_kind:
-        description: "Package the release as stable or prerelease"
-        required: false
-        default: "prerelease"
       agent_sessions_ref:
         description: "Branch or tag to build from Adminrealagi/agent-sessions"
         required: false
@@ -21,7 +17,7 @@ permissions:
   contents: write
 
 jobs:
-  package-rc:
+  package-assets:
     runs-on: ubuntu-latest
 
     steps:
@@ -37,6 +33,11 @@ jobs:
 
       - name: Install Python build tools
         run: python -m pip install --upgrade build
+
+      - name: Normalize package version from release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: python scripts/set_release_version.py --release-tag "$RELEASE_TAG"
 
       - name: Install UI dependencies
         working-directory: ui
@@ -70,7 +71,7 @@ jobs:
         id: agent_sessions_ref
         env:
           INPUT_REF: ${{ inputs.agent_sessions_ref || '' }}
-          RELEASE_CHANNEL: ${{ github.event_name == 'release' && (github.event.release.prerelease && 'prerelease' || 'stable') || inputs.release_kind }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [[ -n "$INPUT_REF" ]]; then
@@ -82,7 +83,8 @@ jobs:
           import os
           import urllib.request
 
-          channel = os.environ["RELEASE_CHANNEL"]
+          release_tag = os.environ["RELEASE_TAG"]
+          channel = "prerelease" if "-rc" in release_tag else "stable"
           token = os.environ.get("GITHUB_TOKEN", "")
           request = urllib.request.Request(
               "https://api.github.com/repos/Adminrealagi/agent-sessions/releases?per_page=20",
@@ -117,6 +119,7 @@ jobs:
           AGENT_SESSIONS_REF: ${{ steps.agent_sessions_ref.outputs.ref }}
         run: |
           git clone --depth 1 --branch "$AGENT_SESSIONS_REF" https://github.com/Adminrealagi/agent-sessions.git /tmp/agent-sessions
+          python /tmp/agent-sessions/scripts/set_release_version.py --release-tag "$AGENT_SESSIONS_REF" --pyproject /tmp/agent-sessions/pyproject.toml
           python -m build /tmp/agent-sessions --outdir /tmp/agent-sessions-dist
 
       - name: Build release assets
@@ -125,29 +128,10 @@ jobs:
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
-              package_name="tether-ai-rc"
-              primary_command_one="tether=tether-rc"
-              primary_command_two="tether-mcp=tether-mcp-rc"
-            else
-              package_name="tether-ai"
-              primary_command_one="tether=tether"
-              primary_command_two="tether-mcp=tether-mcp"
-            fi
-          elif [[ "${{ inputs.release_kind }}" == "stable" ]]; then
-            package_name="tether-ai"
-            primary_command_one="tether=tether"
-            primary_command_two="tether-mcp=tether-mcp"
-          else
-            package_name="tether-ai-rc"
-            primary_command_one="tether=tether-rc"
-            primary_command_two="tether-mcp=tether-mcp-rc"
-          fi
-          python scripts/build_rc_assets.py \
+          python scripts/build_release_assets.py \
             --dist-dir agent/dist \
-            --output-dir dist-rc \
-            --package-name "$package_name" \
+            --output-dir dist-release \
+            --package-name tether-ai \
             --project-name tether-ai \
             --display-name Tether \
             --homepage https://gettether.dev \
@@ -157,18 +141,18 @@ jobs:
             --install-extras discord \
             --extra-requirement "discord.py>=2.3.0" \
             --extra-wheel /tmp/agent-sessions-dist/agent_sessions-*.whl \
-            --primary-command "$primary_command_one" \
-            --primary-command "$primary_command_two"
+            --primary-command "tether=tether" \
+            --primary-command "tether-mcp=tether-mcp"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tether-rc-assets
-          path: dist-rc/*
+          name: tether-release-assets
+          path: dist-release/*
 
       - name: Upload release assets
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: dist-rc/*
+          files: dist-release/*
