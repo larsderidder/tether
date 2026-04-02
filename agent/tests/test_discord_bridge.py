@@ -79,6 +79,52 @@ class TestDiscordBridgePoC:
         assert mock_thread.send.called
 
     @pytest.mark.anyio
+    async def test_on_output_restores_thread_id_from_persisted_session(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Persisted thread bindings should recover after bridge state drift."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+
+        await bridge.on_output(session.id, "Recovered Discord output")
+
+        assert bridge._thread_ids[session.id] == 9876543210
+        assert mock_thread.send.called
+
+    def test_session_for_thread_restores_mapping_from_store(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Inbound thread replies should still resolve after restart."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+
+        assert bridge._session_for_thread(9876543210) == session.id
+        assert bridge._thread_ids[session.id] == 9876543210
+
+    @pytest.mark.anyio
     async def test_create_thread_creates_discord_thread(
         self, fresh_store: SessionStore
     ) -> None:

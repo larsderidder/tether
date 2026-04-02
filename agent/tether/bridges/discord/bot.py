@@ -106,6 +106,80 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._reaction_shortcuts_in_progress: set[int] = set()
         self._apply_auto_pair_users()
 
+    @staticmethod
+    def _parse_thread_id(raw_thread_id: object) -> int | None:
+        try:
+            thread_id = int(raw_thread_id or 0)
+        except (TypeError, ValueError):
+            return None
+        return thread_id or None
+
+    def _restore_thread_mappings_from_store(self) -> None:
+        try:
+            from tether.store import store
+        except Exception:
+            logger.exception("Failed to import store for Discord thread recovery")
+            return
+
+        for session in store.list_sessions():
+            if getattr(session, "platform", None) != "discord":
+                continue
+            thread_id = self._parse_thread_id(getattr(session, "platform_thread_id", None))
+            if thread_id is None:
+                continue
+            self._thread_ids.setdefault(session.id, thread_id)
+
+    def _hydrate_thread_binding(self, session_id: str) -> int | None:
+        thread_id = self._thread_ids.get(session_id)
+        if thread_id:
+            return thread_id
+
+        if self._get_session_info is not None:
+            try:
+                session_info = self._get_session_info(session_id)
+            except Exception:
+                logger.exception(
+                    "Failed to fetch session info for Discord thread recovery",
+                    session_id=session_id,
+                )
+            else:
+                if isinstance(session_info, dict):
+                    thread_id = self._parse_thread_id(
+                        session_info.get("platform_thread_id")
+                    )
+                    if thread_id is not None:
+                        self._thread_ids[session_id] = thread_id
+                        return thread_id
+
+        self._restore_thread_mappings_from_store()
+        return self._thread_ids.get(session_id)
+
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        self._hydrate_thread_binding(session_id)
+        await super().on_output(session_id, text, metadata=metadata)
+
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
+        self._hydrate_thread_binding(session_id)
+        await super().on_status_change(session_id, status, metadata=metadata)
+
+    async def on_approval_request(self, session_id: str, request) -> None:
+        self._hydrate_thread_binding(session_id)
+        await super().on_approval_request(session_id, request)
+
+    async def on_typing(self, session_id: str) -> None:
+        self._hydrate_thread_binding(session_id)
+        await super().on_typing(session_id)
+
+    async def send_auto_approve_batch(
+        self, session_id: str, items: list[tuple[str, str]]
+    ) -> None:
+        self._hydrate_thread_binding(session_id)
+        await super().send_auto_approve_batch(session_id, items)
+
     async def start(self) -> None:
         """Initialize and start Discord client."""
         try:
@@ -204,6 +278,13 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         if not self._channel_id and text.lower().startswith("!setup"):
             await self._dispatch_command(message, text)
+
+    def _session_for_thread(self, thread_id: int) -> str | None:
+        session_id = super()._session_for_thread(thread_id)
+        if session_id:
+            return session_id
+        self._restore_thread_mappings_from_store()
+        return super()._session_for_thread(thread_id)
 
     async def create_thread(self, session_id: str, session_name: str) -> dict:
         if not self._client:
