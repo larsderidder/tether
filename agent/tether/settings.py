@@ -40,6 +40,23 @@ def _get_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _get_int_set(name: str) -> set[int]:
+    """Parse a comma-separated list of integer IDs."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return out
+
+
 class Settings:
     """Centralized settings for the Tether agent.
 
@@ -188,6 +205,26 @@ class Settings:
         Env: TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS (default: 30)
         """
         return _get_int("TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS", default=30)
+
+    @staticmethod
+    def bridge_reaction_new_session_enabled() -> bool:
+        """Enable the `!new` plus checkmark reaction shortcut in Slack/Discord.
+
+        When enabled, a top-level control-channel message whose first line starts
+        with ``!new`` can create and start a new session when reacted to with the
+        configured emoji.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED (default: 1)
+        """
+        return _get_bool("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", default=True)
+
+    @staticmethod
+    def bridge_reaction_new_session_emoji() -> str:
+        """Emoji or reaction name used to trigger the new-session shortcut.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI (default: ✅)
+        """
+        return _get("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", default="✅")
 
     @staticmethod
     def turn_timeout_seconds() -> int:
@@ -389,6 +426,20 @@ class Settings:
             return 0
 
     @staticmethod
+    def discord_guild_id() -> int:
+        """Discord guild ID used for automatic control-channel bootstrap.
+
+        Env: DISCORD_GUILD_ID
+        """
+        value = os.environ.get("DISCORD_GUILD_ID", "").strip()
+        if not value:
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
+    @staticmethod
     def discord_require_pairing() -> bool:
         """Require Discord users to pair before using the bot.
 
@@ -416,19 +467,15 @@ class Settings:
 
         Env: DISCORD_ALLOWED_USER_IDS (e.g. "123,456")
         """
-        raw = os.environ.get("DISCORD_ALLOWED_USER_IDS", "").strip()
-        if not raw:
-            return set()
-        out: set[int] = set()
-        for part in raw.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                out.add(int(part))
-            except ValueError:
-                continue
-        return out
+        return _get_int_set("DISCORD_ALLOWED_USER_IDS")
+
+    @staticmethod
+    def discord_auto_pair_user_ids() -> set[int]:
+        """Comma-separated Discord user IDs to pre-authorize as paired.
+
+        Env: DISCORD_AUTO_PAIR_USER_IDS (e.g. "123,456")
+        """
+        return _get_int_set("DISCORD_AUTO_PAIR_USER_IDS")
 
 
 # Singleton instance for convenient imports
