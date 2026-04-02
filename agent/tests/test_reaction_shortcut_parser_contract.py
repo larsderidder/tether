@@ -92,6 +92,32 @@ def test_parse_reaction_shortcut_message_extracts_args_and_prompt() -> None:
     assert shortcut.prompt == "Fix the failing Discord tests."
 
 
+def test_parse_reaction_shortcut_message_accepts_plain_messages_when_enabled() -> None:
+    shortcut = parse_reaction_shortcut_message(
+        "LATEST THINKPAD CHECKMARK TEST 1",
+        allow_plain_message=True,
+    )
+
+    assert shortcut is not None
+    assert shortcut.args is None
+    assert shortcut.prompt == "LATEST THINKPAD CHECKMARK TEST 1"
+
+
+def test_parse_reaction_shortcut_message_ignores_plain_messages_when_disabled() -> None:
+    shortcut = parse_reaction_shortcut_message("LATEST THINKPAD CHECKMARK TEST 1")
+
+    assert shortcut is None
+
+
+def test_parse_reaction_shortcut_message_does_not_treat_other_commands_as_plain() -> None:
+    shortcut = parse_reaction_shortcut_message(
+        "!help",
+        allow_plain_message=True,
+    )
+
+    assert shortcut is None
+
+
 def test_reaction_matches_accepts_slack_and_discord_checkmark_forms() -> None:
     assert reaction_matches("✅", "white_check_mark") is True
     assert reaction_matches("white_check_mark", "✅") is True

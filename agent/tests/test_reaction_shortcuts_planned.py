@@ -77,6 +77,65 @@ async def test_discord_checkmark_reaction_creates_and_starts_session_from_contro
 
 
 @pytest.mark.anyio
+async def test_discord_checkmark_reaction_creates_and_starts_session_from_plain_control_channel_message(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from agent_tether.base import BridgeConfig
+    from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
+
+    monkeypatch.chdir(tmp_path)
+    callbacks = _mock_callbacks(
+        create_session=AsyncMock(
+            return_value={"id": "sess_discord_plain", "platform_thread_id": "333"}
+        ),
+    )
+    bridge = DiscordBridge(
+        bot_token="discord_bot_token",
+        channel_id=1234567890,
+        discord_config=DiscordConfig(
+            reaction_new_session_enabled=True,
+            reaction_new_session_emoji="✅",
+            reaction_new_session_allow_plain_messages=True,
+        ),
+        callbacks=callbacks,
+        config=BridgeConfig(default_adapter="codex_sdk_sidecar"),
+    )
+
+    control_channel = AsyncMock()
+    control_channel.id = 1234567890
+    source_message = MagicMock()
+    source_message.content = "LATEST THINKPAD CHECKMARK TEST 1"
+    source_message.author.bot = False
+    control_channel.fetch_message = AsyncMock(return_value=source_message)
+
+    mock_client = MagicMock()
+    mock_client.user = MagicMock(id=9999)
+    mock_client.get_channel.return_value = control_channel
+    bridge._client = mock_client
+
+    payload = MagicMock()
+    payload.channel_id = 1234567890
+    payload.message_id = 4445
+    payload.user_id = 1111
+    payload.emoji = MagicMock()
+    payload.emoji.name = "✅"
+
+    await bridge._handle_raw_reaction_add(payload)
+
+    create_kwargs = callbacks.create_session.await_args.kwargs
+    assert create_kwargs["directory"] == str(tmp_path)
+    assert create_kwargs["platform"] == "discord"
+    assert create_kwargs["adapter"] == "codex_sdk_sidecar"
+    assert callbacks.send_input.await_args.args == (
+        "sess_discord_plain",
+        "LATEST THINKPAD CHECKMARK TEST 1",
+    )
+    control_channel.send.assert_awaited()
+    assert "<#333>" in control_channel.send.await_args.args[0]
+
+
+@pytest.mark.anyio
 async def test_discord_checkmark_reaction_ignores_threads_unauthorized_users_and_duplicate_events(
     tmp_path,
 ) -> None:
@@ -226,6 +285,65 @@ async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_
     )
     assert mock_client.chat_postMessage.await_count == 1
     assert "New Codex session created in repo" in mock_client.chat_postMessage.await_args.kwargs["text"]
+
+
+@pytest.mark.anyio
+async def test_slack_checkmark_reaction_creates_and_starts_session_from_plain_control_channel_message(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from agent_tether.base import BridgeConfig
+    from tether.bridges.slack.bot import SlackBridge
+
+    monkeypatch.chdir(tmp_path)
+    callbacks = _mock_callbacks(
+        create_session=AsyncMock(
+            return_value={"id": "sess_slack_plain", "platform_thread_id": "555.666"}
+        ),
+    )
+    bridge = SlackBridge(
+        bot_token="xoxb-test-token",
+        channel_id="C01234567",
+        callbacks=callbacks,
+        reaction_new_session_enabled=True,
+        reaction_new_session_emoji="✅",
+        reaction_new_session_allow_plain_messages=True,
+        config=BridgeConfig(default_adapter="codex_sdk_sidecar"),
+    )
+
+    mock_client = AsyncMock()
+    mock_client.conversations_history.return_value = {
+        "ok": True,
+        "messages": [
+            {
+                "text": "LATEST THINKPAD CHECKMARK TEST 1",
+                "ts": "111.222",
+            }
+        ],
+    }
+    bridge._client = mock_client
+
+    await bridge._handle_reaction_added(
+        {
+            "reaction": "white_check_mark",
+            "item": {"channel": "C01234567", "ts": "111.222"},
+            "user": "U123",
+        }
+    )
+
+    create_kwargs = callbacks.create_session.await_args.kwargs
+    assert create_kwargs["directory"] == str(tmp_path)
+    assert create_kwargs["platform"] == "slack"
+    assert create_kwargs["adapter"] == "codex_sdk_sidecar"
+    assert callbacks.send_input.await_args.args == (
+        "sess_slack_plain",
+        "LATEST THINKPAD CHECKMARK TEST 1",
+    )
+    assert mock_client.chat_postMessage.await_count == 1
+    assert (
+        "New Codex session created in"
+        in mock_client.chat_postMessage.await_args.kwargs["text"]
+    )
 
 
 @pytest.mark.anyio
