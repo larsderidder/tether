@@ -243,6 +243,17 @@ class Settings:
         )
 
     @staticmethod
+    def debug_attach_logs() -> bool:
+        """Attach diagnostic text files for bridge error delivery.
+
+        When enabled, Slack and Discord error notifications upload a diagnostic
+        bundle instead of emitting only a plain text status message.
+
+        Env: TETHER_DEBUG_ATTACH_LOGS (default: 1)
+        """
+        return _get_bool("TETHER_DEBUG_ATTACH_LOGS", default=True)
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 

@@ -8,7 +8,9 @@ are public and discoverable in the configured control channel.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
+import io
 import os
 import re
 import socket
@@ -20,17 +22,20 @@ from agent_tether.discord.bot import DiscordConfig as UpstreamDiscordConfig
 from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
+from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
     parse_reaction_shortcut_message,
     reaction_matches,
 )
+from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
 
 _DISCORD_THREAD_NAME_LIMIT = 100
 _DISCORD_STARTER_TEXT_LIMIT = 2000
 _DISCORD_AUTO_ARCHIVE_MINUTES = 1440
+_ERROR_ATTACHMENT_DELAY_S = 0.35
 
 
 def _hostname_slug() -> str:
@@ -109,6 +114,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         self._reaction_shortcuts_completed: set[int] = set()
         self._reaction_shortcuts_in_progress: set[int] = set()
+        self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
         self._apply_auto_pair_users()
 
     @staticmethod
@@ -129,7 +135,9 @@ class DiscordBridge(UpstreamDiscordBridge):
         for session in store.list_sessions():
             if getattr(session, "platform", None) != "discord":
                 continue
-            thread_id = self._parse_thread_id(getattr(session, "platform_thread_id", None))
+            thread_id = self._parse_thread_id(
+                getattr(session, "platform_thread_id", None)
+            )
             if thread_id is None:
                 continue
             self._thread_ids.setdefault(session.id, thread_id)
@@ -169,7 +177,23 @@ class DiscordBridge(UpstreamDiscordBridge):
         self, session_id: str, status: str, metadata: dict | None = None
     ) -> None:
         self._hydrate_thread_binding(session_id)
-        await super().on_status_change(session_id, status, metadata=metadata)
+        if status != "error" or not settings.debug_attach_logs():
+            await self._cancel_pending_error_attachment_task(session_id)
+            await super().on_status_change(session_id, status, metadata=metadata)
+            return
+
+        message = str((metadata or {}).get("message") or "").strip()
+        if message:
+            await self._cancel_pending_error_attachment_task(session_id)
+            handled = await self._send_error_attachment_bundle(
+                session_id,
+                metadata=metadata,
+            )
+            if not handled:
+                await super().on_status_change(session_id, status, metadata=metadata)
+            return
+
+        self._schedule_error_attachment_bundle(session_id, metadata=metadata)
 
     async def on_approval_request(self, session_id: str, request) -> None:
         self._hydrate_thread_binding(session_id)
@@ -185,12 +209,106 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._hydrate_thread_binding(session_id)
         await super().send_auto_approve_batch(session_id, items)
 
+    async def _cancel_pending_error_attachment_task(self, session_id: str) -> None:
+        task = self._pending_error_attachment_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _send_error_attachment_bundle(
+        self,
+        session_id: str,
+        metadata: dict | None = None,
+    ) -> bool:
+        if not self._client:
+            return False
+
+        thread_id = self._hydrate_thread_binding(session_id)
+        if not thread_id:
+            return False
+
+        if not self._should_send_error_status(session_id):
+            return True
+
+        thread = self._client.get_channel(thread_id)
+        if thread is None:
+            try:
+                thread = await self._client.fetch_channel(thread_id)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch Discord thread for error bundle",
+                    session_id=session_id,
+                    thread_id=thread_id,
+                )
+                return False
+
+        bundle = build_error_debug_bundle(session_id, metadata=metadata)
+        try:
+            import discord
+
+            files = [
+                discord.File(
+                    io.BytesIO(attachment.content.encode("utf-8")),
+                    filename=attachment.filename,
+                    description=attachment.title or attachment.filename,
+                )
+                for attachment in bundle.attachments
+            ]
+            await thread.send(bundle.message, files=files)
+        except Exception:
+            logger.exception(
+                "Failed to send Discord error attachment bundle",
+                session_id=session_id,
+            )
+            try:
+                await thread.send("❌ Status: error")
+            except Exception:
+                logger.exception(
+                    "Failed to send Discord fallback error status",
+                    session_id=session_id,
+                )
+        return True
+
+    def _schedule_error_attachment_bundle(
+        self,
+        session_id: str,
+        metadata: dict | None = None,
+    ) -> None:
+        existing = self._pending_error_attachment_tasks.pop(session_id, None)
+        if existing and not existing.done():
+            existing.cancel()
+
+        async def _delayed_send() -> None:
+            try:
+                await asyncio.sleep(_ERROR_ATTACHMENT_DELAY_S)
+                handled = await self._send_error_attachment_bundle(
+                    session_id,
+                    metadata=metadata,
+                )
+                if not handled:
+                    await super(DiscordBridge, self).on_status_change(
+                        session_id,
+                        "error",
+                        metadata=metadata,
+                    )
+            except asyncio.CancelledError:
+                return
+            finally:
+                self._pending_error_attachment_tasks.pop(session_id, None)
+
+        self._pending_error_attachment_tasks[session_id] = asyncio.create_task(
+            _delayed_send()
+        )
+
     async def start(self) -> None:
         """Initialize and start Discord client."""
         try:
             import discord
         except ImportError:
-            logger.error("discord.py not installed. Install with: pip install discord.py")
+            logger.error(
+                "discord.py not installed. Install with: pip install discord.py"
+            )
             return
 
         intents = discord.Intents.default()
@@ -218,7 +336,9 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         asyncio.create_task(self._client.start(self._bot_token))
 
-        logger.info("Discord bridge initialized and starting", channel_id=self._channel_id)
+        logger.info(
+            "Discord bridge initialized and starting", channel_id=self._channel_id
+        )
         if not self._channel_id and self._pairing_code:
             logger.warning(
                 "Discord bridge not configured with a control channel. Run !setup <code> in the desired channel.",
@@ -229,6 +349,10 @@ class DiscordBridge(UpstreamDiscordBridge):
                 "Discord pairing enabled. DM the bot: !pair <code>",
                 code=self._pairing_code,
             )
+
+    async def on_session_removed(self, session_id: str) -> None:
+        await self._cancel_pending_error_attachment_task(session_id)
+        await super().on_session_removed(session_id)
 
     def _should_defer_new_message_to_reaction(self, text: str) -> bool:
         if not self._reaction_new_session_enabled:
@@ -276,7 +400,9 @@ class DiscordBridge(UpstreamDiscordBridge):
             and message.channel.id == self._channel_id
             and text.startswith("!")
         ):
-            if text.lower().startswith("!new") and self._should_defer_new_message_to_reaction(text):
+            if text.lower().startswith(
+                "!new"
+            ) and self._should_defer_new_message_to_reaction(text):
                 return
             await self._dispatch_command(message, text)
             return
@@ -353,7 +479,9 @@ class DiscordBridge(UpstreamDiscordBridge):
         if persist:
             self._reaction_shortcuts_completed.add(source_message_id)
 
-    async def _resolve_reaction_shortcut_target(self, shortcut) -> tuple[str | None, str]:
+    async def _resolve_reaction_shortcut_target(
+        self, shortcut
+    ) -> tuple[str | None, str]:
         if shortcut.args is not None:
             return await self._parse_new_args(shortcut.args, base_session_id=None)
         directory = await self._resolve_directory_arg(
@@ -524,9 +652,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                 session_id=session_id,
                 text=shortcut.prompt,
             )
-            reply = (
-                f"✅ New {agent_label} session created in {dir_short} from a checkmark reaction."
-            )
+            reply = f"✅ New {agent_label} session created in {dir_short} from a checkmark reaction."
             try:
                 thread_id = int(session.get("platform_thread_id") or 0)
             except Exception:

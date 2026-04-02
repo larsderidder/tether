@@ -10,7 +10,11 @@ from tether.settings import Settings
 def clean_env(monkeypatch):
     """Remove all TETHER_ env vars for clean tests."""
     for key in list(os.environ.keys()):
-        if key.startswith("TETHER_") or key.startswith("DISCORD_") or key == "ANTHROPIC_API_KEY":
+        if (
+            key.startswith("TETHER_")
+            or key.startswith("DISCORD_")
+            or key == "ANTHROPIC_API_KEY"
+        ):
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
 
@@ -192,14 +196,17 @@ class TestStringSettings:
         assert Settings.bridge_reaction_new_session_enabled() is True
         assert Settings.bridge_reaction_new_session_emoji() == "✅"
         assert Settings.bridge_reaction_new_session_allow_plain_messages() is False
+        assert Settings.debug_attach_logs() is True
 
         clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", "0")
         clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", "white_check_mark")
         clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES", "1")
+        clean_env.setenv("TETHER_DEBUG_ATTACH_LOGS", "0")
 
         assert Settings.bridge_reaction_new_session_enabled() is False
         assert Settings.bridge_reaction_new_session_emoji() == "white_check_mark"
         assert Settings.bridge_reaction_new_session_allow_plain_messages() is True
+        assert Settings.debug_attach_logs() is False
 
 
 class TestDataDir:
