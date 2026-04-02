@@ -105,6 +105,60 @@ class TestDiscordBridgePoC:
         assert bridge._thread_ids[session.id] == 9876543210
         assert mock_thread.send.called
 
+    @pytest.mark.anyio
+    async def test_on_output_uploads_requested_attachments(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Final output attachments are uploaded into the same Discord thread."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        report = tmp_path / "report.md"
+        report.write_text("hello", encoding="utf-8")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        fake_discord = MagicMock()
+        fake_discord.File.side_effect = lambda path, filename=None, description=None: {
+            "path": path,
+            "filename": filename,
+            "description": description,
+        }
+
+        with patch.dict("sys.modules", {"discord": fake_discord}):
+            await bridge.on_output(
+                session.id,
+                "Final report\nSTOP 🛑✅ 2s",
+                metadata={
+                    "final": True,
+                    "attachments": [
+                        {
+                            "path": str(report),
+                            "filename": "report.md",
+                            "title": "report.md",
+                        }
+                    ],
+                },
+            )
+
+        assert mock_thread.send.await_count >= 2
+        assert mock_thread.send.await_args_list[-1].kwargs["files"][0]["path"] == str(
+            report
+        )
+
     def test_session_for_thread_restores_mapping_from_store(
         self, fresh_store: SessionStore
     ) -> None:

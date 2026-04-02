@@ -12,6 +12,7 @@ from tether.api.deps import require_token
 from tether.api.diff import build_git_diff
 from tether.api.emit import (
     emit_error,
+    finalize_output,
     emit_output,
     emit_permission_request,
     emit_state,
@@ -259,6 +260,7 @@ async def start_session(
                 store.clear_process(session_id)
                 store.clear_pending_inputs(session_id)
                 store.clear_last_output(session_id)
+                store.clear_turn_state(session_id)
 
             logger.info("Session start requested")
 
@@ -422,6 +424,7 @@ async def send_input(
                 store.clear_process(session_id)
                 store.clear_pending_inputs(session_id)
                 store.clear_last_output(session_id)
+                store.clear_turn_state(session_id)
 
             # Transition to RUNNING when user provides input
             if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
@@ -540,6 +543,7 @@ async def interrupt_session(
                 kind, exc = stop_error
                 # Only transition if a callback hasn't already moved to ERROR
                 if session.state != SessionState.ERROR:
+                    await finalize_output(session, status="error")
                     transition(session, SessionState.ERROR, ended_at=True)
                     await emit_state(session)
                 if kind == "unavailable":
@@ -575,6 +579,7 @@ async def interrupt_session(
 
             # Transition to AWAITING_INPUT after interrupt completes
             if session.state == SessionState.INTERRUPTING:
+                await finalize_output(session, status="stopped")
                 transition(session, SessionState.AWAITING_INPUT)
                 await emit_state(session)
             logger.info("Session interrupted")
@@ -711,12 +716,17 @@ async def push_agent_event(
                 target_state = status_map.get(status)
                 if target_state and target_state != session.state:
                     ended = target_state in (SessionState.ERROR,)
+                    if target_state == SessionState.AWAITING_INPUT:
+                        await finalize_output(session, status="success")
+                    elif target_state == SessionState.ERROR:
+                        await finalize_output(session, status="error")
                     transition(session, target_state, allow_same=True, ended_at=ended)
                     await emit_state(session)
 
             elif payload.type == "error":
                 code = payload.data.get("code", "AGENT_ERROR")
                 message = payload.data.get("message", "Unknown error")
+                await finalize_output(session, status="error")
                 if session.state != SessionState.ERROR:
                     transition(session, SessionState.ERROR, ended_at=True)
                     await emit_state(session)

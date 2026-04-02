@@ -29,20 +29,32 @@ class MockBridge(BridgeInterface):
         self.approval_received = asyncio.Event()
         self.status_received = asyncio.Event()
 
-    async def on_output(self, session_id: str, text: str, metadata: dict | None = None) -> None:
-        self.output_calls.append({"session_id": session_id, "text": text, "metadata": metadata})
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        self.output_calls.append(
+            {"session_id": session_id, "text": text, "metadata": metadata}
+        )
         self.output_received.set()
 
-    async def on_approval_request(self, session_id: str, request: ApprovalRequest) -> None:
+    async def on_approval_request(
+        self, session_id: str, request: ApprovalRequest
+    ) -> None:
         self.approval_calls.append({"session_id": session_id, "request": request})
         self.approval_received.set()
 
-    async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
-        self.status_calls.append({"session_id": session_id, "status": status, "metadata": metadata})
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
+        self.status_calls.append(
+            {"session_id": session_id, "status": status, "metadata": metadata}
+        )
         self.status_received.set()
 
     async def create_thread(self, session_id: str, session_name: str) -> dict:
-        self.thread_calls.append({"session_id": session_id, "session_name": session_name})
+        self.thread_calls.append(
+            {"session_id": session_id, "session_name": session_name}
+        )
         return {"thread_id": f"mock_{session_id}", "platform": "mock"}
 
 
@@ -54,14 +66,20 @@ class FailingBridge(BridgeInterface):
         self.status_calls: list[dict] = []
         self.status_received = asyncio.Event()
 
-    async def on_output(self, session_id: str, text: str, metadata: dict | None = None) -> None:
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
         self.output_call_count += 1
         raise RuntimeError("Telegram API is down")
 
-    async def on_approval_request(self, session_id: str, request: ApprovalRequest) -> None:
+    async def on_approval_request(
+        self, session_id: str, request: ApprovalRequest
+    ) -> None:
         pass
 
-    async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
         self.status_calls.append({"session_id": session_id, "status": status})
         self.status_received.set()
 
@@ -81,7 +99,9 @@ class TestPermissionRoundTrip:
     """End-to-end: agent pushes permission_request, bridge resolves it, agent polls the result."""
 
     @pytest.mark.anyio
-    async def test_full_permission_flow(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_full_permission_flow(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Permission request → resolve via /permission → poll returns resolution."""
         session = fresh_store.create_session("external", None)
 
@@ -156,7 +176,9 @@ class TestPermissionRoundTrip:
         assert result["behavior"] == "deny"
 
     @pytest.mark.anyio
-    async def test_double_resolve_fails(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_double_resolve_fails(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Second resolution of same permission returns 404."""
         session = fresh_store.create_session("external", None)
 
@@ -183,7 +205,9 @@ class TestPermissionRoundTrip:
         assert resp.status_code == 404
 
     @pytest.mark.anyio
-    async def test_resolve_nonexistent_permission(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_resolve_nonexistent_permission(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Resolving a permission that was never created returns 404."""
         session = fresh_store.create_session("external", None)
 
@@ -198,7 +222,9 @@ class TestHumanInputToAgent:
     """End-to-end: human sends input via /input, agent polls and receives it."""
 
     @pytest.mark.anyio
-    async def test_input_appears_in_poll(self, api_client, fresh_store: SessionStore, monkeypatch) -> None:
+    async def test_input_appears_in_poll(
+        self, api_client, fresh_store: SessionStore, monkeypatch
+    ) -> None:
         """Input sent via /sessions/{id}/input appears in poll results."""
         session = fresh_store.create_session("external", None)
         # Put session in AWAITING_INPUT so /input endpoint accepts it
@@ -233,7 +259,9 @@ class TestHumanInputToAgent:
         assert input_events[0]["data"]["text"] == "Please continue with the task"
 
     @pytest.mark.anyio
-    async def test_input_transitions_state(self, api_client, fresh_store: SessionStore, monkeypatch) -> None:
+    async def test_input_transitions_state(
+        self, api_client, fresh_store: SessionStore, monkeypatch
+    ) -> None:
         """Input via /sessions/{id}/input transitions AWAITING_INPUT -> RUNNING."""
         session = fresh_store.create_session("external", None)
         session.state = SessionState.AWAITING_INPUT
@@ -259,7 +287,9 @@ class TestPlatformValidation:
     """Session creation with unconfigured or missing platforms."""
 
     @pytest.mark.anyio
-    async def test_unconfigured_platform_returns_400(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_unconfigured_platform_returns_400(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Creating session with platform that has no registered bridge returns 400."""
         resp = await api_client.post(
             "/api/sessions",
@@ -273,7 +303,9 @@ class TestPlatformValidation:
         assert resp.status_code == 400
 
     @pytest.mark.anyio
-    async def test_no_platform_skips_thread_creation(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_no_platform_skips_thread_creation(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Creating session without platform works and has no platform binding."""
         resp = await api_client.post(
             "/api/sessions",
@@ -289,7 +321,9 @@ class TestPlatformValidation:
         assert data["platform_thread_id"] is None
 
     @pytest.mark.anyio
-    async def test_session_cleaned_up_on_platform_failure(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_session_cleaned_up_on_platform_failure(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """If thread creation fails, the session is deleted (not left orphaned)."""
         resp = await api_client.post(
             "/api/sessions",
@@ -312,7 +346,9 @@ class TestBridgeSubscriberResilience:
     """Bridge subscriber continues after bridge errors."""
 
     @pytest.mark.anyio
-    async def test_subscriber_survives_bridge_error(self, fresh_store: SessionStore) -> None:
+    async def test_subscriber_survives_bridge_error(
+        self, fresh_store: SessionStore
+    ) -> None:
         """Subscriber keeps routing after bridge.on_output() throws."""
         bridge = FailingBridge()
         manager = BridgeManager()
@@ -322,7 +358,8 @@ class TestBridgeSubscriberResilience:
         session.platform = "failing"
         fresh_store.update_session(session)
 
-        from agent_tether.subscriber import BridgeSubscriber as _BS
+        from tether.bridges.subscriber import BridgeSubscriber as _BS
+
         subscriber = _BS(
             bridge_manager=manager,
             new_subscriber=fresh_store.new_subscriber,
@@ -334,22 +371,28 @@ class TestBridgeSubscriberResilience:
             await asyncio.sleep(0.05)  # let task start
 
             # First event: bridge will throw on on_output
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:00Z",
-                "seq": fresh_store.next_seq(session.id),
-                "type": "output",
-                "data": {"text": "this will fail", "final": True},
-            })
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "seq": fresh_store.next_seq(session.id),
+                    "type": "output",
+                    "data": {"text": "this will fail", "final": True},
+                },
+            )
 
             # Second event: status change (different handler, should still work)
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:01Z",
-                "seq": fresh_store.next_seq(session.id),
-                "type": "session_state",
-                "data": {"state": "ERROR"},
-            })
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:01Z",
+                    "seq": fresh_store.next_seq(session.id),
+                    "type": "session_state",
+                    "data": {"state": "ERROR"},
+                },
+            )
 
             await _wait(bridge.status_received)
 
@@ -362,7 +405,9 @@ class TestBridgeSubscriberResilience:
             await subscriber.unsubscribe(session.id)
 
     @pytest.mark.anyio
-    async def test_subscriber_routes_permission_to_bridge(self, fresh_store: SessionStore) -> None:
+    async def test_subscriber_routes_permission_to_bridge(
+        self, fresh_store: SessionStore
+    ) -> None:
         """permission_request events reach the bridge as approval requests."""
         bridge = MockBridge()
         manager = BridgeManager()
@@ -372,7 +417,8 @@ class TestBridgeSubscriberResilience:
         session.platform = "mock"
         fresh_store.update_session(session)
 
-        from agent_tether.subscriber import BridgeSubscriber as _BS
+        from tether.bridges.subscriber import BridgeSubscriber as _BS
+
         subscriber = _BS(
             bridge_manager=manager,
             new_subscriber=fresh_store.new_subscriber,
@@ -383,17 +429,20 @@ class TestBridgeSubscriberResilience:
             subscriber.subscribe(session.id, "mock")
             await asyncio.sleep(0.05)
 
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:00Z",
-                "seq": fresh_store.next_seq(session.id),
-                "type": "permission_request",
-                "data": {
-                    "request_id": "perm_sub",
-                    "tool_name": "file_write",
-                    "tool_input": {"path": "/tmp/test"},
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "seq": fresh_store.next_seq(session.id),
+                    "type": "permission_request",
+                    "data": {
+                        "request_id": "perm_sub",
+                        "tool_name": "file_write",
+                        "tool_input": {"path": "/tmp/test"},
+                    },
                 },
-            })
+            )
 
             await _wait(bridge.approval_received)
 
@@ -407,7 +456,9 @@ class TestBridgeSubscriberResilience:
             await subscriber.unsubscribe(session.id)
 
     @pytest.mark.anyio
-    async def test_subscriber_skips_history_events(self, fresh_store: SessionStore) -> None:
+    async def test_subscriber_skips_history_events(
+        self, fresh_store: SessionStore
+    ) -> None:
         """Events with is_history flag are not routed to bridges."""
         bridge = MockBridge()
         manager = BridgeManager()
@@ -417,7 +468,8 @@ class TestBridgeSubscriberResilience:
         session.platform = "mock"
         fresh_store.update_session(session)
 
-        from agent_tether.subscriber import BridgeSubscriber as _BS
+        from tether.bridges.subscriber import BridgeSubscriber as _BS
+
         subscriber = _BS(
             bridge_manager=manager,
             new_subscriber=fresh_store.new_subscriber,
@@ -429,22 +481,28 @@ class TestBridgeSubscriberResilience:
             await asyncio.sleep(0.05)
 
             # Emit history event (should be skipped)
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:00Z",
-                "seq": fresh_store.next_seq(session.id),
-                "type": "output",
-                "data": {"text": "old history", "final": True, "is_history": True},
-            })
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "seq": fresh_store.next_seq(session.id),
+                    "type": "output",
+                    "data": {"text": "old history", "final": True, "is_history": True},
+                },
+            )
 
             # Emit real event
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:01Z",
-                "seq": fresh_store.next_seq(session.id),
-                "type": "output",
-                "data": {"text": "new output", "final": True},
-            })
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:01Z",
+                    "seq": fresh_store.next_seq(session.id),
+                    "type": "output",
+                    "data": {"text": "new output", "final": True},
+                },
+            )
 
             await _wait(bridge.output_received)
 
@@ -459,7 +517,9 @@ class TestStateTransitionsExternalAgent:
     """State machine enforcement for external agent event pushes."""
 
     @pytest.mark.anyio
-    async def test_auto_transition_created_to_running(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_auto_transition_created_to_running(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """First event auto-transitions CREATED -> RUNNING."""
         session = fresh_store.create_session("external", None)
         assert session.state == SessionState.CREATED
@@ -473,7 +533,9 @@ class TestStateTransitionsExternalAgent:
         assert updated.state == SessionState.RUNNING
 
     @pytest.mark.anyio
-    async def test_status_done_transitions_to_awaiting_input(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_status_done_transitions_to_awaiting_input(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Status 'done' transitions RUNNING -> AWAITING_INPUT."""
         session = fresh_store.create_session("external", None)
 
@@ -493,7 +555,9 @@ class TestStateTransitionsExternalAgent:
         assert updated.state == SessionState.AWAITING_INPUT
 
     @pytest.mark.anyio
-    async def test_error_event_transitions_to_error(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_error_event_transitions_to_error(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Error event transitions to ERROR state."""
         session = fresh_store.create_session("external", None)
 
@@ -517,7 +581,9 @@ class TestStateTransitionsExternalAgent:
         assert updated.state == SessionState.ERROR
 
     @pytest.mark.anyio
-    async def test_push_to_nonexistent_session(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_push_to_nonexistent_session(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Pushing events to a non-existent session returns 404."""
         resp = await api_client.post(
             "/api/sessions/sess_does_not_exist/events",
@@ -526,7 +592,9 @@ class TestStateTransitionsExternalAgent:
         assert resp.status_code == 404
 
     @pytest.mark.anyio
-    async def test_invalid_event_type_rejected(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_invalid_event_type_rejected(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Pushing an unknown event type returns 422 (validation error)."""
         session = fresh_store.create_session("external", None)
 
@@ -541,19 +609,24 @@ class TestPollFiltering:
     """Event polling returns correct types and respects seq filtering."""
 
     @pytest.mark.anyio
-    async def test_poll_default_filters(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_poll_default_filters(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Default poll filters return user_input and permission_resolved only."""
         session = fresh_store.create_session("external", None)
 
         # Emit various event types
         for event_type in ("output", "session_state", "user_input", "error"):
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:00Z",
-                "seq": fresh_store.next_seq(session.id),
-                "type": event_type,
-                "data": {"text": f"test {event_type}"},
-            })
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "seq": fresh_store.next_seq(session.id),
+                    "type": event_type,
+                    "data": {"text": f"test {event_type}"},
+                },
+            )
 
         resp = await api_client.get(
             f"/api/sessions/{session.id}/events/poll",
@@ -569,17 +642,22 @@ class TestPollFiltering:
         assert "error" not in types
 
     @pytest.mark.anyio
-    async def test_poll_custom_type_filter(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_poll_custom_type_filter(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Custom type filter via query parameter works."""
         session = fresh_store.create_session("external", None)
 
-        await fresh_store.emit(session.id, {
-            "session_id": session.id,
-            "ts": "2026-01-01T00:00:00Z",
-            "seq": fresh_store.next_seq(session.id),
-            "type": "error",
-            "data": {"code": "ERR", "message": "fail"},
-        })
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": "2026-01-01T00:00:00Z",
+                "seq": fresh_store.next_seq(session.id),
+                "type": "error",
+                "data": {"code": "ERR", "message": "fail"},
+            },
+        )
 
         resp = await api_client.get(
             f"/api/sessions/{session.id}/events/poll",
@@ -590,7 +668,9 @@ class TestPollFiltering:
         assert events[0]["type"] == "error"
 
     @pytest.mark.anyio
-    async def test_poll_since_seq_excludes_old(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_poll_since_seq_excludes_old(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """since_seq parameter excludes older events."""
         session = fresh_store.create_session("external", None)
 
@@ -599,13 +679,16 @@ class TestPollFiltering:
         for i in range(3):
             seq = fresh_store.next_seq(session.id)
             seqs.append(seq)
-            await fresh_store.emit(session.id, {
-                "session_id": session.id,
-                "ts": "2026-01-01T00:00:00Z",
-                "seq": seq,
-                "type": "user_input",
-                "data": {"text": f"msg {i}"},
-            })
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "ts": "2026-01-01T00:00:00Z",
+                    "seq": seq,
+                    "type": "user_input",
+                    "data": {"text": f"msg {i}"},
+                },
+            )
 
         # Poll from after first event
         resp = await api_client.get(

@@ -110,6 +110,49 @@ class TestSlackBridgePoC:
         assert mock_client.chat_postMessage.called
 
     @pytest.mark.anyio
+    async def test_on_output_uploads_requested_attachments(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Final output attachments are uploaded into the same Slack thread."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        report = tmp_path / "report.md"
+        report.write_text("hello", encoding="utf-8")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_client = AsyncMock()
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+        )
+        bridge._client = mock_client
+        bridge._thread_ts[session.id] = "1234567890.123456"
+
+        await bridge.on_output(
+            session.id,
+            "Final report\nSTOP 🛑✅ 2s",
+            metadata={
+                "final": True,
+                "attachments": [
+                    {
+                        "path": str(report),
+                        "filename": "report.md",
+                        "title": "report.md",
+                    }
+                ],
+            },
+        )
+
+        assert mock_client.chat_postMessage.called
+        assert mock_client.files_upload_v2.called
+        assert mock_client.files_upload_v2.await_args.kwargs["file"] == str(report)
+
+    @pytest.mark.anyio
     async def test_create_thread_creates_slack_thread(
         self, fresh_store: SessionStore
     ) -> None:
