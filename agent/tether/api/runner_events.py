@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tether.api.emit import (
     emit_error,
+    finalize_output,
     emit_header,
     emit_heartbeat,
     emit_input_required,
@@ -20,6 +21,7 @@ from tether.store import store
 
 # Import at end to avoid circular dependency
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from tether.api.runner_registry import RunnerRegistry
 
@@ -97,6 +99,7 @@ class ApiRunnerEvents:
             session = store.get_session(session_id)
             if not session:
                 return
+            await finalize_output(session, status="error")
             if session.state != SessionState.ERROR:
                 transition(session, SessionState.ERROR, ended_at=True)
                 await emit_state(session)
@@ -113,12 +116,24 @@ class ApiRunnerEvents:
             if not session:
                 return
             # Already in a terminal or idle state
-            if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR):
+            if session.state in (
+                SessionState.AWAITING_INPUT,
+                SessionState.INTERRUPTING,
+                SessionState.ERROR,
+            ):
                 return
             # Non-zero exit code indicates an error
             if exit_code not in (0, None):
-                transition(session, SessionState.ERROR, ended_at=True, exit_code=exit_code)
+                await finalize_output(session, status="error")
+                transition(
+                    session, SessionState.ERROR, ended_at=True, exit_code=exit_code
+                )
                 await emit_state(session)
+                await emit_error(
+                    session,
+                    "RUNNER_EXIT",
+                    f"Runner exited with code {exit_code}",
+                )
 
     async def on_awaiting_input(self, session_id: str) -> None:
         """Handle runner signaling it's waiting for user input."""
@@ -128,6 +143,10 @@ class ApiRunnerEvents:
                 return
             if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
                 return
+            await finalize_output(
+                session,
+                status="stopped" if store.is_stop_requested(session_id) else "success",
+            )
             transition(session, SessionState.AWAITING_INPUT)
             await emit_state(session)
 
@@ -205,6 +224,7 @@ def get_runner_registry() -> "RunnerRegistry":
     global _registry
     if _registry is None:
         from tether.api.runner_registry import RunnerRegistry
+
         _registry = RunnerRegistry(ApiRunnerEvents())
     return _registry
 

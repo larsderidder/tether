@@ -8,7 +8,7 @@ import pytest
 
 from tether.bridges.base import ApprovalRequest, BridgeInterface
 from agent_tether.manager import BridgeManager
-from agent_tether.subscriber import BridgeSubscriber
+from tether.bridges.subscriber import BridgeSubscriber
 from tether.store import SessionStore
 
 
@@ -23,14 +23,24 @@ class FakeBridge(BridgeInterface):
         self.typing_calls: list[str] = []
         self.removed_calls: list[str] = []
 
-    async def on_output(self, session_id: str, text: str, metadata: dict | None = None) -> None:
-        self.output_calls.append({"session_id": session_id, "text": text})
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        self.output_calls.append(
+            {"session_id": session_id, "text": text, "metadata": metadata}
+        )
 
-    async def on_approval_request(self, session_id: str, request: ApprovalRequest) -> None:
+    async def on_approval_request(
+        self, session_id: str, request: ApprovalRequest
+    ) -> None:
         self.approval_calls.append({"session_id": session_id, "request": request})
 
-    async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
-        self.status_calls.append({"session_id": session_id, "status": status, "metadata": metadata})
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
+        self.status_calls.append(
+            {"session_id": session_id, "status": status, "metadata": metadata}
+        )
 
     async def create_thread(self, session_id: str, session_name: str) -> dict:
         return {"thread_id": f"t_{session_id}", "platform": "fake"}
@@ -48,7 +58,9 @@ def fake_bridge():
     return FakeBridge()
 
 
-def _make_subscriber(fresh_store: SessionStore, fake_bridge: FakeBridge) -> BridgeSubscriber:
+def _make_subscriber(
+    fresh_store: SessionStore, fake_bridge: FakeBridge
+) -> BridgeSubscriber:
     """Create a BridgeSubscriber wired to a BridgeManager with the fake bridge registered."""
     mgr = BridgeManager()
     mgr.register_bridge("fake", fake_bridge)
@@ -63,7 +75,9 @@ class TestSubscriberLifecycle:
     """Test subscribe/unsubscribe task management."""
 
     @pytest.mark.anyio
-    async def test_subscribe_creates_task(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_subscribe_creates_task(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -72,7 +86,9 @@ class TestSubscriberLifecycle:
         await sub.unsubscribe(session.id)
 
     @pytest.mark.anyio
-    async def test_subscribe_idempotent(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_subscribe_idempotent(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -83,7 +99,9 @@ class TestSubscriberLifecycle:
         await sub.unsubscribe(session.id)
 
     @pytest.mark.anyio
-    async def test_unsubscribe_removes_task(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_unsubscribe_removes_task(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         """unsubscribe() removes task from tracking dict."""
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
@@ -92,7 +110,9 @@ class TestSubscriberLifecycle:
         assert session.id not in sub._tasks
 
     @pytest.mark.anyio
-    async def test_unsubscribe_calls_on_session_removed(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_unsubscribe_calls_on_session_removed(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -100,7 +120,9 @@ class TestSubscriberLifecycle:
         assert session.id in fake_bridge.removed_calls
 
     @pytest.mark.anyio
-    async def test_unsubscribe_without_platform_skips_removal(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_unsubscribe_without_platform_skips_removal(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -108,7 +130,9 @@ class TestSubscriberLifecycle:
         assert session.id not in fake_bridge.removed_calls
 
     @pytest.mark.anyio
-    async def test_unsubscribe_unknown_session_safe(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_unsubscribe_unknown_session_safe(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         sub = _make_subscriber(fresh_store, fake_bridge)
         await sub.unsubscribe("nonexistent")
 
@@ -116,64 +140,129 @@ class TestSubscriberLifecycle:
 class TestEventRouting:
     """Test _consume routes events to the correct bridge methods."""
 
-    async def _emit_and_wait(self, store: SessionStore, session_id: str, event: dict) -> None:
+    async def _emit_and_wait(
+        self, store: SessionStore, session_id: str, event: dict
+    ) -> None:
         await store.emit(session_id, event)
         await asyncio.sleep(0.05)
 
     @pytest.mark.anyio
-    async def test_routes_final_output(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_routes_final_output(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output",
-            "data": {"text": "Hello world", "final": True},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {"text": "Hello world", "final": True},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 1
         assert fake_bridge.output_calls[0]["text"] == "Hello world"
+        assert fake_bridge.output_calls[0]["metadata"]["final"] is True
 
     @pytest.mark.anyio
-    async def test_skips_non_final_output(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_routes_final_output_attachments_metadata(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output",
-            "data": {"text": "thinking step", "final": False},
-        })
-        await sub.unsubscribe(session.id)
-        assert len(fake_bridge.output_calls) == 0
-
-    @pytest.mark.anyio
-    async def test_skips_output_final_blob(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
-        session = fresh_store.create_session("test", "main")
-        sub = _make_subscriber(fresh_store, fake_bridge)
-        sub.subscribe(session.id, "fake")
-        await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output_final",
-            "data": {"text": "accumulated blob"},
-        })
-        await sub.unsubscribe(session.id)
-        assert len(fake_bridge.output_calls) == 0
-
-    @pytest.mark.anyio
-    async def test_routes_permission_request(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
-        session = fresh_store.create_session("test", "main")
-        sub = _make_subscriber(fresh_store, fake_bridge)
-        sub.subscribe(session.id, "fake")
-        await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "permission_request",
-            "data": {
-                "request_id": "perm_1",
-                "tool_name": "Read",
-                "tool_input": {"path": "/tmp/test.txt"},
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "Final report",
+                    "final": True,
+                    "attachments": [
+                        {
+                            "path": "/tmp/report.md",
+                            "filename": "report.md",
+                            "title": "report.md",
+                        }
+                    ],
+                },
             },
-        })
+        )
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 1
+        assert (
+            fake_bridge.output_calls[0]["metadata"]["attachments"][0]["filename"]
+            == "report.md"
+        )
+
+    @pytest.mark.anyio
+    async def test_skips_non_final_output(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {"text": "thinking step", "final": False},
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 0
+
+    @pytest.mark.anyio
+    async def test_skips_output_final_blob(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "accumulated blob"},
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 0
+
+    @pytest.mark.anyio
+    async def test_routes_permission_request(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "permission_request",
+                "data": {
+                    "request_id": "perm_1",
+                    "tool_name": "Read",
+                    "tool_input": {"path": "/tmp/test.txt"},
+                },
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.approval_calls) == 1
         req = fake_bridge.approval_calls[0]["request"]
@@ -183,70 +272,105 @@ class TestEventRouting:
         assert "/tmp/test.txt" in req.description
 
     @pytest.mark.anyio
-    async def test_routes_session_state_running_to_typing(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_routes_session_state_running_to_typing(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "session_state",
-            "data": {"state": "RUNNING"},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "session_state",
+                "data": {"state": "RUNNING"},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert session.id in fake_bridge.typing_calls
 
     @pytest.mark.anyio
-    async def test_routes_session_state_error_to_status(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_routes_session_state_error_to_status(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "session_state",
-            "data": {"state": "ERROR"},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "session_state",
+                "data": {"state": "ERROR"},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.status_calls) == 1
         assert fake_bridge.status_calls[0]["status"] == "error"
 
     @pytest.mark.anyio
-    async def test_routes_error_event_to_status(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_routes_error_event_to_status(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "error",
-            "data": {"message": "Process crashed"},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "error",
+                "data": {"message": "Process crashed"},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.status_calls) == 1
         assert fake_bridge.status_calls[0]["status"] == "error"
         assert fake_bridge.status_calls[0]["metadata"]["message"] == "Process crashed"
 
     @pytest.mark.anyio
-    async def test_skips_history_events(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_skips_history_events(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output",
-            "data": {"text": "old history", "final": True, "is_history": True},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {"text": "old history", "final": True, "is_history": True},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
-    async def test_skips_empty_output_text(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_skips_empty_output_text(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output",
-            "data": {"text": "", "final": True},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {"text": "", "final": True},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 0
 
@@ -266,7 +390,9 @@ class TestEventRouting:
             assert task.done()
 
     @pytest.mark.anyio
-    async def test_bridge_error_does_not_crash_consumer(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_bridge_error_does_not_crash_consumer(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         """If bridge.on_output raises, consumer continues processing."""
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
@@ -286,14 +412,24 @@ class TestEventRouting:
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
 
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output",
-            "data": {"text": "failing message", "final": True},
-        })
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "output",
-            "data": {"text": "recovery message", "final": True},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {"text": "failing message", "final": True},
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {"text": "recovery message", "final": True},
+            },
+        )
 
         await sub.unsubscribe(session.id)
 
@@ -301,16 +437,23 @@ class TestEventRouting:
         assert fake_bridge.output_calls[0]["text"] == "recovery message"
 
     @pytest.mark.anyio
-    async def test_session_state_awaiting_input_ignored(self, fresh_store: SessionStore, fake_bridge: FakeBridge) -> None:
+    async def test_session_state_awaiting_input_ignored(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
         """AWAITING_INPUT state triggers neither typing nor status."""
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
-        await self._emit_and_wait(fresh_store, session.id, {
-            "session_id": session.id, "type": "session_state",
-            "data": {"state": "AWAITING_INPUT"},
-        })
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "session_state",
+                "data": {"state": "AWAITING_INPUT"},
+            },
+        )
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.typing_calls) == 0
         assert len(fake_bridge.status_calls) == 0

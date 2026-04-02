@@ -10,7 +10,9 @@ class TestOnOutput:
     """Test ApiRunnerEvents.on_output callback."""
 
     @pytest.mark.anyio
-    async def test_output_updates_activity_timestamp(self, fresh_store: SessionStore) -> None:
+    async def test_output_updates_activity_timestamp(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_output updates session.last_activity_at."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -26,7 +28,9 @@ class TestOnOutput:
         assert updated.last_activity_at != "2020-01-01T00:00:00Z"
 
     @pytest.mark.anyio
-    async def test_output_header_kind_stores_runner_header(self, fresh_store: SessionStore) -> None:
+    async def test_output_header_kind_stores_runner_header(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_output with kind='header' stores text as runner_header."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -35,7 +39,9 @@ class TestOnOutput:
         fresh_store.update_session(session)
 
         events = ApiRunnerEvents()
-        await events.on_output(session.id, "combined", "Claude Code v1.0", kind="header")
+        await events.on_output(
+            session.id, "combined", "Claude Code v1.0", kind="header"
+        )
 
         updated = fresh_store.get_session(session.id)
         assert updated.runner_header == "Claude Code v1.0"
@@ -48,6 +54,40 @@ class TestOnOutput:
         events = ApiRunnerEvents()
         # Should not raise
         await events.on_output("nonexistent", "combined", "hello")
+
+    @pytest.mark.anyio
+    async def test_final_output_is_held_until_terminal_state(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Final output is postprocessed and deferred until finalization."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        report = tmp_path / "report.txt"
+        report.write_text("artifact", encoding="utf-8")
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.RUNNING
+        session.directory = str(tmp_path)
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "Done.\nPUBLISH AS ATTACHEMENT: report.txt",
+            kind="final",
+            is_final=True,
+        )
+
+        log = fresh_store.read_event_log(session.id)
+        assert [event for event in log if event.get("type") == "output"] == []
+
+        pending_text, attachments, warnings = fresh_store.get_pending_final_output(
+            session.id
+        )
+        assert pending_text == "Done."
+        assert warnings == []
+        assert attachments[0]["filename"] == "report.txt"
 
 
 class TestOnHeader:
@@ -79,7 +119,9 @@ class TestOnHeader:
         assert fresh_store.get_runner_session_id(session.id) == "thread_abc123"
 
     @pytest.mark.anyio
-    async def test_header_does_not_overwrite_existing_thread_id(self, fresh_store: SessionStore) -> None:
+    async def test_header_does_not_overwrite_existing_thread_id(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_header does not overwrite an existing runner_session_id."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -92,7 +134,9 @@ class TestOnHeader:
         assert fresh_store.get_runner_session_id(session.id) == "original_thread"
 
     @pytest.mark.anyio
-    async def test_header_ignores_unknown_thread_id(self, fresh_store: SessionStore) -> None:
+    async def test_header_ignores_unknown_thread_id(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_header ignores thread_id='unknown'."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -108,7 +152,9 @@ class TestOnError:
     """Test ApiRunnerEvents.on_error callback."""
 
     @pytest.mark.anyio
-    async def test_error_transitions_to_error_state(self, fresh_store: SessionStore) -> None:
+    async def test_error_transitions_to_error_state(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_error transitions session to ERROR state."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -123,7 +169,9 @@ class TestOnError:
         assert updated.state == SessionState.ERROR
 
     @pytest.mark.anyio
-    async def test_error_idempotent_if_already_error(self, fresh_store: SessionStore) -> None:
+    async def test_error_idempotent_if_already_error(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_error does not re-transition if already in ERROR."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -143,7 +191,9 @@ class TestOnExit:
     """Test ApiRunnerEvents.on_exit callback."""
 
     @pytest.mark.anyio
-    async def test_exit_zero_is_noop_when_running(self, fresh_store: SessionStore) -> None:
+    async def test_exit_zero_is_noop_when_running(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_exit with code 0 does NOT transition to error."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -173,7 +223,9 @@ class TestOnExit:
         assert updated.state == SessionState.RUNNING
 
     @pytest.mark.anyio
-    async def test_exit_nonzero_transitions_to_error(self, fresh_store: SessionStore) -> None:
+    async def test_exit_nonzero_transitions_to_error(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_exit with non-zero code transitions to ERROR."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -187,8 +239,15 @@ class TestOnExit:
         updated = fresh_store.get_session(session.id)
         assert updated.state == SessionState.ERROR
 
+        log = fresh_store.read_event_log(session.id)
+        error_events = [event for event in log if event.get("type") == "error"]
+        assert error_events
+        assert error_events[-1]["data"]["code"] == "RUNNER_EXIT"
+
     @pytest.mark.anyio
-    async def test_exit_skipped_if_awaiting_input(self, fresh_store: SessionStore) -> None:
+    async def test_exit_skipped_if_awaiting_input(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_exit is no-op if session already in AWAITING_INPUT."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -203,7 +262,9 @@ class TestOnExit:
         assert updated.state == SessionState.AWAITING_INPUT
 
     @pytest.mark.anyio
-    async def test_exit_skipped_if_interrupting(self, fresh_store: SessionStore) -> None:
+    async def test_exit_skipped_if_interrupting(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_exit is no-op if session in INTERRUPTING state."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -212,6 +273,7 @@ class TestOnExit:
         fresh_store.update_session(session)
         # Transition through RUNNING → INTERRUPTING
         from tether.api.state import transition
+
         transition(session, SessionState.INTERRUPTING)
 
         events = ApiRunnerEvents()
@@ -225,7 +287,9 @@ class TestOnAwaitingInput:
     """Test ApiRunnerEvents.on_awaiting_input callback."""
 
     @pytest.mark.anyio
-    async def test_transitions_to_awaiting_input(self, fresh_store: SessionStore) -> None:
+    async def test_transitions_to_awaiting_input(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_awaiting_input transitions from RUNNING to AWAITING_INPUT."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -240,7 +304,9 @@ class TestOnAwaitingInput:
         assert updated.state == SessionState.AWAITING_INPUT
 
     @pytest.mark.anyio
-    async def test_idempotent_if_already_awaiting(self, fresh_store: SessionStore) -> None:
+    async def test_idempotent_if_already_awaiting(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_awaiting_input is no-op if already AWAITING_INPUT."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -268,6 +334,70 @@ class TestOnAwaitingInput:
 
         updated = fresh_store.get_session(session.id)
         assert updated.state == SessionState.ERROR
+
+    @pytest.mark.anyio
+    async def test_finalizes_pending_output_with_stop_footer(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Awaiting-input finalization appends the STOP footer and attachments."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        report = tmp_path / "report.txt"
+        report.write_text("artifact", encoding="utf-8")
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.RUNNING
+        session.directory = str(tmp_path)
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "Done.\nPUBLISH AS ATTACHMENT: report.txt",
+            kind="final",
+            is_final=True,
+        )
+        await events.on_metadata(session.id, "duration_ms", 12345, "12345")
+        await events.on_awaiting_input(session.id)
+
+        log = fresh_store.read_event_log(session.id)
+        output_events = [event for event in log if event.get("type") == "output"]
+        assert output_events
+        assert output_events[-1]["data"]["text"] == "Done.\nSTOP 🛑✅ 12s"
+        assert output_events[-1]["data"]["attachments"][0]["filename"] == "report.txt"
+
+        output_final_events = [
+            event for event in log if event.get("type") == "output_final"
+        ]
+        assert output_final_events
+        assert output_final_events[-1]["data"]["text"] == "Done.\nSTOP 🛑✅ 12s"
+
+    @pytest.mark.anyio
+    async def test_error_finalizes_pending_output_with_error_footer(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Errors finalize any pending output with the error STOP footer."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "Partial final",
+            kind="final",
+            is_final=True,
+        )
+        await events.on_metadata(session.id, "duration_ms", 5000, "5000")
+        await events.on_error(session.id, "CRASH", "Process died")
+
+        log = fresh_store.read_event_log(session.id)
+        output_events = [event for event in log if event.get("type") == "output"]
+        assert output_events[-1]["data"]["text"] == "Partial final\nSTOP 🛑❌ 5s"
 
 
 class TestOnMetadata:
@@ -299,7 +429,9 @@ class TestOnMetadata:
         fresh_store.update_session(session)
 
         events = ApiRunnerEvents()
-        await events.on_metadata(session.id, "model", "claude-3.5-sonnet", "model: claude-3.5-sonnet")
+        await events.on_metadata(
+            session.id, "model", "claude-3.5-sonnet", "model: claude-3.5-sonnet"
+        )
 
         log = fresh_store.read_event_log(session.id)
         metadata_events = [e for e in log if e.get("type") == "metadata"]
@@ -348,7 +480,9 @@ class TestOnPermissionRequest:
     """Test ApiRunnerEvents.on_permission_request callback."""
 
     @pytest.mark.anyio
-    async def test_permission_request_emits_event(self, fresh_store: SessionStore) -> None:
+    async def test_permission_request_emits_event(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_permission_request emits permission_request event."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -368,7 +502,9 @@ class TestOnPermissionRequest:
         assert perm_events[-1]["data"]["tool_name"] == "Read"
 
     @pytest.mark.anyio
-    async def test_permission_request_missing_session_noop(self, fresh_store: SessionStore) -> None:
+    async def test_permission_request_missing_session_noop(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_permission_request with unknown session is a no-op."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -380,7 +516,9 @@ class TestOnPermissionResolved:
     """Test ApiRunnerEvents.on_permission_resolved callback."""
 
     @pytest.mark.anyio
-    async def test_permission_resolved_emits_event(self, fresh_store: SessionStore) -> None:
+    async def test_permission_resolved_emits_event(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_permission_resolved emits permission_resolved event."""
         from tether.api.runner_events import ApiRunnerEvents
 

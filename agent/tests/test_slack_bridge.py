@@ -48,9 +48,10 @@ class TestSlackBridgePoC:
 
     @pytest.mark.anyio
     async def test_thread_names_are_unique_like_telegram(
-        self, fresh_store: SessionStore
+        self, fresh_store: SessionStore, tmp_path
     ) -> None:
         """Second thread with same directory gets 'Name 2'."""
+        from agent_tether.base import BridgeConfig
         from tether.bridges.slack.bot import SlackBridge
 
         mock_client = AsyncMock()
@@ -59,13 +60,21 @@ class TestSlackBridgePoC:
             {"ok": True, "ts": "2"},
         ]
 
-        bridge = SlackBridge(bot_token="xoxb-test-token", channel_id="C01234567")
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            config=BridgeConfig(data_dir=str(tmp_path)),
+        )
         bridge._client = mock_client
 
-        name1 = bridge._make_external_thread_name(directory="/repo", session_id="sess_1")
+        name1 = bridge._make_external_thread_name(
+            directory="/repo", session_id="sess_1"
+        )
         await bridge.create_thread("sess_1", name1)
 
-        name2 = bridge._make_external_thread_name(directory="/repo", session_id="sess_2")
+        name2 = bridge._make_external_thread_name(
+            directory="/repo", session_id="sess_2"
+        )
         await bridge.create_thread("sess_2", name2)
 
         assert name1 == "Repo"
@@ -99,6 +108,49 @@ class TestSlackBridgePoC:
 
         # Verify message was sent to Slack thread
         assert mock_client.chat_postMessage.called
+
+    @pytest.mark.anyio
+    async def test_on_output_uploads_requested_attachments(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Final output attachments are uploaded into the same Slack thread."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        report = tmp_path / "report.md"
+        report.write_text("hello", encoding="utf-8")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_client = AsyncMock()
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+        )
+        bridge._client = mock_client
+        bridge._thread_ts[session.id] = "1234567890.123456"
+
+        await bridge.on_output(
+            session.id,
+            "Final report\nSTOP 🛑✅ 2s",
+            metadata={
+                "final": True,
+                "attachments": [
+                    {
+                        "path": str(report),
+                        "filename": "report.md",
+                        "title": "report.md",
+                    }
+                ],
+            },
+        )
+
+        assert mock_client.chat_postMessage.called
+        assert mock_client.files_upload_v2.called
+        assert mock_client.files_upload_v2.await_args.kwargs["file"] == str(report)
 
     @pytest.mark.anyio
     async def test_create_thread_creates_slack_thread(
@@ -155,6 +207,73 @@ class TestSlackBridgePoC:
 
         # Verify status was sent
         assert mock_client.chat_postMessage.called
+
+    @pytest.mark.anyio
+    async def test_error_status_uploads_debug_attachments_when_enabled(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        """Error status uploads attachment snippets instead of plain text."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        monkeypatch.setenv("TETHER_DEBUG_ATTACH_LOGS", "1")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_client = AsyncMock()
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+        )
+        bridge._client = mock_client
+        bridge._thread_ts[session.id] = "1234567890.123456"
+
+        await bridge.on_status_change(
+            session.id,
+            "error",
+            metadata={"message": "Process crashed"},
+        )
+
+        assert mock_client.files_upload_v2.called
+        kwargs = mock_client.files_upload_v2.call_args_list[0].kwargs
+        assert kwargs["thread_ts"] == "1234567890.123456"
+        assert "initial_comment" in kwargs
+        assert "Process crashed" in kwargs["initial_comment"]
+
+    @pytest.mark.anyio
+    async def test_error_status_falls_back_to_plain_status_when_disabled(
+        self, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        """Disabling debug attachments restores the plain error status message."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        monkeypatch.setenv("TETHER_DEBUG_ATTACH_LOGS", "0")
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_client = AsyncMock()
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+        )
+        bridge._client = mock_client
+        bridge._thread_ts[session.id] = "1234567890.123456"
+
+        await bridge.on_status_change(
+            session.id,
+            "error",
+            metadata={"message": "Process crashed"},
+        )
+
+        assert mock_client.chat_postMessage.called
+        assert not mock_client.files_upload_v2.called
 
     @pytest.mark.anyio
     async def test_on_approval_request_sends_message(
