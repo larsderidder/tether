@@ -48,9 +48,10 @@ class TestSlackBridgePoC:
 
     @pytest.mark.anyio
     async def test_thread_names_are_unique_like_telegram(
-        self, fresh_store: SessionStore
+        self, fresh_store: SessionStore, tmp_path
     ) -> None:
         """Second thread with same directory gets 'Name 2'."""
+        from agent_tether.base import BridgeConfig
         from tether.bridges.slack.bot import SlackBridge
 
         mock_client = AsyncMock()
@@ -59,7 +60,11 @@ class TestSlackBridgePoC:
             {"ok": True, "ts": "2"},
         ]
 
-        bridge = SlackBridge(bot_token="xoxb-test-token", channel_id="C01234567")
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            config=BridgeConfig(data_dir=str(tmp_path)),
+        )
         bridge._client = mock_client
 
         name1 = bridge._make_external_thread_name(directory="/repo", session_id="sess_1")

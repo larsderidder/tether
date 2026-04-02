@@ -10,7 +10,7 @@ from tether.settings import Settings
 def clean_env(monkeypatch):
     """Remove all TETHER_ env vars for clean tests."""
     for key in list(os.environ.keys()):
-        if key.startswith("TETHER_") or key == "ANTHROPIC_API_KEY":
+        if key.startswith("TETHER_") or key.startswith("DISCORD_") or key == "ANTHROPIC_API_KEY":
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
 
@@ -170,6 +170,20 @@ class TestStringSettings:
         assert Settings.opencode_sidecar_cmd() == "my-opencode-sidecar --x"
         assert Settings.opencode_sidecar_startup_timeout_seconds() == 30
 
+    def test_bridge_reaction_shortcut_settings(self, clean_env) -> None:
+        """Reaction shortcut settings have safe defaults and overrides."""
+        assert Settings.bridge_reaction_new_session_enabled() is True
+        assert Settings.bridge_reaction_new_session_emoji() == "✅"
+        assert Settings.bridge_reaction_new_session_allow_plain_messages() is False
+
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", "0")
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", "white_check_mark")
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES", "1")
+
+        assert Settings.bridge_reaction_new_session_enabled() is False
+        assert Settings.bridge_reaction_new_session_emoji() == "white_check_mark"
+        assert Settings.bridge_reaction_new_session_allow_plain_messages() is True
+
 
 class TestDataDir:
     """Test data directory setting."""
@@ -206,3 +220,11 @@ class TestDataDir:
 
         result = Settings.data_dir()
         assert result == str(tmp_path / "data" / "tether")
+
+
+class TestDiscordSettings:
+    """Test Discord-specific settings."""
+
+    def test_discord_auto_pair_user_ids(self, clean_env) -> None:
+        clean_env.setenv("DISCORD_AUTO_PAIR_USER_IDS", "123, nope, 456")
+        assert Settings.discord_auto_pair_user_ids() == {123, 456}
