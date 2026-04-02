@@ -117,12 +117,14 @@ async def _init_bridges() -> None:
     slack_channel = settings.slack_channel_id()
     if slack_token and slack_channel:
         try:
-            from agent_tether import SlackBridge
+            from tether.bridges.slack.bot import SlackBridge
 
             bridge = SlackBridge(
                 bot_token=slack_token,
                 channel_id=slack_channel,
                 slack_app_token=settings.slack_app_token(),
+                reaction_new_session_enabled=settings.bridge_reaction_new_session_enabled(),
+                reaction_new_session_emoji=settings.bridge_reaction_new_session_emoji(),
                 config=config,
                 callbacks=callbacks,
                 get_session_directory=get_session_directory,
@@ -152,6 +154,8 @@ async def _init_bridges() -> None:
                     auto_pair_user_ids=settings.discord_auto_pair_user_ids(),
                     pairing_code=settings.discord_pairing_code(),
                     guild_id=settings.discord_guild_id(),
+                    reaction_new_session_enabled=settings.bridge_reaction_new_session_enabled(),
+                    reaction_new_session_emoji=settings.bridge_reaction_new_session_emoji(),
                 ),
                 config=config,
                 callbacks=callbacks,

@@ -207,6 +207,26 @@ class Settings:
         return _get_int("TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS", default=30)
 
     @staticmethod
+    def bridge_reaction_new_session_enabled() -> bool:
+        """Enable the `!new` plus checkmark reaction shortcut in Slack/Discord.
+
+        When enabled, a top-level control-channel message whose first line starts
+        with ``!new`` can create and start a new session when reacted to with the
+        configured emoji.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED (default: 1)
+        """
+        return _get_bool("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", default=True)
+
+    @staticmethod
+    def bridge_reaction_new_session_emoji() -> str:
+        """Emoji or reaction name used to trigger the new-session shortcut.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI (default: ✅)
+        """
+        return _get("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", default="✅")
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 

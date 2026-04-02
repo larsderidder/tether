@@ -170,6 +170,18 @@ class TestStringSettings:
         assert Settings.opencode_sidecar_cmd() == "my-opencode-sidecar --x"
         assert Settings.opencode_sidecar_startup_timeout_seconds() == 30
 
+    def test_bridge_reaction_shortcut_settings(self, clean_env) -> None:
+        """Reaction shortcut settings have safe defaults and overrides."""
+        assert Settings.bridge_reaction_new_session_enabled() is True
+        assert Settings.bridge_reaction_new_session_emoji() == "✅"
+
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", "0")
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", "white_check_mark")
+
+        assert Settings.bridge_reaction_new_session_enabled() is False
+        assert Settings.bridge_reaction_new_session_emoji() == "white_check_mark"
+
+
 class TestDataDir:
     """Test data directory setting."""
 

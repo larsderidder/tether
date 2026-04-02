@@ -17,6 +17,13 @@ import structlog
 from agent_tether.discord.bot import DiscordBridge as UpstreamDiscordBridge
 from agent_tether.discord.bot import DiscordConfig as UpstreamDiscordConfig
 from agent_tether.discord.pairing_state import save as save_pairing_state
+from agent_tether.thread_naming import adapter_to_runner
+
+from tether.bridges.reaction_shortcuts import (
+    ReactionShortcutError,
+    parse_reaction_shortcut_message,
+    reaction_matches,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +47,8 @@ class DiscordConfig:
     auto_pair_user_ids: list[int] | None = None
     pairing_code: str | None = None
     guild_id: int = 0
+    reaction_new_session_enabled: bool = True
+    reaction_new_session_emoji: str = "✅"
 
 
 class DiscordBridge(UpstreamDiscordBridge):
@@ -87,6 +96,14 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._auto_pair_user_ids = auto_pair_user_ids
         self._guild_id = int(getattr(local_config, "guild_id", 0) or 0)
         self._control_channel_name = f"🤖-{_hostname_slug()}"
+        self._reaction_new_session_enabled = bool(
+            getattr(local_config, "reaction_new_session_enabled", True)
+        )
+        self._reaction_new_session_emoji = (
+            getattr(local_config, "reaction_new_session_emoji", "✅") or "✅"
+        )
+        self._reaction_shortcuts_completed: set[int] = set()
+        self._reaction_shortcuts_in_progress: set[int] = set()
         self._apply_auto_pair_users()
 
     @staticmethod
@@ -180,11 +197,19 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         @self._client.event
         async def on_ready() -> None:
-            logger.info("Discord client ready", user=self._client.user)
+            logger.info(
+                "Discord client ready",
+                user=self._client.user,
+                reaction_shortcuts=self._reaction_new_session_enabled,
+            )
 
         @self._client.event
         async def on_message(message: Any) -> None:
             await self._handle_message(message)
+
+        @self._client.event
+        async def on_raw_reaction_add(payload: Any) -> None:
+            await self._handle_raw_reaction_add(payload)
 
         asyncio.create_task(self._client.start(self._bot_token))
 
@@ -253,6 +278,21 @@ class DiscordBridge(UpstreamDiscordBridge):
             "Auto-paired Discord users from configuration",
             auto_pair_count=len(self._auto_pair_user_ids),
         )
+
+    def _begin_reaction_shortcut(self, source_message_id: int) -> bool:
+        if source_message_id in self._reaction_shortcuts_completed:
+            return False
+        if source_message_id in self._reaction_shortcuts_in_progress:
+            return False
+        self._reaction_shortcuts_in_progress.add(source_message_id)
+        return True
+
+    def _finish_reaction_shortcut(
+        self, source_message_id: int, *, persist: bool
+    ) -> None:
+        self._reaction_shortcuts_in_progress.discard(source_message_id)
+        if persist:
+            self._reaction_shortcuts_completed.add(source_message_id)
 
     async def _resolve_bootstrap_guild(self) -> Any | None:
         if not self._client:
@@ -336,6 +376,108 @@ class DiscordBridge(UpstreamDiscordBridge):
             channel_name=self._control_channel_name,
         )
         return channel
+
+    async def _handle_raw_reaction_add(self, payload: Any) -> None:
+        """Create and start a new session from a reacted control-channel message."""
+        if not self._reaction_new_session_enabled or not self._client:
+            return
+
+        channel_id = int(getattr(payload, "channel_id", 0) or 0)
+        if not self._channel_id or channel_id != int(self._channel_id):
+            return
+
+        source_message_id = int(getattr(payload, "message_id", 0) or 0)
+        if not source_message_id:
+            return
+
+        user_id = int(getattr(payload, "user_id", 0) or 0)
+        client_user_id = int(getattr(getattr(self._client, "user", None), "id", 0) or 0)
+        if client_user_id and user_id == client_user_id:
+            return
+        if not self._is_authorized_user_id(user_id):
+            return
+
+        emoji_name = getattr(getattr(payload, "emoji", None), "name", None) or str(
+            getattr(payload, "emoji", "") or ""
+        )
+        if not reaction_matches(self._reaction_new_session_emoji, emoji_name):
+            return
+        if not self._begin_reaction_shortcut(source_message_id):
+            return
+
+        persist = False
+        channel: Any | None = None
+        try:
+            channel = self._client.get_channel(channel_id)
+            if channel is None:
+                fetch_channel = getattr(self._client, "fetch_channel", None)
+                if fetch_channel is not None:
+                    channel = await fetch_channel(channel_id)
+            if channel is None or not hasattr(channel, "fetch_message"):
+                return
+
+            message = await channel.fetch_message(source_message_id)
+            if getattr(getattr(message, "author", None), "bot", False):
+                return
+
+            shortcut = parse_reaction_shortcut_message(getattr(message, "content", ""))
+            if shortcut is None:
+                return
+
+            adapter, directory = await self._parse_new_args(
+                shortcut.args,
+                base_session_id=None,
+            )
+            dir_short = directory.rstrip("/").rsplit("/", 1)[-1] or "Session"
+            agent_label = (
+                self._adapter_label(adapter)
+                or self._adapter_label(self._config.default_adapter)
+                or "Claude"
+            )
+            runner_type = adapter_to_runner(adapter or self._config.default_adapter)
+            session_name = self._make_external_thread_name(
+                directory=directory,
+                session_id="",
+                runner_type=runner_type,
+            )
+
+            session = await self._create_session_via_api(
+                directory=directory,
+                platform="discord",
+                adapter=adapter,
+                session_name=session_name,
+            )
+            session_id = str(session.get("id") or "").strip()
+            if not session_id:
+                raise RuntimeError("Tether did not return a session id")
+
+            persist = True
+            await self._send_input_or_start_via_api(
+                session_id=session_id,
+                text=shortcut.prompt,
+            )
+            reply = (
+                f"✅ New {agent_label} session created in {dir_short} from a checkmark reaction."
+            )
+            try:
+                thread_id = int(session.get("platform_thread_id") or 0)
+            except Exception:
+                thread_id = 0
+            if thread_id:
+                reply += f"\n🧵 Open thread: <#{thread_id}>"
+            await channel.send(reply[:_DISCORD_STARTER_TEXT_LIMIT])
+        except (ReactionShortcutError, ValueError) as exc:
+            if channel is not None:
+                await channel.send(str(exc))
+        except Exception as exc:
+            logger.exception(
+                "Failed to create Discord session from reaction",
+                source_message_id=source_message_id,
+            )
+            if channel is not None:
+                await channel.send(f"Failed to create session from reaction: {exc}")
+        finally:
+            self._finish_reaction_shortcut(source_message_id, persist=persist)
 
     async def _create_public_thread_from_message(
         self,
