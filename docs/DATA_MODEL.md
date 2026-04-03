@@ -14,7 +14,7 @@ The central entity. Represents one supervised agent run.
 | `repo_ref_type` | `str` | `"path"` or `"url"` |
 | `repo_ref_value` | `str` | Local path or git URL |
 | `state` | `SessionState` | Current lifecycle state |
-| `name` | `str?` | Auto-set from first prompt (truncated) |
+| `name` | `str?` | Auto-generated summary from the first prompt (truncated) |
 | `created_at` | `str` | ISO8601 UTC |
 | `started_at` | `str?` | When first started |
 | `ended_at` | `str?` | When terminated |

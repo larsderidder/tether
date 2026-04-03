@@ -184,14 +184,14 @@ class TestMaybeSetSessionName:
     """Test session name auto-population."""
 
     def test_sets_name_from_prompt(self, fresh_store: SessionStore) -> None:
-        """Prompt replaces the default placeholder with a formatted title."""
+        """Prompt replaces the default placeholder with a summarized title."""
         session = fresh_store.create_session("repo_test", "main")
         session.directory = "/home/test/tether"
         fresh_store.update_session(session)
 
         maybe_set_session_name(session, "Fix the login bug")
 
-        assert session.name == "tether: Fix the login bug"
+        assert session.name == "tether: login bug"
 
     def test_does_not_overwrite_existing_name(self, fresh_store: SessionStore) -> None:
         """Existing name is not overwritten."""
@@ -235,7 +235,22 @@ class TestMaybeSetSessionName:
 
         maybe_set_session_name(session, "Rename Slack thread after first input")
 
-        assert session.name == "tether: Rename Slack thread after first input"
+        assert session.name == "tether: Slack thread after first input"
+
+    def test_strips_request_framing_from_summary(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Leading request verbs should not dominate the auto-generated title."""
+        session = fresh_store.create_session("repo_test", "main")
+        session.directory = "/home/test/tether"
+        fresh_store.update_session(session)
+
+        maybe_set_session_name(
+            session,
+            "Please help me rename thread verification 20260403-163716",
+        )
+
+        assert session.name == "tether: verification 20260403-163716"
 
 
 class TestTransitionMatrix:

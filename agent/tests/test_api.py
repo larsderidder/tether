@@ -303,7 +303,7 @@ class TestSessionLifecycle:
         )
 
         assert response.status_code == 200
-        renamed = "test-repo: Rename Slack thread after first input"
+        renamed = "test-repo: Slack thread after first input"
         assert fresh_store.get_session(session_id).name == renamed
         mock_rename.assert_awaited_once_with(session_id, preferred_name=renamed)
 
@@ -349,7 +349,7 @@ class TestSessionLifecycle:
         )
 
         assert response.status_code == 200
-        renamed = "test-repo: Continue with thread rename"
+        renamed = "test-repo: thread rename"
         assert fresh_store.get_session(session_id).name == renamed
         mock_rename.assert_awaited_once_with(session_id, preferred_name=renamed)
 
