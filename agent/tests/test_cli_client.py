@@ -36,13 +36,22 @@ class FakeClient:
         self._responses = responses
 
     def get(self, url: str, **kwargs) -> httpx.Response:
-        return self._responses.get(("GET", url), _mock_response(404))
+        response = self._responses.get(("GET", url), _mock_response(404))
+        if isinstance(response, list):
+            return response.pop(0) if response else _mock_response(404)
+        return response
 
     def post(self, url: str, **kwargs) -> httpx.Response:
-        return self._responses.get(("POST", url), _mock_response(404))
+        response = self._responses.get(("POST", url), _mock_response(404))
+        if isinstance(response, list):
+            return response.pop(0) if response else _mock_response(404)
+        return response
 
     def delete(self, url: str, **kwargs) -> httpx.Response:
-        return self._responses.get(("DELETE", url), _mock_response(404))
+        response = self._responses.get(("DELETE", url), _mock_response(404))
+        if isinstance(response, list):
+            return response.pop(0) if response else _mock_response(404)
+        return response
 
     def __enter__(self):
         return self
@@ -172,13 +181,49 @@ class TestCmdAttach:
             "directory": "/home/user/project",
         }
         with _patch_client({
-            ("GET", "/api/external-sessions"): _mock_response(200, []),
             ("POST", "/api/sessions/attach"): _mock_response(201, session),
         }):
             cli_client.cmd_attach("ext-abc", "claude_code", "/home/user/project")
         out = capsys.readouterr().out
         assert "new-session-id" in out
         assert "Fix the bug" in out
+
+    def test_full_id_not_found_falls_back_to_resolution(self, capsys, monkeypatch, tmp_path):
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        ext_sessions = [
+            {
+                "id": "019d5111-778a-7ce3-bb5d-05a6eb1c8539",
+                "runner_type": "codex",
+                "directory": str(workdir),
+                "first_prompt": "marker",
+            },
+        ]
+        not_found = _mock_response(
+            404,
+            {"detail": {"message": "External session not found: 019d5111-778a-7ce3-bb5d-05a6eb1c8539"}},
+        )
+        session = {
+            "id": "new-session-id",
+            "state": "AWAITING_INPUT",
+            "name": "marker",
+            "directory": str(workdir),
+            "platform": "discord",
+        }
+        with _patch_client({
+            ("GET", "/api/external-sessions"): _mock_response(200, ext_sessions),
+            ("POST", "/api/sessions/attach"): [not_found, _mock_response(201, session)],
+        }):
+            cli_client.cmd_attach(
+                "019d5111-778a-7ce3-bb5d-05a6eb1c8539",
+                "claude_code",
+                os.getcwd(),
+                "discord",
+            )
+        out = capsys.readouterr().out
+        assert "new-session-id" in out
+        assert "discord" in out
 
     def test_prefix_resolution(self, capsys):
         """Attach resolves a short prefix against external sessions."""
@@ -392,6 +437,29 @@ class TestHelpers:
     def test_auth_headers_without_token(self, monkeypatch):
         monkeypatch.delenv("TETHER_AGENT_TOKEN", raising=False)
         assert cli_client._auth_headers() == {}
+
+    def test_build_timeout_defaults(self):
+        timeout = cli_client._build_timeout()
+        assert timeout.connect == 10.0
+        assert timeout.read == 10.0
+        assert timeout.write == 10.0
+        assert timeout.pool == 10.0
+
+    def test_mutation_timeout_defaults(self, monkeypatch):
+        monkeypatch.delenv("TETHER_AGENT_MUTATION_READ_TIMEOUT_SECONDS", raising=False)
+        timeout = cli_client._mutation_timeout()
+        assert timeout.read == 60.0
+        assert timeout.connect == 10.0
+
+    def test_mutation_timeout_env_override(self, monkeypatch):
+        monkeypatch.setenv("TETHER_AGENT_MUTATION_READ_TIMEOUT_SECONDS", "42.5")
+        timeout = cli_client._mutation_timeout()
+        assert timeout.read == 42.5
+
+    def test_mutation_timeout_invalid_env_falls_back(self, monkeypatch):
+        monkeypatch.setenv("TETHER_AGENT_MUTATION_READ_TIMEOUT_SECONDS", "invalid")
+        timeout = cli_client._mutation_timeout()
+        assert timeout.read == 60.0
 
 
 # ---------------------------------------------------------------------------
