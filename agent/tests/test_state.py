@@ -121,7 +121,9 @@ class TestInvalidTransitions:
 
         assert exc_info.value.status_code == 409
 
-    def test_awaiting_input_to_interrupting_invalid(self, fresh_store: SessionStore) -> None:
+    def test_awaiting_input_to_interrupting_invalid(
+        self, fresh_store: SessionStore
+    ) -> None:
         """AWAITING_INPUT -> INTERRUPTING is invalid (nothing to interrupt)."""
         session = fresh_store.create_session("repo_test", "main")
         transition(session, SessionState.RUNNING, started_at=True)
@@ -182,15 +184,14 @@ class TestMaybeSetSessionName:
     """Test session name auto-population."""
 
     def test_sets_name_from_prompt(self, fresh_store: SessionStore) -> None:
-        """Prompt sets session name when current name is default."""
+        """Prompt replaces the default placeholder with a formatted title."""
         session = fresh_store.create_session("repo_test", "main")
-        # Clear the default name to test the setting logic
-        session.name = None
+        session.directory = "/home/test/tether"
         fresh_store.update_session(session)
 
         maybe_set_session_name(session, "Fix the login bug")
 
-        assert session.name == "Fix the login bug"
+        assert session.name == "tether: Fix the login bug"
 
     def test_does_not_overwrite_existing_name(self, fresh_store: SessionStore) -> None:
         """Existing name is not overwritten."""
@@ -205,26 +206,36 @@ class TestMaybeSetSessionName:
     def test_truncates_long_name(self, fresh_store: SessionStore) -> None:
         """Long prompts are truncated to 80 chars."""
         session = fresh_store.create_session("repo_test", "main")
-        # Clear the default name to test the setting logic
-        session.name = None
+        session.directory = "/tmp/repo"
         fresh_store.update_session(session)
         long_prompt = "x" * 100
 
         maybe_set_session_name(session, long_prompt)
 
         assert len(session.name) == 80
+        assert session.name.startswith("repo: ")
 
     def test_ignores_empty_prompt(self, fresh_store: SessionStore) -> None:
         """Empty prompts don't change name."""
         session = fresh_store.create_session("repo_test", "main")
-        # Clear the default name to test the setting logic
-        session.name = None
         fresh_store.update_session(session)
 
         maybe_set_session_name(session, "")
         maybe_set_session_name(session, "   ")
 
-        assert session.name is None
+        assert session.name == "New session"
+
+    def test_replaces_generic_thread_name(self, fresh_store: SessionStore) -> None:
+        """Auto-generated bridge labels are replaced by the first real prompt."""
+        session = fresh_store.create_session("repo_test", "main")
+        session.directory = "/home/test/tether"
+        session.runner_type = "codex"
+        session.name = "Codex / Tether"
+        fresh_store.update_session(session)
+
+        maybe_set_session_name(session, "Rename Slack thread after first input")
+
+        assert session.name == "tether: Rename Slack thread after first input"
 
 
 class TestTransitionMatrix:

@@ -20,6 +20,7 @@ from tether.discovery import (
     get_external_session_detail,
 )
 from tether.git import has_git_repository, normalize_directory_path
+from tether.session_titles import build_auto_session_name
 from tether.models import (
     ExternalRunnerType,
     SessionState,
@@ -331,9 +332,16 @@ async def attach_to_external_session(
                 existing_session.platform = payload.platform
                 store.update_session(existing_session)
                 try:
-                    from tether.bridges.glue import bridge_manager, make_thread_name
+                    from tether.bridges.glue import (
+                        bridge_manager,
+                        make_thread_name,
+                        preferred_thread_name_for_platform,
+                    )
 
-                    thread_label = make_thread_name(
+                    thread_label = preferred_thread_name_for_platform(
+                        existing_session,
+                        payload.platform,
+                    ) or make_thread_name(
                         directory=existing_session.directory or "",
                         runner_type=existing_session.runner_type or "",
                     )
@@ -395,7 +403,7 @@ async def attach_to_external_session(
 
     # Set session name from first prompt if available
     if detail.first_prompt:
-        session.name = detail.first_prompt[:80]
+        session.name = build_auto_session_name(session, detail.first_prompt)
 
     # Pre-register the external session ID for the runner to use
     store.set_runner_session_id(session.id, external_id)
@@ -406,11 +414,17 @@ async def attach_to_external_session(
         session.platform = payload.platform
         store.update_session(session)
         try:
-            from tether.bridges.glue import bridge_manager, make_thread_name
+            from tether.bridges.glue import (
+                bridge_manager,
+                make_thread_name,
+                preferred_thread_name_for_platform,
+            )
 
-            thread_label = make_thread_name(
-                directory=normalized_directory,
-                runner_type=session.runner_type,
+            thread_label = preferred_thread_name_for_platform(
+                session,
+                payload.platform,
+            ) or make_thread_name(
+                directory=normalized_directory, runner_type=session.runner_type
             )
             thread_info = await bridge_manager.create_thread(
                 session.id,

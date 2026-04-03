@@ -181,6 +181,39 @@ class TestSlackBridgePoC:
         assert result["platform"] == "slack"
 
     @pytest.mark.anyio
+    async def test_rename_thread_updates_slack_parent_message(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Slack thread renames update the parent message text."""
+        from agent_tether.base import BridgeConfig
+        from tether.bridges.slack.bot import SlackBridge
+
+        mock_client = AsyncMock()
+        mock_client.chat_postMessage.return_value = {
+            "ok": True,
+            "ts": "1234567890.123456",
+        }
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            config=BridgeConfig(data_dir=str(tmp_path)),
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread("sess_1", "Repo")
+        await bridge.rename_thread("sess_1", "tether: rename thread after first input")
+
+        mock_client.chat_update.assert_awaited_once_with(
+            channel="C01234567",
+            ts="1234567890.123456",
+            text="*Session:* tether: rename thread after first input",
+        )
+        assert (
+            bridge._thread_names["sess_1"] == "tether: rename thread after first input"
+        )
+
+    @pytest.mark.anyio
     async def test_on_status_change_sends_to_slack(
         self, fresh_store: SessionStore
     ) -> None:

@@ -41,10 +41,7 @@ class TestSessionsEndpoints:
     @pytest.mark.anyio
     async def test_create_session(self, api_client: httpx.AsyncClient) -> None:
         """Create session returns new session in CREATED state."""
-        response = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
-        )
+        response = await api_client.post("/api/sessions", json={"repo_id": "test_repo"})
 
         assert response.status_code == 201
         session = response.json()
@@ -61,8 +58,7 @@ class TestSessionsEndpoints:
         test_dir.mkdir()
 
         response = await api_client.post(
-            "/api/sessions",
-            json={"directory": str(test_dir)}
+            "/api/sessions", json={"directory": str(test_dir)}
         )
 
         assert response.status_code == 201
@@ -75,8 +71,7 @@ class TestSessionsEndpoints:
     ) -> None:
         """Create session with nonexistent directory fails."""
         response = await api_client.post(
-            "/api/sessions",
-            json={"directory": "/nonexistent/path"}
+            "/api/sessions", json={"directory": "/nonexistent/path"}
         )
 
         assert response.status_code == 422
@@ -86,8 +81,7 @@ class TestSessionsEndpoints:
         """Get session returns session details."""
         # Create a session first
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
@@ -110,8 +104,7 @@ class TestSessionsEndpoints:
         """Delete session removes it."""
         # Create a session
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
@@ -124,7 +117,9 @@ class TestSessionsEndpoints:
         assert get_resp.status_code == 404
 
     @pytest.mark.anyio
-    async def test_list_sessions_after_create(self, api_client: httpx.AsyncClient) -> None:
+    async def test_list_sessions_after_create(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
         """List sessions includes created sessions."""
         # Create two sessions
         await api_client.post("/api/sessions", json={"repo_id": "repo_1"})
@@ -147,15 +142,13 @@ class TestSessionLifecycle:
         """Starting session without directory returns error."""
         # Create session without directory
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
         # Try to start it
         response = await api_client.post(
-            f"/api/sessions/{session_id}/start",
-            json={"prompt": "test prompt"}
+            f"/api/sessions/{session_id}/start", json={"prompt": "test prompt"}
         )
 
         assert response.status_code == 422
@@ -166,8 +159,7 @@ class TestSessionLifecycle:
     ) -> None:
         """Interrupting a CREATED session returns error."""
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
@@ -181,14 +173,12 @@ class TestSessionLifecycle:
     ) -> None:
         """Sending input to CREATED session returns error."""
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
         response = await api_client.post(
-            f"/api/sessions/{session_id}/input",
-            json={"text": "some input"}
+            f"/api/sessions/{session_id}/input", json={"text": "some input"}
         )
 
         assert response.status_code == 409
@@ -203,8 +193,7 @@ class TestSessionLifecycle:
         test_dir.mkdir()
 
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"directory": str(test_dir)}
+            "/api/sessions", json={"directory": str(test_dir)}
         )
         session_id = create_resp.json()["id"]
 
@@ -214,23 +203,25 @@ class TestSessionLifecycle:
         fresh_store.update_session(session)
 
         response = await api_client.post(
-            f"/api/sessions/{session_id}/input",
-            json={"text": ""}
+            f"/api/sessions/{session_id}/input", json={"text": ""}
         )
 
         assert response.status_code == 422
 
     @pytest.mark.anyio
     async def test_input_emits_output_and_input_required(
-        self, api_client: httpx.AsyncClient, fresh_store: SessionStore, tmp_path, monkeypatch
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        tmp_path,
+        monkeypatch,
     ) -> None:
         """Input should emit output_final and input_required when runner completes."""
         test_dir = tmp_path / "test_repo"
         test_dir.mkdir()
 
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"directory": str(test_dir)}
+            "/api/sessions", json={"directory": str(test_dir)}
         )
         session_id = create_resp.json()["id"]
 
@@ -255,11 +246,12 @@ class TestSessionLifecycle:
                 await events.on_awaiting_input(session_id)
 
         fake_runner = FakeRunner()
-        monkeypatch.setattr("tether.api.sessions.get_api_runner", lambda *args, **kwargs: fake_runner)
+        monkeypatch.setattr(
+            "tether.api.sessions.get_api_runner", lambda *args, **kwargs: fake_runner
+        )
 
         response = await api_client.post(
-            f"/api/sessions/{session_id}/input",
-            json={"text": "hello"}
+            f"/api/sessions/{session_id}/input", json={"text": "hello"}
         )
 
         assert response.status_code == 200
@@ -272,6 +264,95 @@ class TestSessionLifecycle:
         session = fresh_store.get_session(session_id)
         assert session.state == SessionState.AWAITING_INPUT
 
+    @pytest.mark.anyio
+    async def test_start_auto_renames_bound_thread_on_first_prompt(
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """The first prompt should update the session title and rename the bound thread."""
+        test_dir = tmp_path / "test_repo"
+        test_dir.mkdir()
+
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={"directory": str(test_dir)},
+        )
+        session_id = create_resp.json()["id"]
+
+        session = fresh_store.get_session(session_id)
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_runner = MagicMock()
+        mock_runner.runner_type = "codex"
+        mock_runner.start = AsyncMock()
+        mock_rename = AsyncMock()
+        monkeypatch.setattr(
+            "tether.api.sessions.get_api_runner",
+            lambda *a, **kw: mock_runner,
+        )
+        monkeypatch.setattr("tether.api.sessions.sync_bound_thread_name", mock_rename)
+
+        response = await api_client.post(
+            f"/api/sessions/{session_id}/start",
+            json={"prompt": "Rename Slack thread after first input"},
+        )
+
+        assert response.status_code == 200
+        renamed = "test-repo: Rename Slack thread after first input"
+        assert fresh_store.get_session(session_id).name == renamed
+        mock_rename.assert_awaited_once_with(session_id, preferred_name=renamed)
+
+    @pytest.mark.anyio
+    async def test_input_auto_renames_generic_session_title(
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """Awaiting sessions should replace generic names on the first follow-up input."""
+        test_dir = tmp_path / "test_repo"
+        test_dir.mkdir()
+
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={"directory": str(test_dir)},
+        )
+        session_id = create_resp.json()["id"]
+
+        session = fresh_store.get_session(session_id)
+        session.state = SessionState.AWAITING_INPUT
+        session.directory = str(test_dir)
+        session.runner_type = "codex"
+        session.name = "Codex / Test_repo"
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_runner = MagicMock()
+        mock_runner.send_input = AsyncMock()
+        mock_rename = AsyncMock()
+        monkeypatch.setattr(
+            "tether.api.sessions.get_api_runner",
+            lambda *a, **kw: mock_runner,
+        )
+        monkeypatch.setattr("tether.api.sessions.sync_bound_thread_name", mock_rename)
+
+        response = await api_client.post(
+            f"/api/sessions/{session_id}/input",
+            json={"text": "Continue with thread rename"},
+        )
+
+        assert response.status_code == 200
+        renamed = "test-repo: Continue with thread rename"
+        assert fresh_store.get_session(session_id).name == renamed
+        mock_rename.assert_awaited_once_with(session_id, preferred_name=renamed)
+
 
 class TestSessionRename:
     """Test session rename endpoint."""
@@ -280,14 +361,12 @@ class TestSessionRename:
     async def test_rename_session(self, api_client: httpx.AsyncClient) -> None:
         """Renaming session updates the name."""
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
         response = await api_client.patch(
-            f"/api/sessions/{session_id}/rename",
-            json={"name": "New Session Name"}
+            f"/api/sessions/{session_id}/rename", json={"name": "New Session Name"}
         )
 
         assert response.status_code == 200
@@ -295,11 +374,43 @@ class TestSessionRename:
         assert session["name"] == "New Session Name"
 
     @pytest.mark.anyio
-    async def test_rename_nonexistent_session(self, api_client: httpx.AsyncClient) -> None:
+    async def test_rename_session_updates_bound_thread(
+        self, api_client: httpx.AsyncClient, fresh_store: SessionStore, monkeypatch
+    ) -> None:
+        """Manual rename should also update the bound platform thread."""
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={"repo_id": "test_repo"},
+        )
+        session_id = create_resp.json()["id"]
+
+        session = fresh_store.get_session(session_id)
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_rename = AsyncMock()
+        monkeypatch.setattr("tether.api.sessions.sync_bound_thread_name", mock_rename)
+
+        response = await api_client.patch(
+            f"/api/sessions/{session_id}/rename",
+            json={"name": "  New   Session   Name  "},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "New Session Name"
+        mock_rename.assert_awaited_once_with(
+            session_id,
+            preferred_name="New Session Name",
+        )
+
+    @pytest.mark.anyio
+    async def test_rename_nonexistent_session(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
         """Renaming nonexistent session returns 404."""
         response = await api_client.patch(
-            "/api/sessions/nonexistent_id/rename",
-            json={"name": "New Name"}
+            "/api/sessions/nonexistent_id/rename", json={"name": "New Name"}
         )
 
         assert response.status_code == 404
@@ -308,14 +419,12 @@ class TestSessionRename:
     async def test_rename_empty_name_fails(self, api_client: httpx.AsyncClient) -> None:
         """Renaming with empty name returns error."""
         create_resp = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
+            "/api/sessions", json={"repo_id": "test_repo"}
         )
         session_id = create_resp.json()["id"]
 
         response = await api_client.patch(
-            f"/api/sessions/{session_id}/rename",
-            json={"name": ""}
+            f"/api/sessions/{session_id}/rename", json={"name": ""}
         )
 
         assert response.status_code == 422
@@ -335,7 +444,7 @@ class TestSessionRename:
 
             response = await api_client.post(
                 "/api/sessions",
-                json={"directory": str(test_dir), "adapter": "claude_subprocess"}
+                json={"directory": str(test_dir), "adapter": "claude_subprocess"},
             )
 
             assert response.status_code == 201
@@ -347,10 +456,7 @@ class TestSessionRename:
         self, api_client: httpx.AsyncClient
     ) -> None:
         """Create session without adapter uses default."""
-        response = await api_client.post(
-            "/api/sessions",
-            json={"repo_id": "test_repo"}
-        )
+        response = await api_client.post("/api/sessions", json={"repo_id": "test_repo"})
 
         assert response.status_code == 201
         session = response.json()
@@ -368,8 +474,7 @@ class TestSessionRename:
             mock_get_runner.side_effect = ValueError("Unknown agent adapter: invalid")
 
             response = await api_client.post(
-                "/api/sessions",
-                json={"directory": str(test_dir), "adapter": "invalid"}
+                "/api/sessions", json={"directory": str(test_dir), "adapter": "invalid"}
             )
 
             assert response.status_code == 422
@@ -391,7 +496,7 @@ class TestSessionRename:
 
             create_resp = await api_client.post(
                 "/api/sessions",
-                json={"directory": str(test_dir), "adapter": "codex_sdk_sidecar"}
+                json={"directory": str(test_dir), "adapter": "codex_sdk_sidecar"},
             )
             session_id = create_resp.json()["id"]
 
@@ -479,7 +584,11 @@ class TestStartSessionPersistsApprovalMode:
 
     @pytest.mark.anyio
     async def test_start_persists_approval_choice(
-        self, api_client: httpx.AsyncClient, fresh_store: SessionStore, tmp_path, monkeypatch
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        tmp_path,
+        monkeypatch,
     ) -> None:
         """Starting a session persists the approval_choice to session.approval_mode."""
         test_dir = tmp_path / "test_repo"
@@ -515,7 +624,11 @@ class TestConcurrentStartPrevention:
 
     @pytest.mark.anyio
     async def test_concurrent_starts_only_one_succeeds(
-        self, api_client: httpx.AsyncClient, fresh_store: SessionStore, tmp_path, monkeypatch
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        tmp_path,
+        monkeypatch,
     ) -> None:
         """Two concurrent starts on the same session — only one transitions to RUNNING."""
         test_dir = tmp_path / "test_repo"
@@ -571,9 +684,7 @@ class TestConcurrentStartPrevention:
         assert start_count == 1
 
     @pytest.mark.anyio
-    async def test_delete_cleans_up_lock(
-        self, api_client: httpx.AsyncClient
-    ) -> None:
+    async def test_delete_cleans_up_lock(self, api_client: httpx.AsyncClient) -> None:
         """Deleting a session removes its lock from the registry."""
         create_resp = await api_client.post(
             "/api/sessions",
@@ -584,6 +695,7 @@ class TestConcurrentStartPrevention:
         # Access the session (to trigger lock creation if accessed)
         _session_locks.pop(session_id, None)  # clean slate
         from tether.api.state import session_lock
+
         _ = session_lock(session_id)
         assert session_id in _session_locks
 

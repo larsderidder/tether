@@ -119,6 +119,53 @@ class SlackBridge(UpstreamSlackBridge):
                 channel_id=self._channel_id,
             )
 
+    def _prepare_thread_name_update(
+        self, session_id: str, session_name: str
+    ) -> tuple[str, str]:
+        current_name = self._thread_names.get(session_id, "")
+        desired_name = " ".join((session_name or "").split()) or "Session"
+        if current_name == desired_name:
+            return current_name, desired_name
+
+        if current_name:
+            self._release_thread_name(session_id)
+        resolved_name = self._pick_unique_thread_name(desired_name)
+        self._reserve_thread_name(session_id, resolved_name)
+        return current_name, resolved_name
+
+    async def rename_thread(self, session_id: str, session_name: str) -> str:
+        """Rename a Slack thread by updating its parent message."""
+        if not self._client:
+            raise RuntimeError("Slack client not initialized")
+
+        thread_ts = self._thread_ts.get(session_id)
+        if not thread_ts:
+            raise RuntimeError(f"No Slack thread mapping for session {session_id}")
+
+        previous_name, resolved_name = self._prepare_thread_name_update(
+            session_id, session_name
+        )
+        try:
+            await self._client.chat_update(
+                channel=self._channel_id,
+                ts=thread_ts,
+                text=f"*Session:* {resolved_name}",
+            )
+        except Exception as exc:
+            if self._thread_names.get(session_id) == resolved_name:
+                self._release_thread_name(session_id)
+            if previous_name:
+                self._reserve_thread_name(session_id, previous_name)
+            raise RuntimeError(f"Failed to rename Slack thread: {exc}") from exc
+
+        logger.info(
+            "Renamed Slack thread",
+            session_id=session_id,
+            thread_ts=thread_ts,
+            name=resolved_name,
+        )
+        return resolved_name
+
     def _should_defer_new_message_to_reaction(self, text: str) -> bool:
         if not self._reaction_new_session_enabled:
             return False

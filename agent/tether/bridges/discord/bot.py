@@ -527,6 +527,58 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         return await super().create_thread(session_id, session_name)
 
+    def _prepare_thread_name_update(
+        self, session_id: str, session_name: str
+    ) -> tuple[str, str]:
+        current_name = self._thread_names.get(session_id, "")
+        desired_name = " ".join((session_name or "").split()) or "Session"
+        desired_name = desired_name[:_DISCORD_THREAD_NAME_LIMIT]
+        if current_name == desired_name:
+            return current_name, desired_name
+
+        if current_name:
+            self._release_thread_name(session_id)
+        resolved_name = self._pick_unique_thread_name(desired_name)
+        self._reserve_thread_name(session_id, resolved_name)
+        return current_name, resolved_name
+
+    async def rename_thread(self, session_id: str, session_name: str) -> str:
+        """Rename a Discord thread in place."""
+        if not self._client:
+            raise RuntimeError("Discord client not initialized")
+
+        thread_id = self._hydrate_thread_binding(session_id)
+        if not thread_id:
+            raise RuntimeError(f"No Discord thread mapping for session {session_id}")
+
+        thread = self._client.get_channel(thread_id)
+        if thread is None:
+            fetch_channel = getattr(self._client, "fetch_channel", None)
+            if fetch_channel is not None:
+                thread = await fetch_channel(thread_id)
+        if thread is None or not hasattr(thread, "edit"):
+            raise RuntimeError(f"Discord thread {thread_id} is not accessible")
+
+        previous_name, resolved_name = self._prepare_thread_name_update(
+            session_id, session_name
+        )
+        try:
+            await thread.edit(name=resolved_name)
+        except Exception as exc:
+            if self._thread_names.get(session_id) == resolved_name:
+                self._release_thread_name(session_id)
+            if previous_name:
+                self._reserve_thread_name(session_id, previous_name)
+            raise RuntimeError(f"Failed to rename Discord thread: {exc}") from exc
+
+        logger.info(
+            "Renamed Discord thread",
+            session_id=session_id,
+            thread_id=thread_id,
+            name=resolved_name,
+        )
+        return resolved_name
+
     def _persist_control_channel(self) -> None:
         self._ensure_pairing_state_loaded()
         if self._pairing_state is None:

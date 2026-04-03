@@ -247,6 +247,40 @@ class TestDiscordBridgePoC:
         assert result["platform"] == "discord"
 
     @pytest.mark.anyio
+    async def test_rename_thread_updates_discord_thread_name(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """Discord thread renames edit the existing thread."""
+        from agent_tether.base import BridgeConfig
+        from tether.bridges.discord.bot import DiscordBridge
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_starter_message = AsyncMock()
+        mock_thread = AsyncMock()
+        mock_thread.id = 222333444
+        mock_starter_message.create_thread.return_value = mock_thread
+        mock_channel.send.return_value = mock_starter_message
+        mock_client.get_channel.side_effect = [mock_channel, mock_thread]
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            config=BridgeConfig(data_dir=str(tmp_path)),
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread("sess_1", "Repo")
+        await bridge.rename_thread("sess_1", "tether: rename thread after first input")
+
+        mock_thread.edit.assert_awaited_once_with(
+            name="tether: rename thread after first input"
+        )
+        assert (
+            bridge._thread_names["sess_1"] == "tether: rename thread after first input"
+        )
+
+    @pytest.mark.anyio
     async def test_auto_control_channel_reuses_existing_hostname_channel(
         self, monkeypatch, tmp_path
     ) -> None:

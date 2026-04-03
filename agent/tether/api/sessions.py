@@ -40,7 +40,12 @@ from tether.api.state import (
     session_lock,
     transition,
 )
-from tether.bridges.glue import bridge_manager, make_thread_name
+from tether.bridges.glue import (
+    bridge_manager,
+    make_thread_name,
+    preferred_thread_name_for_platform,
+    sync_bound_thread_name,
+)
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
@@ -129,9 +134,10 @@ async def create_session(
         session.platform = payload.platform
         store.update_session(session)
         try:
-            thread_label = make_thread_name(
-                directory=normalized_directory,
-                adapter=payload.adapter,
+            thread_label = preferred_thread_name_for_platform(
+                session, payload.platform
+            ) or make_thread_name(
+                directory=normalized_directory, adapter=payload.adapter
             )
             thread_info = await bridge_manager.create_thread(
                 session.id, thread_label, platform=payload.platform
@@ -224,6 +230,7 @@ async def start_session(
 ) -> SessionResponse:
     """Start a session and launch the configured runner."""
     with _session_logging_context(session_id):
+        renamed_session_name: str | None = None
         # Phase 1: validate and transition to RUNNING under lock
         async with session_lock(session_id):
             session = store.get_session(session_id)
@@ -286,7 +293,7 @@ async def start_session(
 
             if not store.get_workdir(session_id):
                 store.set_workdir(session_id, session.directory, managed=False)
-            maybe_set_session_name(session, prompt)
+            renamed_session_name = maybe_set_session_name(session, prompt)
 
             # Transition to RUNNING and attempt to start the runner
             transition(session, SessionState.RUNNING, started_at=True)
@@ -301,6 +308,11 @@ async def start_session(
         start_error: tuple[str, Exception] | None = None
         try:
             await runner.start(session_id, prompt, approval_choice)
+            if renamed_session_name:
+                await sync_bound_thread_name(
+                    session_id,
+                    preferred_name=renamed_session_name,
+                )
             logger.info(
                 "Session started",
                 adapter=adapter or "default",
@@ -369,6 +381,7 @@ async def rename_session(
         cleaned = " ".join(payload.name.split())
         session.name = cleaned
         store.update_session(session)
+        await sync_bound_thread_name(session_id, preferred_name=cleaned)
         logger.info("Session renamed", name=session.name)
         return SessionResponse.from_session(session, store)
 
@@ -381,6 +394,7 @@ async def send_input(
 ) -> SessionResponse:
     """Send input to a running or awaiting session."""
     with _session_logging_context(session_id):
+        renamed_session_name: str | None = None
         # Phase 1: validate and transition under lock
         async with session_lock(session_id):
             text = payload.text
@@ -430,7 +444,7 @@ async def send_input(
             if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
                 transition(session, SessionState.RUNNING)
                 await emit_state(session)
-            maybe_set_session_name(session, text)
+            renamed_session_name = maybe_set_session_name(session, text)
             await emit_user_input(session, text)
             adapter = session.adapter
 
@@ -441,6 +455,11 @@ async def send_input(
         send_error: tuple[str, Exception] | None = None
         try:
             await runner.send_input(session_id, text)
+            if renamed_session_name:
+                await sync_bound_thread_name(
+                    session_id,
+                    preferred_name=renamed_session_name,
+                )
         except RunnerUnavailableError as exc:
             send_error = ("unavailable", exc)
         except Exception as exc:

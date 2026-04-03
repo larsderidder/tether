@@ -15,6 +15,7 @@ import structlog
 from agent_tether import BridgeCallbacks, BridgeConfig, BridgeManager
 from agent_tether.thread_naming import format_thread_name
 from tether.bridges.subscriber import BridgeSubscriber
+from tether.session_titles import is_auto_session_name
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -89,6 +90,69 @@ def make_thread_name(
         adapter=adapter,
         max_len=64,
     )
+
+
+def preferred_thread_name(session) -> str | None:
+    """Return the user-facing session title when it should drive thread naming."""
+    if not getattr(session, "name", None):
+        return None
+    if is_auto_session_name(session):
+        return None
+    return str(session.name)
+
+
+def preferred_thread_name_for_platform(session, platform: str | None) -> str | None:
+    """Only Slack and Discord reuse the session title as the thread title."""
+    if platform not in {"slack", "discord"}:
+        return None
+    return preferred_thread_name(session)
+
+
+async def sync_bound_thread_name(
+    session_id: str,
+    *,
+    preferred_name: str | None = None,
+) -> str | None:
+    """Best-effort rename of a bound Slack/Discord thread to the session title."""
+    from tether.store import store
+
+    session = store.get_session(session_id)
+    if not session or not session.platform or not session.platform_thread_id:
+        return None
+
+    desired_name = " ".join((preferred_name or session.name or "").split())
+    if not desired_name:
+        return None
+
+    bridge = bridge_manager.get_bridge(session.platform)
+    if bridge is None:
+        logger.debug(
+            "Skipping thread rename because bridge is unavailable",
+            session_id=session_id,
+            platform=session.platform,
+        )
+        return None
+
+    rename_thread = getattr(bridge, "rename_thread", None)
+    if rename_thread is None:
+        logger.debug(
+            "Skipping thread rename because platform does not support it",
+            session_id=session_id,
+            platform=session.platform,
+        )
+        return None
+
+    try:
+        await rename_thread(session_id, desired_name)
+    except Exception:
+        logger.exception(
+            "Failed to rename bound thread",
+            session_id=session_id,
+            platform=session.platform,
+            desired_name=desired_name,
+        )
+        return None
+    return desired_name
 
 
 def get_sessions_for_restore() -> list[dict]:
