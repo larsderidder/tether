@@ -164,6 +164,8 @@ class TestCmdListExternal:
 
 
 class TestCmdAttach:
+    _no_bridges = _mock_response(200, {"bridges": []})
+
     def test_success(self, capsys):
         session = {
             "id": "new-session-id",
@@ -173,6 +175,7 @@ class TestCmdAttach:
         }
         with _patch_client({
             ("GET", "/api/external-sessions"): _mock_response(200, []),
+            ("GET", "/api/status/bridges"): self._no_bridges,
             ("POST", "/api/sessions/attach"): _mock_response(201, session),
         }):
             cli_client.cmd_attach("ext-abc", "claude_code", "/home/user/project")
@@ -198,6 +201,7 @@ class TestCmdAttach:
         }
         with _patch_client({
             ("GET", "/api/external-sessions"): _mock_response(200, ext_sessions),
+            ("GET", "/api/status/bridges"): self._no_bridges,
             ("POST", "/api/sessions/attach"): _mock_response(201, session),
         }):
             # Pass cwd as directory to trigger auto-detection from match
@@ -212,6 +216,7 @@ class TestCmdAttach:
         ]
         with _patch_client({
             ("GET", "/api/external-sessions"): _mock_response(200, ext_sessions),
+            ("GET", "/api/status/bridges"): self._no_bridges,
         }):
             with pytest.raises(SystemExit):
                 cli_client.cmd_attach("abcd", "claude_code", "/tmp")
@@ -223,6 +228,7 @@ class TestCmdAttach:
         not_found.raise_for_status = MagicMock()  # _check_response doesn't call this
         with _patch_client({
             ("GET", "/api/external-sessions"): _mock_response(200, []),
+            ("GET", "/api/status/bridges"): self._no_bridges,
             ("POST", "/api/sessions/attach"): not_found,
         }):
             with pytest.raises(SystemExit):
@@ -433,7 +439,7 @@ class TestCliArgParsing:
 
         called = {}
 
-        def fake_list_external(directory, runner_type):
+        def fake_list_external(directory, runner_type, limit=50):
             called["directory"] = directory
             called["runner_type"] = runner_type
 

@@ -38,7 +38,7 @@ def _client() -> httpx.Client:
     return httpx.Client(
         base_url=_base_url(),
         headers=_auth_headers(),
-        timeout=10.0,
+        timeout=30.0,
     )
 
 
@@ -97,6 +97,29 @@ def _get_json(path: str, *, params: dict[str, str] | None = None) -> list | dict
         return resp.json()
 
 
+def _detect_platform() -> str | None:
+    """Return the single active bridge platform, or None.
+
+    If exactly one bridge is running, return its name so callers can
+    auto-bind sessions without requiring an explicit --bridge flag.
+    Returns None when zero or multiple bridges are active.
+    """
+    try:
+        with _client() as c:
+            resp = c.get("/api/status/bridges")
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        running = [
+            b["platform"]
+            for b in data.get("bridges", [])
+            if b.get("status") == "running"
+        ]
+        return running[0] if len(running) == 1 else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Context banner
 # ---------------------------------------------------------------------------
@@ -134,6 +157,7 @@ def cmd_setup_agents(
     agent_filter: str | None = None,
     *,
     check_only: bool = False,
+    all_agents: bool = False,
 ) -> None:
     """Interactively install and configure agent CLIs on the remote server.
 
@@ -141,9 +165,13 @@ def cmd_setup_agents(
     that is not installed or not authenticated it asks the user whether to
     install / push credentials.
 
+    By default only agents for which local credentials exist are prompted.
+    Pass all_agents=True to prompt for every agent regardless.
+
     Args:
         agent_filter: If given, only handle that one agent by name.
         check_only:   Just print status; do not prompt for any actions.
+        all_agents:   Prompt for all agents, even those without local credentials.
     """
     # Determine a human-readable server label for display purposes.
     server_label = _server_label()
@@ -180,12 +208,19 @@ def cmd_setup_agents(
         installed = agent.get("installed", False)
         authenticated = agent.get("authenticated", False)
         install_cmd = agent.get("install_command")
+        install_requires = agent.get("install_requires")
+        install_requires_met = agent.get("install_requires_met", True)
         version = agent.get("version")
+
+        has_local_creds = _has_local_credentials(name)
+
+        # Skip agents with no local credentials unless --all was passed.
+        if not all_agents and not has_local_creds:
+            continue
 
         # Determine if we need to do anything.
         needs_install = not installed and install_cmd
-        needs_creds = installed and not authenticated and _has_local_credentials(name)
-        # If just installed, also check creds afterwards.
+        needs_creds = installed and not authenticated and has_local_creds
 
         if not needs_install and not needs_creds:
             continue
@@ -193,6 +228,14 @@ def cmd_setup_agents(
         print()
 
         if needs_install:
+            # Warn early if the required runtime is missing.
+            if install_requires and not install_requires_met:
+                print(
+                    f"  Cannot install {label}: '{install_requires}' is not installed on the server."
+                )
+                print(f"  Install it first, then re-run setup.")
+                continue
+
             if not _prompt(f"Install {label}?"):
                 continue
 
@@ -415,9 +458,13 @@ def cmd_list(
     _print_sessions_table(items)
 
 
-def cmd_list_external(directory: str | None, runner_type: str | None) -> None:
+def cmd_list_external(
+    directory: str | None,
+    runner_type: str | None,
+    limit: int = 50,
+) -> None:
     """List discoverable external sessions."""
-    params: dict[str, str] = {}
+    params: dict[str, str] = {"limit": str(limit)}
     if directory:
         params["directory"] = directory
     if runner_type:
@@ -513,6 +560,9 @@ def cmd_attach(
                 if directory == os.getcwd():
                     resolved_directory = match.get("directory", directory)
 
+        if not platform:
+            platform = _detect_platform()
+
         body: dict = {
             "external_id": resolved_id,
             "runner_type": resolved_runner_type,
@@ -565,6 +615,8 @@ def cmd_new(
         body["directory"] = directory or "."
     if adapter:
         body["adapter"] = adapter
+    if not platform:
+        platform = _detect_platform()
     if platform:
         body["platform"] = platform
     if approval_mode is not None:
@@ -1381,3 +1433,253 @@ def cmd_workspaces_clean() -> None:
         print(f"Removed {removed} orphaned workspace(s).")
     for err in errors:
         print(f"  Error: {err}", file=sys.stderr)
+
+
+def _create_discord_channel(
+    bot_token: str,
+    guild_id: str,
+    name: str,
+) -> str:
+    """Create a text channel in a Discord guild using the bot token.
+
+    Requires the bot to have 'Manage Channels' permission in the guild.
+
+    Returns the new channel ID as a string.
+    Raises RuntimeError on failure.
+    """
+    import httpx
+
+    headers = {
+        "Authorization": f"Bot {bot_token}",
+        "Content-Type": "application/json",
+    }
+
+    # Create a private text channel.
+    payload = {
+        "name": name,
+        "type": 0,  # 0 = GUILD_TEXT
+    }
+
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(
+            f"https://discord.com/api/v10/guilds/{guild_id}/channels",
+            headers=headers,
+            json=payload,
+        )
+
+    if resp.status_code not in (200, 201):
+        try:
+            err = resp.json().get("message", resp.text)
+        except Exception:
+            err = resp.text
+        raise RuntimeError(f"Discord API error {resp.status_code}: {err}")
+
+    data = resp.json()
+    return str(data["id"])
+
+
+def _get_discord_guild_id(bot_token: str, channel_id: str) -> str:
+    """Look up the guild ID for a given channel ID via the Discord API.
+
+    Returns the guild ID string.
+    Raises RuntimeError on failure.
+    """
+    import httpx
+
+    headers = {"Authorization": f"Bot {bot_token}"}
+
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(
+            f"https://discord.com/api/v10/channels/{channel_id}",
+            headers=headers,
+        )
+
+    if resp.status_code == 200:
+        return str(resp.json()["guild_id"])
+    elif resp.status_code == 403:
+        raise RuntimeError("Bot lacks permission to read the channel.")
+    else:
+        try:
+            err = resp.json().get("message", resp.text)
+        except Exception:
+            err = resp.text
+        raise RuntimeError(f"Discord API error {resp.status_code}: {err}")
+
+
+def _read_local_config_env() -> dict[str, str]:
+    """Read ~/.config/tether/config.env and return key/value pairs."""
+    from pathlib import Path
+
+    config_path = Path.home() / ".config" / "tether" / "config.env"
+    if not config_path.exists():
+        return {}
+    result: dict[str, str] = {}
+    for line in config_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = value.strip()
+    return result
+
+
+def cmd_setup_bridge(bridge_name: str) -> None:
+    """Interactively configure a messaging bridge on the remote server.
+
+    If the local config.env already has credentials for the bridge, offers
+    to reuse them. Individual values can be overridden by typing a new value,
+    or accepted as-is by pressing Enter.
+    """
+    server_label = _server_label()
+
+    # Fetch the required vars from the server.
+    try:
+        data = _get_json(f"/api/setup/bridge/vars/{bridge_name}")
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    bridge_vars: list[dict] = data.get("vars", [])
+
+    # Read local config to detect existing credentials.
+    local_config = _read_local_config_env()
+    local_keys = {var["key"] for var in bridge_vars if var["key"] in local_config}
+
+    print(f"Configuring {bridge_name} bridge on {server_label}...")
+    print()
+
+    env: dict[str, str] = {}
+
+    if local_keys == {var["key"] for var in bridge_vars if var.get("required", True)}:
+        # All required vars are present locally — offer to reuse the whole set.
+        print("  Found local configuration for this bridge:")
+        for var in bridge_vars:
+            key = var["key"]
+            if key in local_config:
+                display = local_config[key]
+                # Mask tokens — show first 8 chars only.
+                if "token" in key.lower() or "password" in key.lower():
+                    display = display[:8] + "..." if len(display) > 8 else "***"
+                print(f"    {var['label']}: {display}")
+        print()
+
+        try:
+            use_local = input("  Use local configuration? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+
+        if use_local in ("", "y", "yes"):
+            # Start with all local values.
+            for var in bridge_vars:
+                key = var["key"]
+                if key in local_config:
+                    env[key] = local_config[key]
+
+            # Discord: offer to create a new channel instead of reusing the existing one.
+            if bridge_name == "discord":
+                local_channel_id = local_config.get("DISCORD_CHANNEL_ID", "")
+                print()
+                try:
+                    create_new = input(
+                        f"  Reuse existing channel ({local_channel_id}), enter a different ID, or create a new one? [reuse/id/create]: "
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    sys.exit(0)
+
+                if create_new in ("id", "i"):
+                    try:
+                        new_id = input("  Channel ID: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        sys.exit(0)
+                    if new_id:
+                        env["DISCORD_CHANNEL_ID"] = new_id
+                    else:
+                        print("  No ID entered, keeping existing channel.")
+                elif create_new.isdigit():
+                    # User pasted the channel ID directly.
+                    env["DISCORD_CHANNEL_ID"] = create_new
+                elif create_new == "create":
+                    # Derive guild ID from the existing channel so we know where to create.
+                    bot_token = local_config.get("DISCORD_BOT_TOKEN", "")
+                    try:
+                        guild_id = _get_discord_guild_id(bot_token, local_channel_id)
+                    except RuntimeError as exc:
+                        print(f"  Warning: {exc}")
+                        try:
+                            guild_id = input("  Enter the Discord guild/server ID manually: ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            print()
+                            sys.exit(0)
+
+                    try:
+                        new_channel_name = input(
+                            "  New channel name [tether]: "
+                        ).strip() or "tether"
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        sys.exit(0)
+
+                    print(f"  Creating #{new_channel_name}...")
+                    try:
+                        new_channel_id = _create_discord_channel(bot_token, guild_id, new_channel_name)
+                        env["DISCORD_CHANNEL_ID"] = new_channel_id
+                        print(f"  Created channel (ID: {new_channel_id})")
+                    except RuntimeError as exc:
+                        print(f"  Error creating channel: {exc}", file=sys.stderr)
+                        print("  Tip: give the bot 'Manage Channels' permission in your Discord server,")
+                        print("       or create a channel manually and use the 'id' option.")
+                        print("  Falling back to existing channel.")
+                elif create_new not in ("", "reuse", "r"):
+                    print(f"  Unrecognised input '{create_new}', keeping existing channel.")
+            else:
+                # Non-Discord: offer to override per-field.
+                print()
+                print("  Override any value, or press Enter to keep:")
+                for var in bridge_vars:
+                    key = var["key"]
+                    label = var["label"]
+                    current = env.get(key, "")
+                    display = current[:8] + "..." if ("token" in key.lower() or "password" in key.lower()) and len(current) > 8 else current
+                    try:
+                        value = input(f"    {label} [{display}]: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        sys.exit(0)
+                    if value:
+                        env[key] = value
+        else:
+            # User declined — fall through to manual entry below.
+            local_keys = set()
+
+    if not env:
+        # No local config, or user declined — prompt for all values manually.
+        for var in bridge_vars:
+            key = var["key"]
+            label = var["label"]
+            required = var.get("required", True)
+            hint = "" if required else " (optional, press Enter to skip)"
+            try:
+                value = input(f"  {label}{hint}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                sys.exit(0)
+            if not value and required:
+                print(f"  Error: {label} is required.", file=sys.stderr)
+                sys.exit(1)
+            if value:
+                env[key] = value
+
+    print()
+
+    try:
+        result = _post_json(f"/api/setup/bridge/{bridge_name}", {"env": env})
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    print(f"  {result.get('message', 'Done.')}")
+    print()
+    print(f"Bridge configured. The {bridge_name} bridge is now active on {server_label}.")
