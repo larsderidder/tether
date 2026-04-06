@@ -68,10 +68,16 @@ async def list_external_sessions(
                 422,
             )
 
-    # Normalize directory if provided
+    # Normalize directory if provided. Only resolve to an absolute path when
+    # the input already looks absolute; otherwise pass through as-is so
+    # providers can do partial/suffix matching on folder names.
     normalized_directory: str | None = None
     if directory:
-        normalized_directory = normalize_directory_path(directory)
+        normalized_directory = (
+            normalize_directory_path(directory)
+            if directory.startswith("/") or directory.startswith("~")
+            else directory
+        )
 
     sessions = discover_external_sessions(
         directory=normalized_directory,
