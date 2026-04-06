@@ -47,8 +47,10 @@ def _format_replay(messages: list) -> str | None:
     for i, msg in enumerate(recent, 1):
         role = (msg.role if hasattr(msg, "role") else msg.get("role", "")).lower()
         prefix = "\U0001f464" if role == "user" else ("\U0001f916" if role == "assistant" else "?")
-        content = (msg.content if hasattr(msg, "content") else msg.get("content") or "").strip()
-        thinking = (msg.thinking if hasattr(msg, "thinking") else msg.get("thinking") or "").strip()
+        content = (msg.content if hasattr(msg, "content") else msg.get("content") or "") or ""
+        thinking = (msg.thinking if hasattr(msg, "thinking") else msg.get("thinking") or "") or ""
+        content = content.strip()
+        thinking = thinking.strip()
         if content and len(content) > _REPLAY_CONTENT_LIMIT:
             content = content[:_REPLAY_CONTENT_LIMIT] + "..."
         if thinking and len(thinking) > _REPLAY_THINKING_LIMIT:
