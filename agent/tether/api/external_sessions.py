@@ -31,6 +31,38 @@ from tether.store import store
 router = APIRouter(tags=["external-sessions"])
 logger = structlog.get_logger(__name__)
 
+_REPLAY_MESSAGES = 10
+_REPLAY_CONTENT_LIMIT = 300
+_REPLAY_THINKING_LIMIT = 150
+_REPLAY_TOTAL_LIMIT = 1900
+
+
+def _format_replay(messages: list) -> str | None:
+    """Format the last N messages as a compact history replay string."""
+    recent = messages[-_REPLAY_MESSAGES:] if len(messages) > _REPLAY_MESSAGES else messages
+    if not recent:
+        return None
+
+    lines: list[str] = [f"Recent history (last {len(recent)} messages):\n"]
+    for i, msg in enumerate(recent, 1):
+        role = (msg.role if hasattr(msg, "role") else msg.get("role", "")).lower()
+        prefix = "\U0001f464" if role == "user" else ("\U0001f916" if role == "assistant" else "?")
+        content = (msg.content if hasattr(msg, "content") else msg.get("content") or "").strip()
+        thinking = (msg.thinking if hasattr(msg, "thinking") else msg.get("thinking") or "").strip()
+        if content and len(content) > _REPLAY_CONTENT_LIMIT:
+            content = content[:_REPLAY_CONTENT_LIMIT] + "..."
+        if thinking and len(thinking) > _REPLAY_THINKING_LIMIT:
+            thinking = thinking[:_REPLAY_THINKING_LIMIT] + "..."
+        if content:
+            lines.append(f"{i}. {prefix}: {content}")
+        if thinking:
+            lines.append(f"   {prefix} (thinking): {thinking}")
+
+    text = "\n".join(lines)
+    if len(text) > _REPLAY_TOTAL_LIMIT:
+        text = text[:_REPLAY_TOTAL_LIMIT - 3] + "..."
+    return text or None
+
 
 @router.get("/external-sessions", response_model=list[ExternalSessionSummaryResponse])
 async def list_external_sessions(
@@ -227,6 +259,21 @@ async def attach_to_external_session(
                     )
                     existing_session.platform_thread_id = thread_info.get("thread_id")
                     store.update_session(existing_session)
+
+                    # Post recent history into the new thread.
+                    existing_external_id = store.get_runner_session_id(existing_session.id)
+                    if existing_external_id:
+                        hist = get_external_session_detail(
+                            session_id=existing_external_id,
+                            runner_type=parsed_runner_type,
+                            limit=_REPLAY_MESSAGES,
+                        )
+                        if hist:
+                            replay = _format_replay(hist.messages)
+                            if replay:
+                                await bridge_manager.send_replay(
+                                    existing_session.id, replay, platform=payload.platform
+                                )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
             # Subscribe bridge if platform is bound
@@ -304,6 +351,13 @@ async def attach_to_external_session(
                 platform=payload.platform,
             )
             session.platform_thread_id = thread_info.get("thread_id")
+
+            # Post recent history into the new thread.
+            replay = _format_replay(detail.messages)
+            if replay:
+                await bridge_manager.send_replay(
+                    session.id, replay, platform=payload.platform
+                )
         except (ValueError, RuntimeError) as exc:
             store.delete_session(session.id)
             raise_http_error("VALIDATION_ERROR", str(exc), 400)
