@@ -243,7 +243,18 @@ async def attach_to_external_session(
                 external_id=external_id,
                 existing_session_id=existing_session_id,
             )
-            # Handle platform binding if requested
+            # Handle platform binding if requested.
+            # If the session is already bound to a different platform, refuse
+            # unless force=True is set in the payload (not yet exposed — for
+            # now just report the existing binding clearly).
+            if payload.platform and existing_session.platform and existing_session.platform != payload.platform:
+                from tether.api.errors import raise_http_error
+                raise_http_error(
+                    "ALREADY_BOUND",
+                    f"Session is already bound to {existing_session.platform}. "
+                    f"Detach it first or use --bridge {existing_session.platform} to reuse the existing thread.",
+                    409,
+                )
             if payload.platform and existing_session.platform != payload.platform:
                 existing_session.platform = payload.platform
                 store.update_session(existing_session)
