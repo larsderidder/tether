@@ -97,6 +97,23 @@ def _get_json(path: str, *, params: dict[str, str] | None = None) -> list | dict
         return resp.json()
 
 
+def _get_running_platforms() -> list[str]:
+    """Return all running bridge platform names."""
+    try:
+        with _client() as c:
+            resp = c.get("/api/status/bridges")
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        return [
+            b["platform"]
+            for b in data.get("bridges", [])
+            if b.get("status") == "running"
+        ]
+    except Exception:
+        return []
+
+
 def _detect_platform() -> str | None:
     """Return the single active bridge platform, or None.
 
@@ -104,20 +121,35 @@ def _detect_platform() -> str | None:
     auto-bind sessions without requiring an explicit --bridge flag.
     Returns None when zero or multiple bridges are active.
     """
-    try:
-        with _client() as c:
-            resp = c.get("/api/status/bridges")
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-        running = [
-            b["platform"]
-            for b in data.get("bridges", [])
-            if b.get("status") == "running"
-        ]
-        return running[0] if len(running) == 1 else None
-    except Exception:
+    running = _get_running_platforms()
+    return running[0] if len(running) == 1 else None
+
+
+def _prompt_platform() -> str | None:
+    """Auto-select or prompt the user to pick a bridge platform.
+
+    - Zero bridges running: return None (no binding).
+    - One bridge running: return it automatically.
+    - Multiple bridges running: prompt the user to pick one.
+    """
+    running = _get_running_platforms()
+    if not running:
         return None
+    if len(running) == 1:
+        return running[0]
+    # Multiple bridges — ask.
+    print("Multiple bridges are running. Pick one to bind this session to:")
+    for i, name in enumerate(running, 1):
+        print(f"  {i}) {name}")
+    print(f"  {len(running) + 1}) none (skip)")
+    try:
+        choice = input("Bridge [1]: ").strip() or "1"
+        idx = int(choice) - 1
+    except (ValueError, EOFError, KeyboardInterrupt):
+        return None
+    if 0 <= idx < len(running):
+        return running[idx]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +593,7 @@ def cmd_attach(
                     resolved_directory = match.get("directory", directory)
 
         if not platform:
-            platform = _detect_platform()
+            platform = _prompt_platform()
 
         body: dict = {
             "external_id": resolved_id,
@@ -616,7 +648,7 @@ def cmd_new(
     if adapter:
         body["adapter"] = adapter
     if not platform:
-        platform = _detect_platform()
+        platform = _prompt_platform()
     if platform:
         body["platform"] = platform
     if approval_mode is not None:

@@ -235,6 +235,33 @@ class TestCmdAttach:
                 cli_client.cmd_attach("nonexistent", "claude_code", "/tmp")
         assert "not found" in capsys.readouterr().err
 
+    def test_multiple_running_bridges_prompts_user(self, capsys, monkeypatch):
+        session = {
+            "id": "new-session-id",
+            "state": "AWAITING_INPUT",
+            "name": "Fix the bug",
+            "directory": "/tmp",
+        }
+        two_bridges = _mock_response(
+            200,
+            {
+                "bridges": [
+                    {"platform": "discord", "status": "running"},
+                    {"platform": "telegram", "status": "running"},
+                ]
+            },
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "1")
+        with _patch_client({
+            ("GET", "/api/external-sessions"): _mock_response(200, []),
+            ("GET", "/api/status/bridges"): two_bridges,
+            ("POST", "/api/sessions/attach"): _mock_response(201, session),
+        }):
+            cli_client.cmd_attach("ext-abc", "claude_code", "/tmp")
+
+        out = capsys.readouterr().out
+        assert "new-session-id" in out
+
 
 # ---------------------------------------------------------------------------
 # cmd_input
