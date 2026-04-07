@@ -713,6 +713,23 @@ def cmd_new(
         print(f"  Started with prompt.")
 
 
+def cmd_detach(session_id: str) -> None:
+    """Remove the platform binding from a session."""
+    session_id = _resolve_session_id(session_id)
+    if not session_id:
+        return
+
+    try:
+        with _client() as c:
+            resp = c.delete(f"/api/sessions/{session_id}/platform")
+            _check_response(resp)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        _handle_connection_error()
+        return
+
+    print(f"Detached {session_id} from platform")
+
+
 def cmd_delete(session_id: str) -> None:
     """Delete a session."""
     session_id = _resolve_session_id(session_id)

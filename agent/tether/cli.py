@@ -134,6 +134,14 @@ def main(argv: list[str] | None = None) -> None:
     agents_parser = setup_sub.add_parser(
         "agents", help="Install and configure agent CLIs on the remote server"
     )
+    bridge_parser = setup_sub.add_parser(
+        "bridge", help="Configure a messaging bridge on the remote server"
+    )
+    bridge_parser.add_argument(
+        "bridge_name",
+        choices=["telegram", "slack", "discord"],
+        help="Bridge to configure",
+    )
     agents_parser.add_argument(
         "agent",
         nargs="?",
@@ -143,6 +151,12 @@ def main(argv: list[str] | None = None) -> None:
         "--check",
         action="store_true",
         help="Only show agent status; do not install or push credentials",
+    )
+    agents_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_agents",
+        help="Prompt for all agents, even those without local credentials",
     )
 
     # tether status
@@ -166,6 +180,13 @@ def main(argv: list[str] | None = None) -> None:
         "--runner-type",
         "-r",
         help="Filter external sessions by runner type (claude, codex, pi)",
+    )
+    list_parser.add_argument(
+        "--limit",
+        "-n",
+        type=int,
+        default=50,
+        help="Maximum number of sessions to return (default: 50)",
     )
     list_parser.add_argument(
         "--state",
@@ -195,9 +216,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Working directory (default: current directory)",
     )
     attach_parser.add_argument(
-        "--platform",
+        "--bridge",
         "-p",
-        help="Bind to a messaging platform (telegram, slack, discord)",
+        dest="platform",
+        metavar="BRIDGE",
+        help="Bind to a bridge (telegram, slack, discord)",
     )
 
     # tether new
@@ -224,9 +247,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Start the session immediately with this prompt",
     )
     new_parser.add_argument(
-        "--platform",
+        "--bridge",
         "-p",
-        help="Bind to a messaging platform (telegram, slack, discord)",
+        dest="platform",
+        metavar="BRIDGE",
+        help="Bind to a bridge (telegram, slack, discord)",
     )
     new_parser.add_argument(
         "--clone", "-c",
@@ -271,6 +296,9 @@ def main(argv: list[str] | None = None) -> None:
     interrupt_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
     # tether delete
+    detach_parser = sub.add_parser("detach", help="Remove the platform binding from a session")
+    detach_parser.add_argument("session_id", help="Session ID (prefix is fine)")
+
     delete_parser = sub.add_parser("delete", help="Delete a session")
     delete_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
@@ -402,6 +430,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Port for Tether to listen on (default: 8787)",
     )
 
+    # tether server git-key <name>
+    server_git_key_p = server_sub.add_parser(
+        "git-key", help="Show the SSH public key for cloning git repos on a remote server"
+    )
+    server_git_key_p.add_argument("name", help="Server alias from servers.yaml")
+
     # tether server status <name>
     server_status_p = server_sub.add_parser(
         "status", help="Check health of a registered remote server"
@@ -448,10 +482,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "setup":
         _run_setup(args)
     elif args.command in (
-        "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "delete", "sync",
+        "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "detach", "delete", "sync",
         "watch", "git", "workspaces",
     ):
-        _apply_connection_args(args)
         _run_client(args)
     else:
         parser.print_help()
@@ -561,6 +594,7 @@ def _run_setup(args: argparse.Namespace) -> None:
         print("Usage: tether setup <subcommand>")
         print("Subcommands:")
         print("  agents   Install and configure agent CLIs on the remote server")
+        print("  bridge   Configure a messaging bridge on the remote server")
         sys.exit(0)
 
     if cmd == "agents":
@@ -575,7 +609,18 @@ def _run_setup(args: argparse.Namespace) -> None:
         cmd_setup_agents(
             agent_filter=getattr(args, "agent", None),
             check_only=getattr(args, "check", False),
+            all_agents=getattr(args, "all_agents", False),
         )
+    elif cmd == "bridge":
+        _apply_connection_args(args)
+
+        from tether.config import load_config
+
+        load_config()
+
+        from tether.cli_client import cmd_setup_bridge
+
+        cmd_setup_bridge(args.bridge_name)
     else:
         print(f"Unknown setup subcommand: {cmd}", file=sys.stderr)
         sys.exit(1)
@@ -584,7 +629,11 @@ def _run_setup(args: argparse.Namespace) -> None:
 
 def _run_client(args: argparse.Namespace) -> None:
     """Handle client subcommands that talk to a running server."""
-    # Load config so we pick up token, host, port from .env files
+    # Apply remote connection overrides before loading config so explicit CLI
+    # flags, active contexts, and named server profiles win over config.env.
+    _apply_connection_args(args)
+
+    # Load config so we pick up token, host, port from .env files.
     from tether.config import load_config
 
     load_config()
@@ -592,6 +641,7 @@ def _run_client(args: argparse.Namespace) -> None:
     from tether.cli_client import (
         cmd_attach,
         cmd_delete,
+        cmd_detach,
         cmd_git_branch,
         cmd_git_checkout,
         cmd_git_commit,
@@ -620,7 +670,7 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_open()
     elif args.command == "list":
         if args.external:
-            cmd_list_external(args.directory, args.runner_type)
+            cmd_list_external(args.directory, args.runner_type, limit=args.limit)
         else:
             cmd_list(state=args.state, directory=args.directory)
     elif args.command == "new":
@@ -691,7 +741,22 @@ def _run_client(args: argparse.Namespace) -> None:
                     auto_branch=auto_branch,
                 )
             else:
-                directory = os.path.abspath(args.directory or ".")
+                # Only resolve the path locally when talking to a local server.
+                # For remote contexts the path must exist on the remote machine,
+                # so we pass it through as-is and let the server validate it.
+                ctx_name, _ = get_active_context_server()
+                is_remote = ctx_name is not None
+                if is_remote:
+                    if args.directory is None:
+                        print(
+                            "Error: directory must be specified when targeting a remote server. "
+                            "Use --clone to clone a repo, or pass an absolute path that exists on the remote.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    directory = args.directory
+                else:
+                    directory = os.path.abspath(args.directory or ".")
                 cmd_new(directory, args.adapter, args.prompt, args.platform)
     elif args.command == "attach":
         directory = os.path.abspath(args.directory)
@@ -700,6 +765,8 @@ def _run_client(args: argparse.Namespace) -> None:
         cmd_input(args.session_id, args.text)
     elif args.command == "interrupt":
         cmd_interrupt(args.session_id)
+    elif args.command == "detach":
+        cmd_detach(args.session_id)
     elif args.command == "delete":
         cmd_delete(args.session_id)
     elif args.command == "sync":
@@ -758,6 +825,8 @@ def _run_server(args: argparse.Namespace) -> None:
 
     if cmd == "init":
         _run_server_init(args)
+    elif cmd == "git-key":
+        _run_server_git_key(args)
     elif cmd == "status":
         _run_server_status(args)
     elif cmd == "upgrade":
@@ -883,6 +952,52 @@ def _run_server_init(args: argparse.Namespace) -> None:
     print("To switch to this server:")
     print(f"  tether context use {result.name}")
     print(f"  tether status")
+
+    if result.ssh_public_key:
+        print()
+        print("SSH public key (add this to any git host you want to clone from):")
+        print()
+        print(f"  {result.ssh_public_key}")
+        print()
+        print("  GitHub:    Settings → SSH and GPG keys → New SSH key")
+        print("  GitLab:    Preferences → SSH Keys")
+        print("  Bitbucket: Personal settings → SSH keys")
+        print()
+        print(f"To show this key again:  tether server git-key {result.name}")
+
+
+def _run_server_git_key(args: argparse.Namespace) -> None:
+    """Handle ``tether server git-key <name>``."""
+    from tether.server_init import get_ssh_public_key
+    from tether.servers import get_server
+
+    name = args.name
+    profile = get_server(name)
+    if profile is None:
+        print(
+            f"Error: unknown server '{name}'. Check ~/.config/tether/servers.yaml.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    host = profile.get("host", name)
+    user = profile.get("user") or None
+
+    pub_key = get_ssh_public_key(host, user=user)
+    if pub_key is None:
+        print(
+            f"No SSH key found on {name}. Run 'tether server init' to provision one,\n"
+            f"or generate one manually: ssh {host} ssh-keygen -t ed25519 -f ~/.ssh/tether_ed25519 -N ''",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(pub_key)
+    print()
+    print("Add this key to any git host you want to clone from:")
+    print("  GitHub:    Settings → SSH and GPG keys → New SSH key")
+    print("  GitLab:    Preferences → SSH Keys")
+    print("  Bitbucket: Personal settings → SSH keys")
 
 
 def _run_server_status(args: argparse.Namespace) -> None:

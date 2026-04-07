@@ -329,6 +329,33 @@ async def get_session(
         return SessionResponse.from_session(session, store)
 
 
+@router.delete("/sessions/{session_id}/platform", response_model=OkResponse)
+async def detach_session_platform(
+    session_id: str, _: None = Depends(require_token)
+) -> OkResponse:
+    """Remove the platform binding from a session.
+
+    Stops the bridge subscriber and clears the platform and thread ID
+    from the session so it can be re-bound to a different platform.
+    """
+    with _session_logging_context(session_id):
+        session = store.get_session(session_id)
+        if not session:
+            raise_http_error("NOT_FOUND", "Session not found", 404)
+        if not session.platform:
+            raise_http_error("INVALID_STATE", "Session is not bound to any platform", 409)
+
+        from tether.bridges.glue import bridge_subscriber
+
+        await bridge_subscriber.unsubscribe(session_id, platform=session.platform)
+
+        session.platform = None
+        session.platform_thread_id = None
+        store.update_session(session)
+        logger.info("Session detached from platform")
+        return OkResponse()
+
+
 @router.delete("/sessions/{session_id}", response_model=OkResponse)
 async def delete_session(
     session_id: str, _: None = Depends(require_token)
