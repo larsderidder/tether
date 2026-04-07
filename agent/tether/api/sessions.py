@@ -349,8 +349,9 @@ async def detach_session_platform(
 
         await bridge_subscriber.unsubscribe(session_id, platform=session.platform)
 
+        # Keep platform_thread_id so re-attaching to the same platform reuses
+        # the existing thread rather than creating a new one.
         session.platform = None
-        session.platform_thread_id = None
         store.update_session(session)
         logger.info("Session detached from platform")
         return OkResponse()

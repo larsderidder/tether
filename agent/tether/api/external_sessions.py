@@ -269,24 +269,28 @@ async def attach_to_external_session(
                         existing_session.id,
                         thread_label,
                         platform=payload.platform,
+                        existing_thread_id=existing_session.platform_thread_id,
                     )
-                    existing_session.platform_thread_id = thread_info.get("thread_id")
+                    new_thread_id = thread_info.get("thread_id")
+                    is_new_thread = new_thread_id != existing_session.platform_thread_id
+                    existing_session.platform_thread_id = new_thread_id
                     store.update_session(existing_session)
 
-                    # Post recent history into the new thread.
-                    existing_external_id = store.get_runner_session_id(existing_session.id)
-                    if existing_external_id:
-                        hist = get_external_session_detail(
-                            session_id=existing_external_id,
-                            runner_type=parsed_runner_type,
-                            limit=_REPLAY_MESSAGES,
-                        )
-                        if hist:
-                            replay = _format_replay(hist.messages)
-                            if replay:
-                                await bridge_manager.send_replay(
-                                    existing_session.id, replay, platform=payload.platform
-                                )
+                    # Only replay history into genuinely new threads.
+                    if is_new_thread:
+                        existing_external_id = store.get_runner_session_id(existing_session.id)
+                        if existing_external_id:
+                            hist = get_external_session_detail(
+                                session_id=existing_external_id,
+                                runner_type=parsed_runner_type,
+                                limit=_REPLAY_MESSAGES,
+                            )
+                            if hist:
+                                replay = _format_replay(hist.messages)
+                                if replay:
+                                    await bridge_manager.send_replay(
+                                        existing_session.id, replay, platform=payload.platform
+                                    )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
             # Subscribe bridge if platform is bound
@@ -362,11 +366,14 @@ async def attach_to_external_session(
                 session.id,
                 thread_label,
                 platform=payload.platform,
+                existing_thread_id=session.platform_thread_id,
             )
-            session.platform_thread_id = thread_info.get("thread_id")
+            new_thread_id = thread_info.get("thread_id")
+            is_new_thread = new_thread_id != session.platform_thread_id
+            session.platform_thread_id = new_thread_id
 
-            # Post recent history into the new thread.
-            replay = _format_replay(detail.messages)
+            # Only replay history into genuinely new threads.
+            replay = _format_replay(detail.messages) if is_new_thread else None
             if replay:
                 await bridge_manager.send_replay(
                     session.id, replay, platform=payload.platform
