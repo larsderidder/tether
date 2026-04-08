@@ -436,7 +436,7 @@ class TestCmdSetupAgents:
                     with patch(
                         "tether.cli_client._read_local_credentials", return_value={}
                     ):
-                        cmd_setup_agents()
+                        cmd_setup_agents(all_agents=True)
 
         out = capsys.readouterr().out
         assert "Installed" in out or "1.2.0" in out

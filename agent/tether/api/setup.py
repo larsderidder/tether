@@ -34,16 +34,19 @@ _KNOWN_AGENTS: dict[str, dict] = {
     "claude_code": {
         "binary": "claude",
         "install_command": "npm install -g @anthropic-ai/claude-code",
+        "install_requires": "npm",
         "credentials_path": ".claude/.credentials.json",
     },
     "opencode": {
         "binary": "opencode",
         "install_command": "npm install -g opencode-ai",
+        "install_requires": "npm",
         "credentials_path": None,
     },
     "pi": {
         "binary": "pi",
         "install_command": None,
+        "install_requires": None,
         "credentials_path": None,
     },
 }
@@ -63,6 +66,8 @@ class AgentInfo(BaseModel):
     version: str | None
     authenticated: bool
     install_command: str | None
+    install_requires: str | None = None
+    install_requires_met: bool = True
 
 
 class AgentListResponse(BaseModel):
@@ -152,6 +157,12 @@ def _probe_agent(name: str) -> AgentInfo:
     installed = shutil.which(binary) is not None
     version = _get_version(binary) if installed else None
     authenticated = _is_authenticated(name) if installed else False
+    install_requires = info.get("install_requires")
+    install_requires_met = (
+        shutil.which(install_requires) is not None
+        if install_requires
+        else True
+    )
     return AgentInfo(
         name=name,
         binary=binary,
@@ -159,6 +170,8 @@ def _probe_agent(name: str) -> AgentInfo:
         version=version,
         authenticated=authenticated,
         install_command=info.get("install_command"),
+        install_requires=install_requires,
+        install_requires_met=install_requires_met,
     )
 
 
@@ -197,6 +210,15 @@ async def install_agent(
         raise_http_error(
             "NOT_SUPPORTED",
             f"Agent '{name}' does not support automatic installation.",
+            400,
+        )
+
+    install_requires = info.get("install_requires")
+    if install_requires and shutil.which(install_requires) is None:
+        raise_http_error(
+            "MISSING_RUNTIME",
+            f"Installing '{name}' requires '{install_requires}', which is not installed on the server. "
+            f"Install it first (e.g. sudo apt-get install -y {install_requires}).",
             400,
         )
 
@@ -317,3 +339,139 @@ async def verify_agent(
         authenticated=info.authenticated,
         message=f"{name} is ready." + (f" (v{info.version})" if info.version else ""),
     )
+
+
+# ---------------------------------------------------------------------------
+# Bridge configuration
+# ---------------------------------------------------------------------------
+
+_BRIDGE_ENV_VARS: dict[str, list[tuple[str, str, bool]]] = {
+    # (env_var, prompt_label, required)
+    "telegram": [
+        ("TELEGRAM_BOT_TOKEN", "Telegram bot token", True),
+        ("TELEGRAM_FORUM_GROUP_ID", "Telegram forum group ID", True),
+    ],
+    "slack": [
+        ("SLACK_BOT_TOKEN", "Slack bot token (xoxb-...)", True),
+        ("SLACK_APP_TOKEN", "Slack app token (xapp-...)", True),
+        ("SLACK_CHANNEL_ID", "Slack channel ID", True),
+    ],
+    "discord": [
+        ("DISCORD_BOT_TOKEN", "Discord bot token", True),
+        ("DISCORD_CHANNEL_ID", "Discord channel ID", True),
+    ],
+}
+
+
+class BridgeConfigRequest(BaseModel):
+    """Request body for POST /setup/bridge/{name}."""
+
+    env: dict[str, str]
+
+
+class BridgeConfigResult(BaseModel):
+    """Response for POST /setup/bridge/{name}."""
+
+    ok: bool
+    bridge: str
+    message: str
+
+
+@router.get("/bridge/vars/{name}")
+async def get_bridge_vars(
+    name: str,
+    _: None = Depends(require_token),
+) -> dict:
+    """Return the env var names required for a bridge."""
+    if name not in _BRIDGE_ENV_VARS:
+        raise_http_error("NOT_FOUND", f"Unknown bridge: {name}", 404)
+    return {
+        "bridge": name,
+        "vars": [
+            {"key": key, "label": label, "required": required}
+            for key, label, required in _BRIDGE_ENV_VARS[name]
+        ],
+    }
+
+
+@router.post("/bridge/{name}", response_model=BridgeConfigResult)
+async def configure_bridge(
+    name: str,
+    payload: BridgeConfigRequest,
+    _: None = Depends(require_token),
+) -> BridgeConfigResult:
+    """Write bridge env vars to config.env and schedule a deferred service restart.
+
+    The restart is deferred by 2 seconds so the HTTP response is sent back to
+    the client before the process exits.
+    """
+    import asyncio
+
+    if name not in _BRIDGE_ENV_VARS:
+        raise_http_error("NOT_FOUND", f"Unknown bridge: {name}", 404)
+
+    required_keys = {
+        key for key, _, required in _BRIDGE_ENV_VARS[name] if required
+    }
+    missing = required_keys - set(payload.env.keys())
+    if missing:
+        raise_http_error(
+            "MISSING_FIELDS",
+            f"Missing required fields: {', '.join(sorted(missing))}",
+            400,
+        )
+
+    config_path = Path.home() / ".config" / "tether" / "config.env"
+    _update_config_env(config_path, payload.env)
+
+    logger.info("Bridge configured", bridge=name)
+
+    # Schedule restart after response is sent.
+    asyncio.get_event_loop().call_later(2.0, _restart_service)
+
+    return BridgeConfigResult(ok=True, bridge=name, message=f"{name} bridge configured.")
+
+
+def _update_config_env(path: Path, updates: dict[str, str]) -> None:
+    """Update or add key=value lines in a config.env file."""
+    lines: list[str] = []
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines()
+
+    updated_keys: set[str] = set()
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in updates:
+            new_lines.append(f"{key}={updates[key]}")
+            updated_keys.add(key)
+        else:
+            new_lines.append(line)
+
+    # Append any keys not already present.
+    for key, value in updates.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={value}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _restart_service() -> bool:
+    """Attempt to restart the tether systemd service. Returns True on success."""
+    for cmd in (
+        ["systemctl", "restart", "tether"],
+        ["systemctl", "--user", "restart", "tether"],
+    ):
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            if result.returncode == 0:
+                return True
+        except Exception:
+            continue
+    return False
