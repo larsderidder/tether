@@ -285,12 +285,13 @@ class TestDiscordBridgePoC:
         sent_text = mock_channel.send.await_args.args[0]
         assert "This starter message keeps the thread visible" not in sent_text
         assert "**Status bar:**" in sent_text
-        assert "<#1234567890>" in sent_text
+        assert "🤖 Control <#1234567890>" in sent_text
 
         edited_text = mock_starter_message.edit.await_args.kwargs["content"]
         assert "**Status bar:**" in edited_text
-        assert "<#1234567890>" in edited_text
-        assert "<#9876543210>" in edited_text
+        assert "🤖 Control <#1234567890>" in edited_text
+        assert "🧵 Thread <#9876543210>" in edited_text
+        assert "👥 Access open" in edited_text
         assert "Thread ready" in edited_text
 
     @pytest.mark.anyio
@@ -330,6 +331,48 @@ class TestDiscordBridgePoC:
         await bridge.on_session_removed(session.id)
 
         assert session.id not in bridge._starter_refresh_tasks
+
+    @pytest.mark.anyio
+    async def test_create_thread_suppresses_pingy_mentions_in_status_bar(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Starter status bars render channel/user mentions without notifying people."""
+        from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
+
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        mock_starter_message = AsyncMock()
+        mock_starter_message.id = 111222333
+        mock_thread = MagicMock()
+        mock_thread.id = 9876543210
+        mock_starter_message.create_thread.return_value = mock_thread
+        mock_channel.send.return_value = mock_starter_message
+        mock_client.get_channel.return_value = mock_channel
+
+        fake_allowed_mentions = MagicMock()
+        fake_allowed_mentions.none.return_value = "NO_PINGS"
+        fake_discord = MagicMock()
+        fake_discord.AllowedMentions = fake_allowed_mentions
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            discord_config=DiscordConfig(allowed_user_ids=[111, 222]),
+        )
+        bridge._client = mock_client
+
+        with patch.dict("sys.modules", {"discord": fake_discord}):
+            await bridge.create_thread(session.id, "No Ping Session")
+
+        sent_kwargs = mock_channel.send.await_args.kwargs
+        edited_kwargs = mock_starter_message.edit.await_args.kwargs
+        assert sent_kwargs["allowed_mentions"] == "NO_PINGS"
+        assert edited_kwargs["allowed_mentions"] == "NO_PINGS"
+        assert "<@111>" in edited_kwargs["content"]
+        assert "<@222>" in edited_kwargs["content"]
 
     @pytest.mark.anyio
     async def test_create_thread_fetches_preconfigured_channel_when_cache_empty(

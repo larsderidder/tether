@@ -229,16 +229,16 @@ class DiscordBridge(UpstreamDiscordBridge):
     @staticmethod
     def _starter_status_badge(status: str) -> tuple[str, str]:
         badge_map = {
-            "created": ("🆕", "creating thread"),
-            "queued": ("📨", "input queued"),
-            "thinking": ("💭", "thinking"),
-            "executing": ("⚙️", "executing"),
-            "streaming": ("📝", "responding"),
-            "awaiting_input": ("✅", "response finished"),
-            "done": ("✅", "response finished"),
-            "error": ("❌", "error"),
+            "created": ("🆕 NEW", "creating thread"),
+            "queued": ("📨 QUEUED", "input queued"),
+            "thinking": ("💭 THINK", "thinking"),
+            "executing": ("⚙️ RUN", "executing"),
+            "streaming": ("📝 LIVE", "responding"),
+            "awaiting_input": ("✅ OK", "response finished"),
+            "done": ("✅ OK", "response finished"),
+            "error": ("❌ ERR", "error"),
         }
-        return badge_map.get(status, ("ℹ️", status.replace("_", " ") or "idle"))
+        return badge_map.get(status, ("ℹ️ INFO", status.replace("_", " ") or "idle"))
 
     @staticmethod
     def _starter_event_text(status: str, metadata: dict | None = None) -> str:
@@ -256,6 +256,37 @@ class DiscordBridge(UpstreamDiscordBridge):
         if message:
             return message[:180]
         return default_map.get(status, status.replace("_", " ") or "Session update")
+
+    @staticmethod
+    def _starter_allowed_mentions() -> dict[str, Any]:
+        try:
+            import discord
+
+            allowed_mentions = getattr(discord, "AllowedMentions", None)
+            if allowed_mentions is not None:
+                return {"allowed_mentions": allowed_mentions.none()}
+        except Exception:
+            pass
+        return {}
+
+    def _starter_access_refs(self) -> str:
+        user_ids: list[int] = []
+        seen: set[int] = set()
+        for raw_user_id in list(self._allowed_user_ids) + sorted(self._paired_user_ids):
+            try:
+                user_id = int(raw_user_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if not user_id or user_id in seen:
+                continue
+            seen.add(user_id)
+            user_ids.append(user_id)
+        if not user_ids:
+            return "open"
+        refs = [f"<@{user_id}>" for user_id in user_ids[:3]]
+        if len(user_ids) > 3:
+            refs.append(f"+{len(user_ids) - 3} more")
+        return " ".join(refs)
 
     def _update_starter_state(
         self,
@@ -291,7 +322,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         if state is None:
             return "🧵 Tether session"
 
-        status_emoji, status_label = self._starter_status_badge(state.last_status)
+        status_badge, status_label = self._starter_status_badge(state.last_status)
         session_name = self._starter_display_name(session_id, state)
         control_ref = (
             f"<#{state.control_channel_id}>"
@@ -300,11 +331,13 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         thread_ref = f"<#{state.thread_id}>" if state.thread_id else "creating thread"
         user_ref = f"<@{state.last_user_id}>" if state.last_user_id else "waiting"
+        access_ref = self._starter_access_refs()
         age_ref = self._format_relative_age(state.last_event_at_s)
         return (
             f"🧵 **Tether session:** **{session_name}**\n"
-            f"{status_emoji} **Status bar:** {status_label} | "
-            f"📡 {control_ref} | 🧵 {thread_ref} | 👤 {user_ref} | 🕒 {age_ref}\n"
+            f"{status_badge} **Status bar:** {status_label} | "
+            f"🤖 Control {control_ref} | 🧵 Thread {thread_ref}\n"
+            f"👤 User {user_ref} | 👥 Access {access_ref} | 🕒 Updated {age_ref}\n"
             f"🔔 **Latest:** {state.last_event}"
         )[:_DISCORD_STARTER_TEXT_LIMIT]
 
@@ -360,7 +393,7 @@ class DiscordBridge(UpstreamDiscordBridge):
             return
 
         try:
-            await message.edit(content=content)
+            await message.edit(content=content, **self._starter_allowed_mentions())
         except Exception:
             logger.warning(
                 "Failed to update Discord starter message",
@@ -1128,7 +1161,8 @@ class DiscordBridge(UpstreamDiscordBridge):
             )
             starter_text = self._render_starter_text(session_id)
             starter_message = await channel.send(
-                starter_text[:_DISCORD_STARTER_TEXT_LIMIT]
+                starter_text[:_DISCORD_STARTER_TEXT_LIMIT],
+                **self._starter_allowed_mentions(),
             )
             starter_state = self._starter_states.get(session_id)
             if starter_state is not None:
