@@ -57,6 +57,9 @@ class TestFetchCache:
         monkeypatch.setenv("TETHER_GIT_FETCH_TIMEOUT", "10")
 
         repo_path = str(tmp_path / "repo")
+        resolved = str(Path(repo_path).resolve())
+        with _fetch_cache_lock:
+            _fetch_cache.pop(resolved, None)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
