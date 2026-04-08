@@ -498,7 +498,13 @@ class TestGitPush:
             f.write("# test\n")
         subprocess.run(["git", "-C", clone, "add", "."], check=True, capture_output=True)
         subprocess.run(["git", "-C", clone, "commit", "-m", "init"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", clone, "push", "-u", "origin", "main"], check=True, capture_output=True)
+        branch = subprocess.run(
+            ["git", "-C", clone, "branch", "--show-current"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip() or "main"
+        subprocess.run(["git", "-C", clone, "push", "-u", "origin", branch], check=True, capture_output=True)
         return remote, clone
 
     def test_push_to_local_remote(self, tmp_path):
@@ -512,7 +518,7 @@ class TestGitPush:
 
         result = git_push(clone)
         assert result.success is True
-        assert result.branch == "main"
+        assert result.branch in {"main", "master"}
 
     def test_push_result_contains_remote(self, tmp_path):
         """GitPushResult.remote is populated with the remote URL."""

@@ -65,6 +65,10 @@ class DiscordBridge(_BaseDiscordBridge):
         self._recent_message_ids: set[int] = set()
         self._recent_message_order: deque[int] = deque()
         self._recent_message_limit = 2048
+        # Compatibility shim for older agent-tether versions: keep per-user
+        # snapshots so !attach uses the list the caller saw.
+        if not hasattr(self, "_external_view_by_user"):
+            self._external_view_by_user: dict[int, list[dict]] = {}
 
     async def _handle_message(self, message: Any) -> None:
         message_id = getattr(message, "id", None)
@@ -101,6 +105,32 @@ class DiscordBridge(_BaseDiscordBridge):
                 old = self._recent_message_order.popleft()
                 self._recent_message_ids.discard(old)
         await super()._handle_message(message)
+
+    async def _cmd_list(self, message: Any, args: str) -> None:
+        await super()._cmd_list(message, args)
+        user_id = getattr(getattr(message, "author", None), "id", None)
+        view = getattr(self, "_external_view", None)
+        if isinstance(user_id, int) and isinstance(view, list):
+            self._external_view_by_user[user_id] = list(view)
+
+    async def _cmd_attach(self, message: Any, args: str) -> None:
+        user_id = getattr(getattr(message, "author", None), "id", None)
+        user_view = (
+            self._external_view_by_user.get(user_id)
+            if isinstance(user_id, int)
+            else None
+        )
+
+        if isinstance(user_view, list) and hasattr(self, "_external_view"):
+            original_view = list(getattr(self, "_external_view", []))
+            try:
+                self._external_view = list(user_view)
+                await super()._cmd_attach(message, args)
+            finally:
+                self._external_view = original_view
+            return
+
+        await super()._cmd_attach(message, args)
 
     async def _cmd_sync(self, message: Any) -> None:
         """Handle !sync with optional force replay."""

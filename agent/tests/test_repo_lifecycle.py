@@ -56,9 +56,11 @@ class TestFetchCache:
         monkeypatch.setenv("TETHER_GIT_FETCH_CACHE_SECONDS", "300")
         monkeypatch.setenv("TETHER_GIT_FETCH_TIMEOUT", "10")
 
+        repo_path = str(tmp_path / "repo")
+
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            _fetch_origin("/some/repo")
+            _fetch_origin(repo_path)
 
         mock_run.assert_called_once()
 
