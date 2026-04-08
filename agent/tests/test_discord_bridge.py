@@ -159,6 +159,48 @@ class TestDiscordBridgePoC:
             report
         )
 
+    @pytest.mark.anyio
+    async def test_on_output_final_updates_starter_status_bar(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Final responses refresh the visible control-channel starter message."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        mock_starter_message = AsyncMock()
+        mock_starter_message.id = 111222333
+        mock_thread = AsyncMock()
+        mock_thread.id = 9876543210
+        mock_starter_message.create_thread.return_value = mock_thread
+        mock_channel.send.return_value = mock_starter_message
+        mock_client.get_channel.side_effect = lambda channel_id: {
+            1234567890: mock_channel,
+            9876543210: mock_thread,
+        }.get(channel_id)
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread(session.id, "Status Session")
+        mock_starter_message.edit.reset_mock()
+
+        await bridge.on_output(
+            session.id,
+            "Final Discord output",
+            metadata={"final": True},
+        )
+
+        edited_text = mock_starter_message.edit.await_args.kwargs["content"]
+        assert "response finished" in edited_text.lower()
+        assert "Latest" in edited_text
+
     def test_session_for_thread_restores_mapping_from_store(
         self, fresh_store: SessionStore
     ) -> None:
@@ -211,6 +253,83 @@ class TestDiscordBridgePoC:
         assert mock_starter_message.create_thread.called
         assert result["thread_id"] == "9876543210"
         assert result["platform"] == "discord"
+
+    @pytest.mark.anyio
+    async def test_create_thread_renders_emojiful_status_bar_starter_message(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Visible starter messages show a live status bar instead of placeholder text."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        mock_starter_message = AsyncMock()
+        mock_starter_message.id = 111222333
+        mock_thread = MagicMock()
+        mock_thread.id = 9876543210
+        mock_starter_message.create_thread.return_value = mock_thread
+        mock_channel.send.return_value = mock_starter_message
+        mock_client.get_channel.return_value = mock_channel
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread(session.id, "Test Session")
+
+        sent_text = mock_channel.send.await_args.args[0]
+        assert "This starter message keeps the thread visible" not in sent_text
+        assert "**Status bar:**" in sent_text
+        assert "<#1234567890>" in sent_text
+
+        edited_text = mock_starter_message.edit.await_args.kwargs["content"]
+        assert "**Status bar:**" in edited_text
+        assert "<#1234567890>" in edited_text
+        assert "<#9876543210>" in edited_text
+        assert "Thread ready" in edited_text
+
+    @pytest.mark.anyio
+    async def test_create_thread_starts_starter_refresh_task(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Starter messages keep a refresh task running until the session is removed."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        mock_starter_message = AsyncMock()
+        mock_starter_message.id = 111222333
+        mock_thread = AsyncMock()
+        mock_thread.id = 9876543210
+        mock_starter_message.create_thread.return_value = mock_thread
+        mock_channel.send.return_value = mock_starter_message
+        mock_client.get_channel.side_effect = lambda channel_id: {
+            1234567890: mock_channel,
+            9876543210: mock_thread,
+        }.get(channel_id)
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread(session.id, "Refresh Task Session")
+
+        assert session.id in bridge._starter_refresh_tasks
+        assert not bridge._starter_refresh_tasks[session.id].done()
+
+        await bridge.on_session_removed(session.id)
+
+        assert session.id not in bridge._starter_refresh_tasks
 
     @pytest.mark.anyio
     async def test_create_thread_fetches_preconfigured_channel_when_cache_empty(
@@ -790,6 +909,52 @@ class TestDiscordBridgePoC:
         # Should have called send_input, not respond_to_permission
         callbacks.send_input.assert_called_once_with(session.id, "fix the bug please")
         callbacks.respond_to_permission.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_forward_input_updates_starter_message_with_user_mention(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Forwarded input refreshes the visible starter status with a user mention."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        mock_starter_message = AsyncMock()
+        mock_starter_message.id = 111222333
+        mock_thread = AsyncMock()
+        mock_thread.id = 9876543210
+        mock_starter_message.create_thread.return_value = mock_thread
+        mock_channel.send.return_value = mock_starter_message
+        mock_client.get_channel.side_effect = lambda channel_id: {
+            1234567890: mock_channel,
+            9876543210: mock_thread,
+        }.get(channel_id)
+        callbacks = _mock_callbacks()
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread(session.id, "Mention Session")
+        mock_starter_message.edit.reset_mock()
+
+        mock_message = MagicMock()
+        mock_message.channel = mock_thread
+        mock_message.channel.id = 9876543210
+        mock_message.author.id = 4242
+        mock_message.author.name = "testuser"
+
+        await bridge._forward_input(mock_message, session.id, "ship it")
+
+        edited_text = mock_starter_message.edit.await_args.kwargs["content"]
+        assert "<@4242>" in edited_text
+        assert "input queued" in edited_text.lower()
 
     @pytest.mark.anyio
     async def test_pairing_required_blocks_unpaired_input(

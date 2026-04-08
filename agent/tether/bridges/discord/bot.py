@@ -14,6 +14,7 @@ import io
 import os
 import re
 import socket
+import time
 from typing import Any
 
 import structlog
@@ -37,6 +38,7 @@ _DISCORD_THREAD_NAME_LIMIT = 100
 _DISCORD_STARTER_TEXT_LIMIT = 2000
 _DISCORD_AUTO_ARCHIVE_MINUTES = 1440
 _ERROR_ATTACHMENT_DELAY_S = 0.35
+_STARTER_REFRESH_INTERVAL_S = 15.0
 
 
 def _hostname_slug() -> str:
@@ -57,6 +59,23 @@ class DiscordConfig:
     reaction_new_session_enabled: bool = True
     reaction_new_session_emoji: str = "✅"
     reaction_new_session_allow_plain_messages: bool = False
+
+
+@dataclass
+class _DiscordStarterState:
+    """Mutable state for the visible control-channel starter message."""
+
+    session_name: str
+    control_channel_id: int
+    created_at_s: float
+    last_event_at_s: float
+    last_status: str = "created"
+    last_event: str = "Thread requested"
+    thread_id: int | None = None
+    starter_message_id: int | None = None
+    starter_message: Any | None = None
+    last_user_id: int | None = None
+    last_rendered: str = ""
 
 
 class DiscordBridge(UpstreamDiscordBridge):
@@ -116,6 +135,8 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._reaction_shortcuts_completed: set[int] = set()
         self._reaction_shortcuts_in_progress: set[int] = set()
         self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
+        self._starter_states: dict[str, _DiscordStarterState] = {}
+        self._starter_refresh_tasks: dict[str, asyncio.Task] = {}
         self._apply_auto_pair_users()
 
     @staticmethod
@@ -168,11 +189,224 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._restore_thread_mappings_from_store()
         return self._thread_ids.get(session_id)
 
+    def _get_session_info_safe(self, session_id: str) -> dict[str, Any]:
+        if self._get_session_info is None:
+            return {}
+        try:
+            session_info = self._get_session_info(session_id)
+        except Exception:
+            logger.exception(
+                "Failed to fetch session info for Discord starter state",
+                session_id=session_id,
+            )
+            return {}
+        return session_info if isinstance(session_info, dict) else {}
+
+    def _starter_display_name(
+        self, session_id: str, state: _DiscordStarterState
+    ) -> str:
+        session_info = self._get_session_info_safe(session_id)
+        name = (
+            self._thread_names.get(session_id)
+            or str(session_info.get("name") or "").strip()
+            or state.session_name
+            or "Session"
+        )
+        return " ".join(name.split())[:80] or "Session"
+
+    @staticmethod
+    def _format_relative_age(event_ts: float) -> str:
+        delta_s = max(0, int(time.time() - event_ts))
+        if delta_s < 60:
+            return f"{delta_s}s ago"
+        if delta_s < 3600:
+            minutes, seconds = divmod(delta_s, 60)
+            return f"{minutes}m {seconds:02d}s ago"
+        hours, remainder = divmod(delta_s, 3600)
+        minutes = remainder // 60
+        return f"{hours}h {minutes:02d}m ago"
+
+    @staticmethod
+    def _starter_status_badge(status: str) -> tuple[str, str]:
+        badge_map = {
+            "created": ("🆕", "creating thread"),
+            "queued": ("📨", "input queued"),
+            "thinking": ("💭", "thinking"),
+            "executing": ("⚙️", "executing"),
+            "streaming": ("📝", "responding"),
+            "awaiting_input": ("✅", "response finished"),
+            "done": ("✅", "response finished"),
+            "error": ("❌", "error"),
+        }
+        return badge_map.get(status, ("ℹ️", status.replace("_", " ") or "idle"))
+
+    @staticmethod
+    def _starter_event_text(status: str, metadata: dict | None = None) -> str:
+        message = str((metadata or {}).get("message") or "").strip()
+        default_map = {
+            "created": "Thread requested",
+            "queued": "User input received",
+            "thinking": "Agent is thinking",
+            "executing": "Agent is executing",
+            "streaming": "Response streaming",
+            "awaiting_input": "Response finished; waiting for the next prompt",
+            "done": "Response finished",
+            "error": "Session error",
+        }
+        if message:
+            return message[:180]
+        return default_map.get(status, status.replace("_", " ") or "Session update")
+
+    def _update_starter_state(
+        self,
+        session_id: str,
+        *,
+        status: str | None = None,
+        event: str | None = None,
+        thread_id: int | None = None,
+        user_id: int | None = None,
+        session_name: str | None = None,
+        control_channel_id: int | None = None,
+    ) -> _DiscordStarterState | None:
+        state = self._starter_states.get(session_id)
+        if state is None:
+            return None
+        if session_name:
+            state.session_name = session_name
+        if control_channel_id:
+            state.control_channel_id = int(control_channel_id)
+        if thread_id:
+            state.thread_id = int(thread_id)
+        if user_id:
+            state.last_user_id = int(user_id)
+        if status:
+            state.last_status = status
+        if event:
+            state.last_event = event[:180]
+        state.last_event_at_s = time.time()
+        return state
+
+    def _render_starter_text(self, session_id: str) -> str:
+        state = self._starter_states.get(session_id)
+        if state is None:
+            return "🧵 Tether session"
+
+        status_emoji, status_label = self._starter_status_badge(state.last_status)
+        session_name = self._starter_display_name(session_id, state)
+        control_ref = (
+            f"<#{state.control_channel_id}>"
+            if state.control_channel_id
+            else "control pending"
+        )
+        thread_ref = f"<#{state.thread_id}>" if state.thread_id else "creating thread"
+        user_ref = f"<@{state.last_user_id}>" if state.last_user_id else "waiting"
+        age_ref = self._format_relative_age(state.last_event_at_s)
+        return (
+            f"🧵 **Tether session:** **{session_name}**\n"
+            f"{status_emoji} **Status bar:** {status_label} | "
+            f"📡 {control_ref} | 🧵 {thread_ref} | 👤 {user_ref} | 🕒 {age_ref}\n"
+            f"🔔 **Latest:** {state.last_event}"
+        )[:_DISCORD_STARTER_TEXT_LIMIT]
+
+    async def _resolve_starter_message(self, session_id: str) -> Any | None:
+        state = self._starter_states.get(session_id)
+        if state is None or not self._client:
+            return None
+        if state.starter_message is not None:
+            return state.starter_message
+        if not state.control_channel_id or not state.starter_message_id:
+            return None
+
+        channel = self._client.get_channel(state.control_channel_id)
+        if channel is None:
+            fetch_channel = getattr(self._client, "fetch_channel", None)
+            if fetch_channel is not None:
+                try:
+                    channel = await fetch_channel(state.control_channel_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to fetch Discord control channel for starter message",
+                        session_id=session_id,
+                        channel_id=state.control_channel_id,
+                    )
+                    return None
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return None
+
+        try:
+            message = await channel.fetch_message(state.starter_message_id)
+        except Exception:
+            logger.warning(
+                "Failed to fetch Discord starter message",
+                session_id=session_id,
+                message_id=state.starter_message_id,
+            )
+            return None
+        state.starter_message = message
+        return message
+
+    async def _sync_starter_message(
+        self, session_id: str, *, force: bool = False
+    ) -> None:
+        state = self._starter_states.get(session_id)
+        if state is None:
+            return
+        message = await self._resolve_starter_message(session_id)
+        if message is None or not hasattr(message, "edit"):
+            return
+
+        content = self._render_starter_text(session_id)
+        if not force and content == state.last_rendered:
+            return
+
+        try:
+            await message.edit(content=content)
+        except Exception:
+            logger.warning(
+                "Failed to update Discord starter message",
+                session_id=session_id,
+                message_id=state.starter_message_id,
+            )
+            return
+        state.last_rendered = content
+        state.starter_message = message
+
+    def _ensure_starter_refresh_task(self, session_id: str) -> None:
+        existing = self._starter_refresh_tasks.get(session_id)
+        if existing is not None and not existing.done():
+            return
+
+        async def _refresh_loop() -> None:
+            try:
+                while session_id in self._starter_states:
+                    await asyncio.sleep(_STARTER_REFRESH_INTERVAL_S)
+                    await self._sync_starter_message(session_id)
+            except asyncio.CancelledError:
+                return
+            finally:
+                self._starter_refresh_tasks.pop(session_id, None)
+
+        self._starter_refresh_tasks[session_id] = asyncio.create_task(_refresh_loop())
+
+    async def _cancel_starter_refresh_task(self, session_id: str) -> None:
+        task = self._starter_refresh_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
         self._hydrate_thread_binding(session_id)
         await super().on_output(session_id, text, metadata=metadata)
+        status = "done" if bool((metadata or {}).get("final")) else "streaming"
+        self._update_starter_state(
+            session_id,
+            status=status,
+            event=self._starter_event_text(status, metadata),
+        )
+        await self._sync_starter_message(session_id)
         await self._send_requested_output_attachments(session_id, metadata=metadata)
 
     async def on_status_change(
@@ -182,6 +416,12 @@ class DiscordBridge(UpstreamDiscordBridge):
         if status != "error" or not settings.debug_attach_logs():
             await self._cancel_pending_error_attachment_task(session_id)
             await super().on_status_change(session_id, status, metadata=metadata)
+            self._update_starter_state(
+                session_id,
+                status=status,
+                event=self._starter_event_text(status, metadata),
+            )
+            await self._sync_starter_message(session_id)
             return
 
         message = str((metadata or {}).get("message") or "").strip()
@@ -193,8 +433,20 @@ class DiscordBridge(UpstreamDiscordBridge):
             )
             if not handled:
                 await super().on_status_change(session_id, status, metadata=metadata)
+            self._update_starter_state(
+                session_id,
+                status=status,
+                event=self._starter_event_text(status, metadata),
+            )
+            await self._sync_starter_message(session_id)
             return
 
+        self._update_starter_state(
+            session_id,
+            status=status,
+            event=self._starter_event_text(status, metadata),
+        )
+        await self._sync_starter_message(session_id)
         self._schedule_error_attachment_bundle(session_id, metadata=metadata)
 
     async def on_approval_request(self, session_id: str, request) -> None:
@@ -204,12 +456,38 @@ class DiscordBridge(UpstreamDiscordBridge):
     async def on_typing(self, session_id: str) -> None:
         self._hydrate_thread_binding(session_id)
         await super().on_typing(session_id)
+        self._update_starter_state(
+            session_id,
+            status="thinking",
+            event=self._starter_event_text("thinking"),
+        )
+        await self._sync_starter_message(session_id)
+
+    async def on_typing_stopped(self, session_id: str) -> None:
+        self._hydrate_thread_binding(session_id)
+        await super().on_typing_stopped(session_id)
+        self._update_starter_state(
+            session_id,
+            status="awaiting_input",
+            event=self._starter_event_text("awaiting_input"),
+        )
+        await self._sync_starter_message(session_id)
 
     async def send_auto_approve_batch(
         self, session_id: str, items: list[tuple[str, str]]
     ) -> None:
         self._hydrate_thread_binding(session_id)
         await super().send_auto_approve_batch(session_id, items)
+
+    async def _forward_input(self, message: Any, session_id: str, text: str) -> None:
+        await super()._forward_input(message, session_id, text)
+        self._update_starter_state(
+            session_id,
+            status="queued",
+            event=self._starter_event_text("queued"),
+            user_id=getattr(getattr(message, "author", None), "id", None),
+        )
+        await self._sync_starter_message(session_id)
 
     async def _cancel_pending_error_attachment_task(self, session_id: str) -> None:
         task = self._pending_error_attachment_tasks.pop(session_id, None)
@@ -439,6 +717,8 @@ class DiscordBridge(UpstreamDiscordBridge):
             )
 
     async def on_session_removed(self, session_id: str) -> None:
+        await self._cancel_starter_refresh_task(session_id)
+        self._starter_states.pop(session_id, None)
         await self._cancel_pending_error_attachment_task(session_id)
         await super().on_session_removed(session_id)
 
@@ -577,6 +857,12 @@ class DiscordBridge(UpstreamDiscordBridge):
             thread_id=thread_id,
             name=resolved_name,
         )
+        self._update_starter_state(
+            session_id,
+            session_name=resolved_name,
+            event="Thread renamed",
+        )
+        await self._sync_starter_message(session_id)
         return resolved_name
 
     def _persist_control_channel(self) -> None:
@@ -787,6 +1073,14 @@ class DiscordBridge(UpstreamDiscordBridge):
             if not session_id:
                 raise RuntimeError("Tether did not return a session id")
 
+            self._update_starter_state(
+                session_id,
+                status="queued",
+                event="Started from reaction shortcut",
+                user_id=user_id,
+            )
+            await self._sync_starter_message(session_id)
+
             persist = True
             await self._send_input_or_start_via_api(
                 session_id=session_id,
@@ -822,14 +1116,28 @@ class DiscordBridge(UpstreamDiscordBridge):
     ) -> dict:
         try:
             self._reserve_thread_name(session_id, session_name)
-
-            starter_text = (
-                f"🧵 Tether session: **{session_name[:80]}**\n"
-                "This starter message keeps the thread visible in this machine channel."
+            created_at_s = time.time()
+            self._starter_states[session_id] = _DiscordStarterState(
+                session_name=session_name,
+                control_channel_id=(
+                    self._parse_thread_id(getattr(channel, "id", 0))
+                    or int(self._channel_id or 0)
+                ),
+                created_at_s=created_at_s,
+                last_event_at_s=created_at_s,
             )
+            starter_text = self._render_starter_text(session_id)
             starter_message = await channel.send(
                 starter_text[:_DISCORD_STARTER_TEXT_LIMIT]
             )
+            starter_state = self._starter_states.get(session_id)
+            if starter_state is not None:
+                starter_state.starter_message = starter_message
+                starter_state.starter_message_id = self._parse_thread_id(
+                    getattr(starter_message, "id", 0)
+                )
+                starter_state.last_rendered = starter_text[:_DISCORD_STARTER_TEXT_LIMIT]
+
             thread = await starter_message.create_thread(
                 name=session_name[:_DISCORD_THREAD_NAME_LIMIT],
                 auto_archive_duration=_DISCORD_AUTO_ARCHIVE_MINUTES,
@@ -837,6 +1145,14 @@ class DiscordBridge(UpstreamDiscordBridge):
 
             thread_id = thread.id
             self._thread_ids[session_id] = thread_id
+            self._update_starter_state(
+                session_id,
+                status="awaiting_input",
+                event="Thread ready; send a message in the thread to continue",
+                thread_id=thread_id,
+            )
+            await self._sync_starter_message(session_id, force=True)
+            self._ensure_starter_refresh_task(session_id)
             try:
                 await thread.send(
                     "Tether session thread.\n"
@@ -860,6 +1176,8 @@ class DiscordBridge(UpstreamDiscordBridge):
             logger.exception(
                 "Failed to create visible Discord thread", session_id=session_id
             )
+            await self._cancel_starter_refresh_task(session_id)
+            self._starter_states.pop(session_id, None)
             if self._thread_names.get(session_id) == session_name:
                 self._release_thread_name(session_id)
             raise RuntimeError(f"Failed to create Discord thread: {exc}") from exc
