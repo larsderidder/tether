@@ -27,6 +27,27 @@ def _mock_callbacks(**overrides) -> BridgeCallbacks:
     return BridgeCallbacks(**defaults)
 
 
+def test_normalize_discord_output_text_converts_markdown_lists() -> None:
+    """Dash-based lists are converted to bullet characters for stable rendering."""
+    from tether.bridges.discord.bot import _normalize_discord_output_text
+
+    text = (
+        "I will give phone-friendly summaries by default:\n"
+        "- lead with the answer first\n"
+        "- include only important findings\n"
+        "- avoid dumping raw tool output unless you ask\n"
+        "- call out clearly when I need action from you"
+    )
+
+    normalized = _normalize_discord_output_text(text)
+
+    assert "- lead with the answer first" not in normalized
+    assert "• lead with the answer first" in normalized
+    assert "• include only important findings" in normalized
+    assert "• avoid dumping raw tool output unless you ask" in normalized
+    assert "• call out clearly when I need action from you" in normalized
+
+
 class TestDiscordBridgePoC:
     """Test Discord bridge PoC implementation."""
 
@@ -72,10 +93,17 @@ class TestDiscordBridgePoC:
         bridge._thread_ids[session.id] = 9876543210  # Register thread
 
         # Send output
-        await bridge.on_output(session.id, "Test Discord output")
+        await bridge.on_output(
+            session.id,
+            "Summary:\n- first item\n- second item\n- third item",
+        )
 
         # Verify message was sent to Discord thread
         assert mock_thread.send.called
+        sent_text = mock_thread.send.call_args.args[0]
+        assert "• first item" in sent_text
+        assert "• second item" in sent_text
+        assert "• third item" in sent_text
 
     @pytest.mark.anyio
     async def test_create_thread_creates_discord_thread(
@@ -392,6 +420,60 @@ class TestDiscordBridgePoC:
         # Should have called send_input, not respond_to_permission
         callbacks.send_input.assert_called_once_with(session.id, "fix the bug please")
         callbacks.respond_to_permission.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_attach_uses_callers_last_list_snapshot(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """!attach should use the list the caller saw, not another user's list."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        external_sessions = [
+            {
+                "id": "eps-id",
+                "runner_type": "pi",
+                "directory": "/tmp/eps-web",
+                "first_prompt": "eps",
+                "last_prompt": "eps",
+            },
+            {
+                "id": "bag-id",
+                "runner_type": "pi",
+                "directory": "/tmp/bagwatch",
+                "first_prompt": "bag",
+                "last_prompt": "bag",
+            },
+        ]
+
+        callbacks = _mock_callbacks(
+            list_external_sessions=AsyncMock(return_value=external_sessions),
+            attach_external=AsyncMock(return_value={"id": "sess-1", "platform_thread_id": "123"}),
+            get_external_history=AsyncMock(return_value={"messages": []}),
+        )
+
+        bridge = DiscordBridge(bot_token="x", channel_id=1234567890, callbacks=callbacks)
+        bridge._client = MagicMock()
+        mock_thread = AsyncMock()
+        bridge._client.get_channel.return_value = mock_thread
+
+        user1_msg = MagicMock()
+        user1_msg.author.id = 111
+        user1_msg.author.bot = False
+        user1_msg.channel = AsyncMock()
+        user1_msg.channel.send = AsyncMock()
+
+        user2_msg = MagicMock()
+        user2_msg.author.id = 222
+        user2_msg.author.bot = False
+        user2_msg.channel = AsyncMock()
+        user2_msg.channel.send = AsyncMock()
+
+        await bridge._cmd_list(user1_msg, "eps-web")
+        await bridge._cmd_list(user2_msg, "bagwatch")
+        await bridge._cmd_attach(user1_msg, "1")
+
+        callbacks.attach_external.assert_called_once()
+        assert callbacks.attach_external.call_args.kwargs["external_id"] == "eps-id"
 
     @pytest.mark.anyio
     async def test_pairing_required_blocks_unpaired_input(

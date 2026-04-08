@@ -41,7 +41,12 @@ class MockBridge(BridgeInterface):
         self.status_calls.append({"session_id": session_id, "status": status, "metadata": metadata})
         self.status_received.set()
 
-    async def create_thread(self, session_id: str, session_name: str) -> dict:
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
         self.thread_calls.append({"session_id": session_id, "session_name": session_name})
         return {"thread_id": f"mock_{session_id}", "platform": "mock"}
 
@@ -65,7 +70,12 @@ class FailingBridge(BridgeInterface):
         self.status_calls.append({"session_id": session_id, "status": status})
         self.status_received.set()
 
-    async def create_thread(self, session_id: str, session_name: str) -> dict:
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
         return {"thread_id": f"fail_{session_id}", "platform": "failing"}
 
 

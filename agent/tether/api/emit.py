@@ -328,6 +328,7 @@ async def emit_history_message(
     thinking: str | None = None,
     timestamp: str | None = None,
     is_final: bool = False,
+    is_history: bool = True,
 ) -> None:
     """Emit a history message event for displaying past conversation.
 
@@ -340,8 +341,31 @@ async def emit_history_message(
         thinking: Thinking content for assistant messages.
         timestamp: Original timestamp of the message.
         is_final: Whether this is the final message (shown as final, not step).
+        is_history: Whether to mark emitted events as history replay.
     """
     ts = timestamp or now()
+
+    # For live sync replay (is_history=False), emit both roles as visible output
+    # so bridge threads show a complete transcript with explicit role labels.
+    if role == "user" and not is_history:
+        text = f"You: {content}" if content else "You:"
+        await store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": ts,
+                "seq": store.next_seq(session.id),
+                "type": "output",
+                "data": {
+                    "stream": "combined",
+                    "text": text,
+                    "kind": "final",
+                    "final": True,
+                    "is_history": False,
+                },
+            },
+        )
+        return
 
     # Emit as either user_input or output depending on role
     if role == "user":
@@ -352,12 +376,13 @@ async def emit_history_message(
                 "ts": ts,
                 "seq": store.next_seq(session.id),
                 "type": "user_input",
-                "data": {"text": content, "is_history": True},
+                "data": {"text": content, "is_history": is_history},
             },
         )
     else:
         # For assistant messages, emit thinking first (as step), then content
         if thinking:
+            thinking_text = thinking if is_history else f"Assistant (thinking): {thinking}"
             await store.emit(
                 session.id,
                 {
@@ -367,10 +392,10 @@ async def emit_history_message(
                     "type": "output",
                     "data": {
                         "stream": "combined",
-                        "text": thinking,
+                        "text": thinking_text,
                         "kind": "step",
                         "final": False,
-                        "is_history": True,
+                        "is_history": is_history,
                     },
                 },
             )
@@ -379,6 +404,7 @@ async def emit_history_message(
             # Non-final messages are shown as thinking/step
             # Only the final message is shown as final output
             kind = "final" if is_final else "step"
+            content_text = content if is_history else f"Assistant: {content}"
             await store.emit(
                 session.id,
                 {
@@ -388,10 +414,10 @@ async def emit_history_message(
                     "type": "output",
                     "data": {
                         "stream": "combined",
-                        "text": content,
+                        "text": content_text,
                         "kind": kind,
                         "final": is_final,
-                        "is_history": True,
+                        "is_history": is_history,
                     },
                 },
             )

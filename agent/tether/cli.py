@@ -308,6 +308,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Pull new messages from an attached external session",
     )
     sync_parser.add_argument("session_id", help="Session ID (prefix is fine)")
+    sync_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-emit full session history, even if already synced",
+    )
 
     # tether watch
     watch_parser = sub.add_parser(
@@ -485,6 +490,7 @@ def main(argv: list[str] | None = None) -> None:
         "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "detach", "delete", "sync",
         "watch", "git", "workspaces",
     ):
+        _apply_connection_args(args)
         _run_client(args)
     else:
         parser.print_help()
@@ -629,10 +635,7 @@ def _run_setup(args: argparse.Namespace) -> None:
 
 def _run_client(args: argparse.Namespace) -> None:
     """Handle client subcommands that talk to a running server."""
-    # Apply remote connection overrides before loading config so explicit CLI
-    # flags, active contexts, and named server profiles win over config.env.
-    _apply_connection_args(args)
-
+    # Connection args are applied in ``main()`` before dispatching here.
     # Load config so we pick up token, host, port from .env files.
     from tether.config import load_config
 
@@ -770,7 +773,7 @@ def _run_client(args: argparse.Namespace) -> None:
     elif args.command == "delete":
         cmd_delete(args.session_id)
     elif args.command == "sync":
-        cmd_sync(args.session_id)
+        cmd_sync(args.session_id, force=args.force)
     elif args.command == "watch":
         cmd_watch(args.session_id)
     elif args.command == "git":

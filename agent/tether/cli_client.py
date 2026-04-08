@@ -770,7 +770,7 @@ def cmd_input(session_id: str, text: str) -> None:
     )
 
 
-def cmd_sync(session_id: str) -> None:
+def cmd_sync(session_id: str, force: bool = False) -> None:
     """Pull new messages from an attached external session."""
     session_id = _resolve_session_id(session_id)
     if not session_id:
@@ -778,7 +778,10 @@ def cmd_sync(session_id: str) -> None:
 
     try:
         with _client() as c:
-            resp = c.post(f"/api/sessions/{session_id}/sync")
+            resp = c.post(
+                f"/api/sessions/{session_id}/sync",
+                params={"force": "true"} if force else None,
+            )
             _check_response(resp)
             result = resp.json()
     except (httpx.ConnectError, httpx.ConnectTimeout):
@@ -790,9 +793,8 @@ def cmd_sync(session_id: str) -> None:
     if synced == 0:
         print(f"Already up to date ({total} message{'s' if total != 1 else ''} total)")
     else:
-        print(
-            f"Synced {synced} new message{'s' if synced != 1 else ''} ({total} total)"
-        )
+        action = "Force-synced" if force else "Synced"
+        print(f"{action} {synced} new message{'s' if synced != 1 else ''} ({total} total)")
 
 
 def cmd_interrupt(session_id: str) -> None:

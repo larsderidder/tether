@@ -80,7 +80,12 @@ class MockBridge(BridgeInterface):
     async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
         self.status_calls.append({"session_id": session_id, "status": status, "metadata": metadata})
 
-    async def create_thread(self, session_id: str, session_name: str) -> dict:
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
         self.thread_creation_calls.append({"session_id": session_id, "session_name": session_name})
         return {"thread_id": f"thread_{session_id}", "platform": "mock"}
 

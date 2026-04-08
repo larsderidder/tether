@@ -7,7 +7,6 @@ agent-tether (the library) and Tether (the application).
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import httpx
 import structlog
@@ -86,6 +85,41 @@ def make_thread_name(
         adapter=adapter,
         max_len=64,
     )
+
+
+async def create_or_reuse_thread(
+    session_id: str,
+    session_name: str,
+    *,
+    platform: str,
+    existing_thread_id: str | None = None,
+) -> dict:
+    """Create or reuse a bridge thread with compatibility fallback.
+
+    Newer bridge implementations accept ``existing_thread_id``.
+    Older implementations do not. This wrapper keeps API requests stable
+    across bridge package upgrades by retrying without the extra argument.
+    """
+    try:
+        return await bridge_manager.create_thread(
+            session_id,
+            session_name,
+            platform=platform,
+            existing_thread_id=existing_thread_id,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "existing_thread_id" not in message:
+            raise
+        logger.warning(
+            "Bridge does not support existing_thread_id, retrying without reuse",
+            session_id=session_id,
+            platform=platform,
+        )
+        bridge = bridge_manager.get_bridge(platform)
+        if bridge is None:
+            raise RuntimeError(f"No bridge registered for platform: {platform}")
+        return await bridge.create_thread(session_id, session_name)
 
 
 def get_sessions_for_restore() -> list[dict]:
@@ -296,7 +330,7 @@ async def _list_external_sessions(**kwargs) -> list[dict]:
             f"http://localhost:{settings.port()}/api/external-sessions",
             headers=_api_headers(),
             params=kwargs,
-            timeout=10.0,
+            timeout=30.0,
         )
         response.raise_for_status()
     return response.json()
@@ -403,13 +437,14 @@ async def _git_log(session_id: str, count: int = 5) -> list:
     return response.json()
 
 
-async def _sync_session(session_id: str) -> dict:
+async def _sync_session(session_id: str, force: bool = False) -> dict:
     """Pull new messages from an attached external session."""
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"http://localhost:{settings.port()}/api/sessions/{session_id}/sync",
             headers=_api_headers(),
+            params={"force": "true"} if force else None,
             timeout=30.0,
         )
         response.raise_for_status()

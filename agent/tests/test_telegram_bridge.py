@@ -118,6 +118,63 @@ class TestTelegramBridgeIntegration:
             assert "reply_markup" in call_kwargs
 
     @pytest.mark.anyio
+    async def test_attach_uses_callers_last_list_snapshot(self, fresh_store: SessionStore) -> None:
+        """/attach should use the list the caller saw, not another user's list."""
+        from tether.bridges.telegram.bot import TelegramBridge
+        from agent_tether.base import BridgeCallbacks
+
+        external_sessions = [
+            {
+                "id": "eps-id",
+                "runner_type": "pi",
+                "directory": "/tmp/eps-web",
+                "first_prompt": "eps",
+                "last_prompt": "eps",
+            },
+            {
+                "id": "bag-id",
+                "runner_type": "pi",
+                "directory": "/tmp/bagwatch",
+                "first_prompt": "bag",
+                "last_prompt": "bag",
+            },
+        ]
+
+        callbacks = BridgeCallbacks(
+            create_session=AsyncMock(return_value={}),
+            send_input=AsyncMock(),
+            stop_session=AsyncMock(),
+            respond_to_permission=AsyncMock(return_value=True),
+            list_sessions=AsyncMock(return_value=[]),
+            get_usage=AsyncMock(return_value={}),
+            check_directory=AsyncMock(return_value={"exists": True, "path": "/tmp"}),
+            list_external_sessions=AsyncMock(return_value=external_sessions),
+            get_external_history=AsyncMock(return_value=None),
+            attach_external=AsyncMock(return_value={"id": "sess-1"}),
+        )
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+            callbacks=callbacks,
+        )
+        bridge._state.set_topic_for_session("sess-1", 12345, "Existing")
+
+        user1_update = MagicMock()
+        user1_update.effective_user.id = 111
+        user1_update.message.reply_text = AsyncMock()
+        user2_update = MagicMock()
+        user2_update.effective_user.id = 222
+        user2_update.message.reply_text = AsyncMock()
+
+        await bridge._cmd_list(user1_update, MagicMock(args=["eps-web"]))
+        await bridge._cmd_list(user2_update, MagicMock(args=["bagwatch"]))
+        await bridge._cmd_attach(user1_update, MagicMock(args=["1"]))
+
+        callbacks.attach_external.assert_called_once()
+        assert callbacks.attach_external.call_args.kwargs["external_id"] == "eps-id"
+
+    @pytest.mark.anyio
     async def test_create_thread_creates_telegram_topic(self, fresh_store: SessionStore) -> None:
         """create_thread creates a Telegram forum topic."""
         from tether.bridges.telegram.bot import TelegramBridge

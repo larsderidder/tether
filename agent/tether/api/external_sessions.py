@@ -35,6 +35,8 @@ _REPLAY_MESSAGES = 10
 _REPLAY_CONTENT_LIMIT = 300
 _REPLAY_THINKING_LIMIT = 150
 _REPLAY_TOTAL_LIMIT = 1900
+_FORCE_SYNC_REPLAY_LIMIT = 75
+_BASELINE_RECOVERY_REPLAY_LIMIT = 25
 
 
 def _get_pi_metadata(external_id: str) -> dict | None:
@@ -456,6 +458,7 @@ async def attach_to_external_session(
             thinking=msg.thinking,
             timestamp=msg.timestamp,
             is_final=is_final,
+            is_history=False,
         )
 
     # Track how many messages have been synced (turn_count = user messages only)
@@ -476,6 +479,7 @@ async def attach_to_external_session(
 @router.post("/sessions/{session_id}/sync", response_model=SyncResult)
 async def sync_external_session(
     session_id: str,
+    force: bool = Query(False),
     _: None = Depends(require_token),
 ) -> SyncResult:
     """Sync new messages from the attached external session.
@@ -524,21 +528,43 @@ async def sync_external_session(
     synced_count = store.get_synced_message_count(session_id)
     messages = detail.messages
 
-    # If synced_count is 0, the in-memory count was lost (e.g. agent restart).
-    # Since this endpoint requires an attached session, messages were already
-    # emitted during attach or normal usage. Re-initialize without re-emitting.
-    if synced_count == 0:
-        turn_count = sum(1 for m in messages if m.role == "user")
-        store.set_synced_message_count(session_id, len(messages), turn_count)
+    if force and synced_count == 0:
+        replay_count = min(len(messages), _FORCE_SYNC_REPLAY_LIMIT)
+        start_idx = max(0, len(messages) - replay_count)
         logger.info(
-            "Initialized sync count for active session",
+            "Force sync requested without baseline; replaying recent history window",
             session_id=session_id,
             total_messages=len(messages),
-            turn_count=turn_count,
+            replay_messages=replay_count,
         )
-        return SyncResult(synced=0, total=len(messages))
-
-    new_messages = messages[synced_count:]
+        new_messages = messages[start_idx:]
+        base_idx = start_idx
+    elif force:
+        logger.info(
+            "Force sync requested with existing baseline; syncing only new messages",
+            session_id=session_id,
+            synced_count=synced_count,
+            total_messages=len(messages),
+        )
+        new_messages = messages[synced_count:]
+        base_idx = synced_count
+    # If synced_count is 0, the in-memory count was likely lost (for example
+    # after a restart). Replay a small recent window so users can recover
+    # context with plain `!sync` instead of getting a confusing "up to date".
+    elif synced_count == 0:
+        replay_count = min(len(messages), _BASELINE_RECOVERY_REPLAY_LIMIT)
+        start_idx = max(0, len(messages) - replay_count)
+        logger.info(
+            "Sync baseline missing; replaying recent history window",
+            session_id=session_id,
+            total_messages=len(messages),
+            replay_messages=replay_count,
+        )
+        new_messages = messages[start_idx:]
+        base_idx = start_idx
+    else:
+        new_messages = messages[synced_count:]
+        base_idx = synced_count
 
     if not new_messages:
         logger.info("No new messages to sync", session_id=session_id)
@@ -549,7 +575,7 @@ async def sync_external_session(
         is_final = False
         if msg.role == "assistant":
             # Check if this is the last assistant message before a user message or end
-            next_idx = synced_count + i + 1
+            next_idx = base_idx + i + 1
             if next_idx >= len(messages) or messages[next_idx].role == "user":
                 is_final = True
 
@@ -560,6 +586,7 @@ async def sync_external_session(
             thinking=msg.thinking,
             timestamp=msg.timestamp,
             is_final=is_final,
+            is_history=False,
         )
 
     # Update synced count

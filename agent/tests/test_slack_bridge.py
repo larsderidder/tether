@@ -1,6 +1,6 @@
 """Tests for Slack bridge (Phase 4 PoC)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,6 +27,27 @@ def _mock_callbacks(**overrides) -> BridgeCallbacks:
     return BridgeCallbacks(**defaults)
 
 
+def test_normalize_slack_output_text_converts_markdown_lists() -> None:
+    """Dash-based lists are converted to bullet characters for stable rendering."""
+    from tether.bridges.slack.bot import _normalize_slack_output_text
+
+    text = (
+        "I will give phone-friendly summaries by default:\n"
+        "- lead with the answer first\n"
+        "- include only important findings\n"
+        "- avoid dumping raw tool output unless you ask\n"
+        "- call out clearly when I need action from you"
+    )
+
+    normalized = _normalize_slack_output_text(text)
+
+    assert "- lead with the answer first" not in normalized
+    assert "• lead with the answer first" in normalized
+    assert "• include only important findings" in normalized
+    assert "• avoid dumping raw tool output unless you ask" in normalized
+    assert "• call out clearly when I need action from you" in normalized
+
+
 class TestSlackBridgePoC:
     """Test Slack bridge PoC implementation."""
 
@@ -48,7 +69,7 @@ class TestSlackBridgePoC:
 
     @pytest.mark.anyio
     async def test_thread_names_are_unique_like_telegram(
-        self, fresh_store: SessionStore
+        self, fresh_store: SessionStore, tmp_path
     ) -> None:
         """Second thread with same directory gets 'Name 2'."""
         from tether.bridges.slack.bot import SlackBridge
@@ -59,7 +80,13 @@ class TestSlackBridgePoC:
             {"ok": True, "ts": "2"},
         ]
 
-        bridge = SlackBridge(bot_token="xoxb-test-token", channel_id="C01234567")
+        from agent_tether.base import BridgeConfig
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            config=BridgeConfig(data_dir=str(tmp_path)),
+        )
         bridge._client = mock_client
 
         name1 = bridge._make_external_thread_name(directory="/repo", session_id="sess_1")
@@ -95,10 +122,17 @@ class TestSlackBridgePoC:
         bridge._thread_ts[session.id] = "1234567890.123456"  # Register thread
 
         # Send output
-        await bridge.on_output(session.id, "Test Slack output")
+        await bridge.on_output(
+            session.id,
+            "Summary:\n- first item\n- second item\n- third item",
+        )
 
         # Verify message was sent to Slack thread
         assert mock_client.chat_postMessage.called
+        call_kwargs = mock_client.chat_postMessage.call_args.kwargs
+        assert "• first item" in call_kwargs["text"]
+        assert "• second item" in call_kwargs["text"]
+        assert "• third item" in call_kwargs["text"]
 
     @pytest.mark.anyio
     async def test_create_thread_creates_slack_thread(
@@ -192,6 +226,50 @@ class TestSlackBridgePoC:
         assert "deny: <reason>" in call_kwargs["text"]
         # Should track pending permission
         assert bridge.get_pending_permission(session.id) is request
+
+    @pytest.mark.anyio
+    async def test_attach_uses_callers_last_list_snapshot(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """!attach should use the list the caller saw, not another user's list."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        external_sessions = [
+            {
+                "id": "eps-id",
+                "runner_type": "pi",
+                "directory": "/tmp/eps-web",
+                "first_prompt": "eps",
+                "last_prompt": "eps",
+            },
+            {
+                "id": "bag-id",
+                "runner_type": "pi",
+                "directory": "/tmp/bagwatch",
+                "first_prompt": "bag",
+                "last_prompt": "bag",
+            },
+        ]
+
+        callbacks = _mock_callbacks(
+            list_external_sessions=AsyncMock(return_value=external_sessions),
+            attach_external=AsyncMock(return_value={"id": "sess-1"}),
+        )
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            callbacks=callbacks,
+        )
+        bridge._client = AsyncMock()
+        bridge._thread_ts["sess-1"] = "123"
+
+        await bridge._cmd_list({"user": "U1", "channel": "C1"}, "eps-web")
+        await bridge._cmd_list({"user": "U2", "channel": "C1"}, "bagwatch")
+        await bridge._cmd_attach({"user": "U1", "channel": "C1"}, "1")
+
+        callbacks.attach_external.assert_called_once()
+        assert callbacks.attach_external.call_args.kwargs["external_id"] == "eps-id"
 
     @pytest.mark.anyio
     async def test_forward_input_deny_with_reason(

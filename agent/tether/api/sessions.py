@@ -39,7 +39,7 @@ from tether.api.state import (
     session_lock,
     transition,
 )
-from tether.bridges.glue import bridge_manager, make_thread_name
+from tether.bridges.glue import create_or_reuse_thread, make_thread_name
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
@@ -203,8 +203,10 @@ async def create_session(
                 directory=normalized_directory,
                 adapter=payload.adapter,
             )
-            thread_info = await bridge_manager.create_thread(
-                session.id, thread_label, platform=payload.platform
+            thread_info = await create_or_reuse_thread(
+                session.id,
+                thread_label,
+                platform=payload.platform,
             )
             session.platform_thread_id = thread_info.get("thread_id")
         except (ValueError, RuntimeError) as e:

@@ -37,7 +37,12 @@ class ConcreteBridge(BridgeInterface):
     ) -> None:
         self.status_calls.append({"session_id": session_id, "status": status})
 
-    async def create_thread(self, session_id: str, session_name: str) -> dict:
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
         return {"thread_id": f"thread_{session_id}", "platform": "test"}
 
 

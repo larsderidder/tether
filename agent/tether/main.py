@@ -117,7 +117,7 @@ async def _init_bridges() -> None:
     slack_channel = settings.slack_channel_id()
     if slack_token and slack_channel:
         try:
-            from agent_tether import SlackBridge
+            from tether.bridges.slack.bot import SlackBridge
 
             bridge = SlackBridge(
                 bot_token=slack_token,
@@ -141,8 +141,7 @@ async def _init_bridges() -> None:
     discord_channel = settings.discord_channel_id()
     if discord_token:
         try:
-            from agent_tether import DiscordBridge
-            from agent_tether.discord.bot import DiscordConfig
+            from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
 
             bridge = DiscordBridge(
                 bot_token=discord_token,

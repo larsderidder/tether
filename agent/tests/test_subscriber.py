@@ -32,7 +32,12 @@ class FakeBridge(BridgeInterface):
     async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
         self.status_calls.append({"session_id": session_id, "status": status, "metadata": metadata})
 
-    async def create_thread(self, session_id: str, session_name: str) -> dict:
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
         return {"thread_id": f"t_{session_id}", "platform": "fake"}
 
     async def on_typing(self, session_id: str) -> None:
