@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 
 import structlog
 
@@ -19,8 +20,11 @@ logger = structlog.get_logger(__name__)
 
 def _parse_ts(value: str) -> float | None:
     try:
-        return time.mktime(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
-    except Exception:
+        dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        return dt.timestamp()
+    except (TypeError, ValueError):
         return None
 
 

@@ -184,6 +184,10 @@ _SYSTEMD_SERVICE_NAME = "tether"
 # ---------------------------------------------------------------------------
 
 
+_SSH_KEY_PATH = "~/.ssh/tether_ed25519"
+_SSH_KEY_COMMENT = "tether"
+
+
 @dataclass
 class ServerInitResult:
     """Outcome of a ``server init`` run."""
@@ -193,6 +197,7 @@ class ServerInitResult:
     port: int
     user: str | None
     token: str
+    ssh_public_key: str | None = None
     steps_completed: list[str] = field(default_factory=list)
     steps_skipped: list[str] = field(default_factory=list)
 
@@ -314,6 +319,9 @@ def run_server_init(
         log=log,
         result=result,
     )
+
+    # --- Step 9: provision SSH key for git ---------------------------------
+    _provision_ssh_key(host, user=user, log=log, result=result)
 
     return result
 
@@ -589,3 +597,63 @@ def _register_locally(
     write_server(alias, entry, path=path)
     result.steps_completed.append("register_locally")
     log(f"  Registered '{alias}' in servers.yaml")
+
+
+def _provision_ssh_key(
+    host: str,
+    *,
+    user: str | None,
+    log: Callable[[str], None],
+    result: ServerInitResult,
+) -> None:
+    """Generate an ed25519 SSH key on the remote if one does not already exist.
+
+    Stores the public key in ``result.ssh_public_key``.  Skips silently if
+    key generation is not available (e.g. ssh-keygen missing).
+    """
+    log("Provisioning SSH key for git...")
+
+    pub_key = get_ssh_public_key(host, user=user)
+    if pub_key:
+        log("  SSH key already exists, reusing")
+        result.ssh_public_key = pub_key
+        result.steps_skipped.append("ssh_keygen")
+        return
+
+    # Generate a new ed25519 key, no passphrase.
+    rc, _, stderr = ssh_run(
+        host,
+        f"ssh-keygen -t ed25519 -C '{_SSH_KEY_COMMENT}' -f {_SSH_KEY_PATH} -N '' -q",
+        user=user,
+        quiet=True,
+    )
+    if rc != 0:
+        log(f"  Warning: ssh-keygen failed ({stderr.strip()[:120]}). Skipping.")
+        result.steps_skipped.append("ssh_keygen")
+        return
+
+    pub_key = get_ssh_public_key(host, user=user)
+    if pub_key:
+        result.ssh_public_key = pub_key
+        result.steps_completed.append("ssh_keygen")
+        log("  SSH key generated")
+    else:
+        log("  Warning: key generated but could not read public key. Skipping.")
+        result.steps_skipped.append("ssh_keygen")
+
+
+def get_ssh_public_key(host: str, *, user: str | None = None) -> str | None:
+    """Return the Tether SSH public key from a remote server, or None.
+
+    Reads ``~/.ssh/tether_ed25519.pub`` via SSH.  Returns None if the file
+    does not exist or the connection fails.
+    """
+    rc, out, _ = ssh_run(
+        host,
+        f"cat {_SSH_KEY_PATH}.pub 2>/dev/null",
+        user=user,
+        quiet=True,
+    )
+    if rc == 0 and out.strip():
+        return out.strip()
+    return None
