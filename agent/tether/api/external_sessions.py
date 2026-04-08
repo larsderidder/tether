@@ -37,13 +37,46 @@ _REPLAY_THINKING_LIMIT = 150
 _REPLAY_TOTAL_LIMIT = 1900
 
 
-def _format_replay(messages: list) -> str | None:
+def _get_pi_metadata(external_id: str) -> dict | None:
+    """Fetch model and thinking level for a pi session."""
+    try:
+        from agent_sessions.providers.pi import (
+            _find_session_file,
+            get_pi_session_model,
+            get_pi_session_thinking_level,
+        )
+
+        session_file = _find_session_file(external_id)
+        if not session_file:
+            return None
+        model_info = get_pi_session_model(session_file)
+        thinking_level = get_pi_session_thinking_level(session_file)
+        result: dict = {}
+        if model_info:
+            result["model"] = model_info[1]  # model_id, skip provider
+        if thinking_level:
+            result["thinking_level"] = thinking_level
+        return result or None
+    except Exception:
+        return None
+
+
+def _format_replay(messages: list, metadata: dict | None = None) -> str | None:
     """Format the last N messages as a compact history replay string."""
     recent = messages[-_REPLAY_MESSAGES:] if len(messages) > _REPLAY_MESSAGES else messages
     if not recent:
         return None
 
-    lines: list[str] = [f"Recent history (last {len(recent)} messages):\n"]
+    header = f"Recent history (last {len(recent)} messages)"
+    if metadata:
+        parts = []
+        if metadata.get("model"):
+            parts.append(metadata["model"])
+        if metadata.get("thinking_level"):
+            parts.append(f"thinking: {metadata['thinking_level']}")
+        if parts:
+            header += f" — {', '.join(parts)}"
+    lines: list[str] = [header + ":\n"]
     for i, msg in enumerate(recent, 1):
         role = (msg.role if hasattr(msg, "role") else msg.get("role", "")).lower()
         prefix = "\U0001f464" if role == "user" else ("\U0001f916" if role == "assistant" else "?")
@@ -248,7 +281,6 @@ async def attach_to_external_session(
             # unless force=True is set in the payload (not yet exposed — for
             # now just report the existing binding clearly).
             if payload.platform and existing_session.platform and existing_session.platform != payload.platform:
-                from tether.api.errors import raise_http_error
                 raise_http_error(
                     "ALREADY_BOUND",
                     f"Session is already bound to {existing_session.platform}. "
@@ -259,13 +291,17 @@ async def attach_to_external_session(
                 existing_session.platform = payload.platform
                 store.update_session(existing_session)
                 try:
-                    from tether.bridges.glue import bridge_manager, make_thread_name
+                    from tether.bridges.glue import (
+                        bridge_manager,
+                        create_or_reuse_thread,
+                        make_thread_name,
+                    )
 
                     thread_label = make_thread_name(
                         directory=existing_session.directory or "",
                         runner_type=existing_session.runner_type or "",
                     )
-                    thread_info = await bridge_manager.create_thread(
+                    thread_info = await create_or_reuse_thread(
                         existing_session.id,
                         thread_label,
                         platform=payload.platform,
@@ -286,7 +322,8 @@ async def attach_to_external_session(
                                 limit=_REPLAY_MESSAGES,
                             )
                             if hist:
-                                replay = _format_replay(hist.messages)
+                                pi_meta = _get_pi_metadata(existing_external_id) if parsed_runner_type == ExternalRunnerType.PI else None
+                                replay = _format_replay(hist.messages, metadata=pi_meta)
                                 if replay:
                                     await bridge_manager.send_replay(
                                         existing_session.id, replay, platform=payload.platform
@@ -356,13 +393,17 @@ async def attach_to_external_session(
         session.platform = payload.platform
         store.update_session(session)
         try:
-            from tether.bridges.glue import bridge_manager, make_thread_name
+            from tether.bridges.glue import (
+                bridge_manager,
+                create_or_reuse_thread,
+                make_thread_name,
+            )
 
             thread_label = make_thread_name(
                 directory=normalized_directory,
                 runner_type=session.runner_type,
             )
-            thread_info = await bridge_manager.create_thread(
+            thread_info = await create_or_reuse_thread(
                 session.id,
                 thread_label,
                 platform=payload.platform,
@@ -373,11 +414,13 @@ async def attach_to_external_session(
             session.platform_thread_id = new_thread_id
 
             # Only replay history into genuinely new threads.
-            replay = _format_replay(detail.messages) if is_new_thread else None
-            if replay:
-                await bridge_manager.send_replay(
-                    session.id, replay, platform=payload.platform
-                )
+            if is_new_thread:
+                pi_meta = _get_pi_metadata(external_id) if parsed_runner_type == ExternalRunnerType.PI else None
+                replay = _format_replay(detail.messages, metadata=pi_meta)
+                if replay:
+                    await bridge_manager.send_replay(
+                        session.id, replay, platform=payload.platform
+                    )
         except (ValueError, RuntimeError) as exc:
             store.delete_session(session.id)
             raise_http_error("VALIDATION_ERROR", str(exc), 400)
