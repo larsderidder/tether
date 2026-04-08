@@ -98,18 +98,20 @@ def _get_json(path: str, *, params: dict[str, str] | None = None) -> list | dict
 
 
 def _get_running_platforms() -> list[str]:
-    """Return all running bridge platform names."""
+    """Return running bridge platform names, sorted alphabetically."""
     try:
         with _client() as c:
             resp = c.get("/api/status/bridges")
             if resp.status_code != 200:
                 return []
             data = resp.json()
-        return [
-            b["platform"]
+
+        running = {
+            b.get("platform")
             for b in data.get("bridges", [])
-            if b.get("status") == "running"
-        ]
+            if b.get("status") == "running" and b.get("platform")
+        }
+        return sorted(running, key=str.casefold)
     except Exception:
         return []
 

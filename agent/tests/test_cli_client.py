@@ -242,12 +242,13 @@ class TestCmdAttach:
             "name": "Fix the bug",
             "directory": "/tmp",
         }
+        # Intentionally unsorted API response order.
         two_bridges = _mock_response(
             200,
             {
                 "bridges": [
-                    {"platform": "discord", "status": "running"},
                     {"platform": "telegram", "status": "running"},
+                    {"platform": "discord", "status": "running"},
                 ]
             },
         )
@@ -261,6 +262,9 @@ class TestCmdAttach:
 
         out = capsys.readouterr().out
         assert "new-session-id" in out
+        assert "1) discord" in out
+        assert "2) telegram" in out
+        assert out.index("1) discord") < out.index("2) telegram")
 
 
 # ---------------------------------------------------------------------------
