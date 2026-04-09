@@ -104,7 +104,12 @@ def make_log_redactor(*, replacement: str = "[REDACTED]") -> Callable[[Any, str,
     """Create a structlog processor that redacts secrets from event_dict."""
 
     # Redact bearer tokens even when the key is not a known sensitive keyword.
-    string_rules: list[str] = [r"Bearer\s+\S+"]
+    # Also redact Telegram bot token patterns, both raw (`123:abc`) and in Bot API URLs.
+    string_rules: list[str] = [
+        r"Bearer\s+\S+",
+        r"(?<=/bot)\d{6,}:[A-Za-z0-9_-]{20,}",
+        r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b",
+    ]
 
     # Redact exact secret values if they appear anywhere in a string payload.
     for secret in _collect_exact_secrets():
