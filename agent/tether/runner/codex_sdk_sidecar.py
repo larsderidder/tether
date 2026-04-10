@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import re
 import socket
 import time
 import urllib.parse
@@ -73,7 +74,9 @@ class SidecarRunner:
 
         try:
             await self._post_json("/sessions/start", payload)
-        except RunnerUnavailableError as exc:
+        except (RunnerUnavailableError, RuntimeError) as exc:
+            if not self._should_fallback_to_cli(exc):
+                raise
             logger.warning(
                 "Codex sidecar unavailable; falling back to Codex CLI",
                 session_id=session_id,
@@ -99,7 +102,9 @@ class SidecarRunner:
         payload = {"session_id": session_id, "text": text}
         try:
             await self._post_json("/sessions/input", payload)
-        except RunnerUnavailableError as exc:
+        except (RunnerUnavailableError, RuntimeError) as exc:
+            if not self._should_fallback_to_cli(exc):
+                raise
             logger.warning(
                 "Codex sidecar unavailable during input; using Codex CLI",
                 session_id=session_id,
@@ -405,6 +410,16 @@ class SidecarRunner:
                 "INTERNAL_ERROR",
                 event.get("message", "Unknown error"),
             )
+
+    def _should_fallback_to_cli(self, exc: Exception) -> bool:
+        if isinstance(exc, RunnerUnavailableError):
+            return True
+        if not isinstance(exc, RuntimeError):
+            return False
+        match = re.search(r"Sidecar request failed:\s*(\d{3})", str(exc))
+        if not match:
+            return False
+        return int(match.group(1)) in {404, 405, 501}
 
     def _build_cli_command(
         self,

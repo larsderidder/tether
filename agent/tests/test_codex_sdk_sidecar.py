@@ -198,6 +198,54 @@ async def test_codex_runner_falls_back_to_cli_on_start(monkeypatch, runner):
 
 
 @pytest.mark.anyio
+async def test_codex_runner_falls_back_to_cli_on_405_sidecar_response(
+    monkeypatch, runner
+):
+    runner, session, events = runner
+    fake_proc = _FakeProcess(
+        [
+            {"type": "thread.started", "thread_id": "thread_405"},
+            {
+                "type": "item.completed",
+                "item": {"id": "item_0", "type": "agent_message", "text": "ok"},
+            },
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 1,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 1,
+                },
+            },
+        ],
+        block=False,
+    )
+    spawned: list[tuple[tuple, dict]] = []
+
+    async def _create_subprocess(*args, **kwargs):
+        spawned.append((args, kwargs))
+        return fake_proc
+
+    monkeypatch.setattr(
+        runner,
+        "_post_json",
+        AsyncMock(
+            side_effect=RuntimeError(
+                "Sidecar request failed: 405 Request method must be `GET`"
+            )
+        ),
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _create_subprocess)
+
+    await runner.start(session.id, "hello from tether", approval_choice=2)
+    await asyncio.sleep(0.05)
+
+    assert spawned
+    events.on_header.assert_awaited_once()
+    assert events.on_header.await_args.kwargs["thread_id"] == "thread_405"
+
+
+@pytest.mark.anyio
 async def test_codex_runner_cli_resume_uses_runner_session_id(
     monkeypatch, runner, fresh_store
 ):
