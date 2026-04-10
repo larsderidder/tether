@@ -1,5 +1,10 @@
 """Tests for Telegram formatting utilities."""
 
+from tether.bridges.rich_output import (
+    parse_output_segments,
+    render_discord_messages,
+    render_telegram_messages,
+)
 from tether.bridges.telegram.formatting import (
     chunk_message,
     escape_markdown,
@@ -195,3 +200,64 @@ class TestEscapeMarkdown:
         result = escape_markdown("[link](url)")
         assert "\\[" in result
         assert "\\(" in result
+
+
+class TestRichOutputFormatting:
+    """Test semantic formatting for bridge output."""
+
+    def test_parse_output_segments_classifies_tool_blocks(self) -> None:
+        segments = parse_output_segments(
+            "[tool: bash]\n"
+            "[bash] pwd\n"
+            "/tmp/demo\n"
+            "[result] ok"
+        )
+
+        assert [segment.kind for segment in segments] == [
+            "tool_call",
+            "tool_output",
+            "result",
+        ]
+        assert segments[1].label == "bash"
+        assert "/tmp/demo" in segments[1].text
+
+    def test_parse_output_segments_keeps_assistant_text_plain(self) -> None:
+        segments = parse_output_segments("Final answer")
+
+        assert [segment.kind for segment in segments] == ["assistant"]
+        assert segments[0].text == "Final answer"
+
+    def test_render_discord_messages_wraps_tool_output_in_code_block(self) -> None:
+        messages = render_discord_messages("[tool: bash]\n[bash] pwd\n/tmp/demo")
+
+        assert messages[0] == "🔧 **Tool call** `bash`"
+        assert messages[1].startswith("📥 **Tool output** `bash`\n```text\n")
+        assert "/tmp/demo" in messages[1]
+
+    def test_render_discord_messages_normalizes_markdown_lists(self) -> None:
+        messages = render_discord_messages(
+            "Summary:\n- first item\n- second item\n1. third item\n2. fourth item"
+        )
+
+        assert messages == [
+            "Summary:\n• first item\n• second item\n1) third item\n2) fourth item"
+        ]
+
+    def test_render_telegram_messages_formats_tool_output_as_pre(self) -> None:
+        messages = render_telegram_messages("[error] invalid_grant")
+
+        assert messages == [
+            "⚠️ <b>Tool error</b>\n<pre>invalid_grant</pre>"
+        ]
+
+    def test_render_discord_messages_splits_explicit_assistant_marker(self) -> None:
+        messages = render_discord_messages(
+            "[notify] loki extension: no targets configured\n"
+            "[assistant] Perfect. 👌 I am ready when you are. Send the first issue and I will jump in"
+        )
+
+        assert messages[0].startswith("📥 **Tool output** `notify`\n```text\n")
+        assert "loki extension: no targets configured" in messages[0]
+        assert messages[1] == (
+            "Perfect. 👌 I am ready when you are. Send the first issue and I will jump in"
+        )

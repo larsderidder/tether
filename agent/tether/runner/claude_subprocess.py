@@ -47,6 +47,7 @@ class ClaudeSubprocessRunner:
         self._readers: dict[str, asyncio.Task] = {}
         self._permission_modes: dict[str, str] = {}
         self._pending_inputs: dict[str, list[str]] = {}
+        self._assistant_marker_needed: dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # Runner protocol
@@ -141,6 +142,7 @@ class ClaudeSubprocessRunner:
 
         self._processes.pop(session_id, None)
         self._pending_inputs.pop(session_id, None)
+        self._assistant_marker_needed.pop(session_id, None)
         store.clear_stop_requested(session_id)
         return 0
 
@@ -262,6 +264,7 @@ class ClaudeSubprocessRunner:
 
             # Cleanup
             self._processes.pop(session_id, None)
+            self._assistant_marker_needed.pop(session_id, None)
             store.clear_process(session_id)
 
             # Process queued inputs
@@ -365,13 +368,21 @@ class ClaudeSubprocessRunner:
 
             if btype == "text":
                 is_final_text = not has_tool_use and text_index == last_text_index
-                await self._events.on_output(
-                    session_id,
-                    "combined",
-                    block.get("text", ""),
-                    kind="final" if is_final_text else "step",
-                    is_final=is_final_text,
-                )
+                text = block.get("text", "")
+                if text:
+                    prefix = (
+                        "[assistant] "
+                        if self._assistant_marker_needed.get(session_id)
+                        else ""
+                    )
+                    await self._events.on_output(
+                        session_id,
+                        "combined",
+                        f"{prefix}{text}",
+                        kind="final" if is_final_text else "step",
+                        is_final=is_final_text,
+                    )
+                    self._assistant_marker_needed[session_id] = False
                 text_index += 1
 
             elif btype == "tool_use":
@@ -379,6 +390,7 @@ class ClaudeSubprocessRunner:
                 await self._events.on_output(
                     session_id, "combined", f"{tool_info}\n", kind="step", is_final=False,
                 )
+                self._assistant_marker_needed[session_id] = True
 
             elif btype == "tool_result":
                 content = block.get("content", "")
@@ -387,6 +399,7 @@ class ClaudeSubprocessRunner:
                 await self._events.on_output(
                     session_id, "combined", f"{prefix}{truncated}\n", kind="step", is_final=False,
                 )
+                self._assistant_marker_needed[session_id] = True
 
             elif btype == "thinking":
                 thinking = block.get("thinking", "")
@@ -394,6 +407,7 @@ class ClaudeSubprocessRunner:
                     await self._events.on_output(
                         session_id, "combined", f"[thinking] {thinking}\n", kind="step", is_final=False,
                     )
+                    self._assistant_marker_needed[session_id] = True
 
     async def _on_result(self, session_id: str, event: dict) -> None:
         input_tokens = event.get("input_tokens", 0)

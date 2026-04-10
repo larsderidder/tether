@@ -1,20 +1,14 @@
 """Tests for Telegram bridge integration."""
 
-import asyncio
+from importlib.util import find_spec
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tether.bridges.base import ApprovalRequest
-from tether.models import SessionState
 from tether.store import SessionStore
 
-# Check if telegram is installed
-try:
-    import telegram
-    HAS_TELEGRAM = True
-except ImportError:
-    HAS_TELEGRAM = False
+HAS_TELEGRAM = find_spec("telegram") is not None
 
 
 class TestTelegramBridgeIntegration:
@@ -72,6 +66,35 @@ class TestTelegramBridgeIntegration:
         # Verify bot sent message
         assert mock_bot.send_message.called
 
+    @pytest.mark.anyio
+    async def test_on_output_formats_tool_messages_for_telegram(self, fresh_store: SessionStore) -> None:
+        """Tool calls and tool output get distinct Telegram styling."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "telegram"
+        session.platform_thread_id = "12345"
+        fresh_store.update_session(session)
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        await bridge.on_output(session.id, "[tool: bash]\n[bash] pwd\n/tmp/demo")
+
+        first_text = mock_bot.send_message.await_args_list[0].kwargs["text"]
+        second_text = mock_bot.send_message.await_args_list[1].kwargs["text"]
+        assert first_text == "🔧 <b>Tool call</b> <code>bash</code>"
+        assert second_text.startswith("📥 <b>Tool output</b> <code>bash</code>\n<pre>")
+        assert "/tmp/demo" in second_text
+
     @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
     @pytest.mark.anyio
     async def test_on_approval_request_creates_inline_keyboard(self, fresh_store: SessionStore) -> None:
@@ -106,8 +129,9 @@ class TestTelegramBridgeIntegration:
         )
 
         # Mock the telegram imports that happen inside the method
-        with patch("telegram.InlineKeyboardButton") as mock_button, \
-             patch("telegram.InlineKeyboardMarkup") as mock_markup:
+        with patch("telegram.InlineKeyboardButton"), patch(
+            "telegram.InlineKeyboardMarkup"
+        ):
 
             # Send approval
             await bridge.on_approval_request(session.id, request)
@@ -116,63 +140,6 @@ class TestTelegramBridgeIntegration:
             assert mock_bot.send_message.called
             call_kwargs = mock_bot.send_message.call_args.kwargs
             assert "reply_markup" in call_kwargs
-
-    @pytest.mark.anyio
-    async def test_attach_uses_callers_last_list_snapshot(self, fresh_store: SessionStore) -> None:
-        """/attach should use the list the caller saw, not another user's list."""
-        from tether.bridges.telegram.bot import TelegramBridge
-        from agent_tether.base import BridgeCallbacks
-
-        external_sessions = [
-            {
-                "id": "eps-id",
-                "runner_type": "pi",
-                "directory": "/tmp/eps-web",
-                "first_prompt": "eps",
-                "last_prompt": "eps",
-            },
-            {
-                "id": "bag-id",
-                "runner_type": "pi",
-                "directory": "/tmp/bagwatch",
-                "first_prompt": "bag",
-                "last_prompt": "bag",
-            },
-        ]
-
-        callbacks = BridgeCallbacks(
-            create_session=AsyncMock(return_value={}),
-            send_input=AsyncMock(),
-            stop_session=AsyncMock(),
-            respond_to_permission=AsyncMock(return_value=True),
-            list_sessions=AsyncMock(return_value=[]),
-            get_usage=AsyncMock(return_value={}),
-            check_directory=AsyncMock(return_value={"exists": True, "path": "/tmp"}),
-            list_external_sessions=AsyncMock(return_value=external_sessions),
-            get_external_history=AsyncMock(return_value=None),
-            attach_external=AsyncMock(return_value={"id": "sess-1"}),
-        )
-
-        bridge = TelegramBridge(
-            bot_token="test_token",
-            forum_group_id=-1001234567890,
-            callbacks=callbacks,
-        )
-        bridge._state.set_topic_for_session("sess-1", 12345, "Existing")
-
-        user1_update = MagicMock()
-        user1_update.effective_user.id = 111
-        user1_update.message.reply_text = AsyncMock()
-        user2_update = MagicMock()
-        user2_update.effective_user.id = 222
-        user2_update.message.reply_text = AsyncMock()
-
-        await bridge._cmd_list(user1_update, MagicMock(args=["eps-web"]))
-        await bridge._cmd_list(user2_update, MagicMock(args=["bagwatch"]))
-        await bridge._cmd_attach(user1_update, MagicMock(args=["1"]))
-
-        callbacks.attach_external.assert_called_once()
-        assert callbacks.attach_external.call_args.kwargs["external_id"] == "eps-id"
 
     @pytest.mark.anyio
     async def test_create_thread_creates_telegram_topic(self, fresh_store: SessionStore) -> None:

@@ -40,6 +40,23 @@ def _get_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _get_int_set(name: str) -> set[int]:
+    """Parse a comma-separated list of integer IDs."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return out
+
+
 class Settings:
     """Centralized settings for the Tether agent.
 
@@ -161,129 +178,6 @@ class Settings:
     # Session Settings
     # -------------------------------------------------------------------------
 
-    # -------------------------------------------------------------------------
-    # Workspace Settings
-    # -------------------------------------------------------------------------
-
-    @staticmethod
-    def workspace_dir() -> str:
-        """Root directory for managed workspaces (cloned repos).
-
-        Env: TETHER_WORKSPACE_DIR
-        When unset, defaults to {data_dir}/workspaces/.
-        """
-        return _get("TETHER_WORKSPACE_DIR")
-
-    @staticmethod
-    def git_clone_timeout() -> int:
-        """Timeout in seconds for git clone operations.
-
-        Env: TETHER_GIT_CLONE_TIMEOUT (default: 120)
-        """
-        return _get_int("TETHER_GIT_CLONE_TIMEOUT", default=120)
-
-    @staticmethod
-    def git_fetch_timeout() -> int:
-        """Timeout in seconds for git fetch operations on shared clones.
-
-        Env: TETHER_GIT_FETCH_TIMEOUT (default: 60)
-        """
-        return _get_int("TETHER_GIT_FETCH_TIMEOUT", default=60)
-
-    @staticmethod
-    def git_fetch_cache_seconds() -> int:
-        """Minimum seconds between fetches for the same shared clone.
-
-        If a fetch for a shared clone ran less than this many seconds ago, the
-        next call to _fetch_origin() is skipped.  Set to 0 to disable caching.
-
-        Env: TETHER_GIT_FETCH_CACHE_SECONDS (default: 300)
-        """
-        return _get_int("TETHER_GIT_FETCH_CACHE_SECONDS", default=300)
-
-    @staticmethod
-    def repo_retention_days() -> int:
-        """Days to keep a shared clone after its last worktree is removed.
-
-        Shared clones with zero active worktrees that have not been used for
-        longer than this period are eligible for automatic cleanup.
-
-        Env: TETHER_REPO_RETENTION_DAYS (default: 7)
-        """
-        return _get_int("TETHER_REPO_RETENTION_DAYS", default=7)
-
-    @staticmethod
-    def workspace_max_disk_gb() -> float | None:
-        """Optional disk-usage warning threshold for managed workspaces (GB).
-
-        When set and total workspace disk usage exceeds this value, a warning
-        is included in the ``GET /api/status/workspaces`` response.
-
-        Env: TETHER_WORKSPACE_MAX_DISK_GB (default: unset / no limit)
-        """
-        raw = _get("TETHER_WORKSPACE_MAX_DISK_GB")
-        if not raw:
-            return None
-        try:
-            return float(raw)
-        except ValueError:
-            return None
-
-    @staticmethod
-    def git_auto_branch() -> bool:
-        """Auto-create a working branch after cloning a repo for a session.
-
-        When enabled, a branch named ``tether/{short_session_id}`` is created
-        and checked out after every clone-based session creation.  This keeps
-        checkpoint commits off the default branch.
-
-        Env: TETHER_GIT_AUTO_BRANCH (default: 0)
-        """
-        return _get_bool("TETHER_GIT_AUTO_BRANCH", default=False)
-
-    @staticmethod
-    def git_branch_pattern() -> str:
-        """Pattern used to name auto-created working branches.
-
-        The placeholder ``{session_id}`` is replaced with the last 6 characters
-        of the session ID.
-
-        Env: TETHER_GIT_BRANCH_PATTERN (default: tether/{session_id})
-        """
-        return _get("TETHER_GIT_BRANCH_PATTERN", default="tether/{session_id}")
-
-    @staticmethod
-    def git_auto_checkpoint() -> bool:
-        """Auto-commit all changes after each agent turn completes (opt-in).
-
-        When enabled, Tether creates a checkpoint commit with message
-        "[tether] checkpoint after turn N" whenever the agent finishes a turn
-        and there are uncommitted changes in a git workspace.
-
-        Env: TETHER_GIT_AUTO_CHECKPOINT (default: 0)
-        """
-        return _get_bool("TETHER_GIT_AUTO_CHECKPOINT", default=False)
-
-    @staticmethod
-    def git_user_name() -> str:
-        """Git user.name applied to cloned workspaces.
-
-        Env: TETHER_GIT_USER_NAME (default: Tether)
-        """
-        return _get("TETHER_GIT_USER_NAME", default="Tether")
-
-    @staticmethod
-    def git_user_email() -> str:
-        """Git user.email applied to cloned workspaces.
-
-        Env: TETHER_GIT_USER_EMAIL (default: tether@localhost)
-        """
-        return _get("TETHER_GIT_USER_EMAIL", default="tether@localhost")
-
-    # -------------------------------------------------------------------------
-    # Session Settings
-    # -------------------------------------------------------------------------
-
     @staticmethod
     def session_retention_days() -> int:
         """Number of days to retain completed sessions before pruning.
@@ -313,12 +207,173 @@ class Settings:
         return _get_int("TETHER_AGENT_BRIDGE_ERROR_DEBOUNCE_SECONDS", default=30)
 
     @staticmethod
+    def bridge_reaction_new_session_enabled() -> bool:
+        """Enable the `!new` plus checkmark reaction shortcut in Slack/Discord.
+
+        When enabled, a top-level control-channel message whose first line starts
+        with ``!new`` can create and start a new session when reacted to with the
+        configured emoji.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED (default: 1)
+        """
+        return _get_bool("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", default=True)
+
+    @staticmethod
+    def bridge_reaction_new_session_emoji() -> str:
+        """Emoji or reaction name used to trigger the new-session shortcut.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI (default: ✅)
+        """
+        return _get("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", default="✅")
+
+    @staticmethod
+    def bridge_reaction_new_session_allow_plain_messages() -> bool:
+        """Allow plain reacted control-channel messages to create new sessions.
+
+        When enabled, a top-level reacted control-channel message that does not
+        start with ``!`` uses its full text as the initial prompt. The session
+        runs in the Tether server's current working directory and uses the
+        configured default adapter.
+
+        Env: TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES (default: 0)
+        """
+        return _get_bool(
+            "TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES",
+            default=False,
+        )
+
+    @staticmethod
+    def debug_attach_logs() -> bool:
+        """Attach diagnostic text files for bridge error delivery.
+
+        When enabled, Slack and Discord error notifications upload a diagnostic
+        bundle instead of emitting only a plain text status message.
+
+        Env: TETHER_DEBUG_ATTACH_LOGS (default: 1)
+        """
+        return _get_bool("TETHER_DEBUG_ATTACH_LOGS", default=True)
+
+    @staticmethod
+    def git_auto_checkpoint() -> bool:
+        """Auto-commit dirty git worktrees after each completed turn.
+
+        Env: TETHER_GIT_AUTO_CHECKPOINT (default: 0)
+        """
+        return _get_bool("TETHER_GIT_AUTO_CHECKPOINT", default=False)
+
+    @staticmethod
+    def git_auto_branch() -> bool:
+        """Auto-create a working branch for cloned workspaces.
+
+        Env: TETHER_GIT_AUTO_BRANCH (default: 0)
+        """
+        return _get_bool("TETHER_GIT_AUTO_BRANCH", default=False)
+
+    @staticmethod
+    def git_branch_pattern() -> str:
+        """Branch name pattern for auto-created working branches.
+
+        Env: TETHER_GIT_BRANCH_PATTERN (default: tether/{session_id})
+        """
+        return _get("TETHER_GIT_BRANCH_PATTERN", default="tether/{session_id}")
+
+    @staticmethod
+    def git_fetch_cache_seconds() -> int:
+        """Per-repo fetch cache TTL in seconds.
+
+        Env: TETHER_GIT_FETCH_CACHE_SECONDS (default: 300)
+        """
+        return _get_int("TETHER_GIT_FETCH_CACHE_SECONDS", default=300)
+
+    @staticmethod
+    def git_fetch_timeout() -> int:
+        """Timeout for `git fetch origin` in seconds.
+
+        Env: TETHER_GIT_FETCH_TIMEOUT (default: 30)
+        """
+        return _get_int("TETHER_GIT_FETCH_TIMEOUT", default=30)
+
+    @staticmethod
+    def repo_retention_days() -> int:
+        """Days to keep unused shared repo clones before pruning.
+
+        Env: TETHER_REPO_RETENTION_DAYS (default: 30)
+        """
+        return _get_int("TETHER_REPO_RETENTION_DAYS", default=30)
+
+    @staticmethod
+    def workspace_max_disk_gb() -> float | None:
+        """Optional workspace disk usage warning threshold in gigabytes.
+
+        Env: TETHER_WORKSPACE_MAX_DISK_GB
+        """
+        value = os.environ.get("TETHER_WORKSPACE_MAX_DISK_GB", "").strip()
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 
         Env: TETHER_AGENT_TURN_TIMEOUT_SECONDS (default: 0)
         """
         return _get_int("TETHER_AGENT_TURN_TIMEOUT_SECONDS", default=0)
+
+    # -------------------------------------------------------------------------
+    # SSH Access Settings
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def ssh_enabled() -> bool:
+        """Enable the optional SSH control server.
+
+        Env: TETHER_SSH_ENABLED (default: 0)
+        """
+        return _get_bool("TETHER_SSH_ENABLED", default=False)
+
+    @staticmethod
+    def ssh_host() -> str:
+        """Host to bind the SSH control server to.
+
+        Env: TETHER_SSH_HOST (default: 0.0.0.0)
+        """
+        return _get("TETHER_SSH_HOST", default="0.0.0.0")
+
+    @staticmethod
+    def ssh_port() -> int:
+        """Port to bind the SSH control server to.
+
+        Env: TETHER_SSH_PORT (default: 8822)
+        """
+        return _get_int("TETHER_SSH_PORT", default=8822)
+
+    @staticmethod
+    def ssh_host_key_path() -> str:
+        """Path to the SSH host private key.
+
+        Env: TETHER_SSH_HOST_KEY_PATH
+        Default: <data_dir>/ssh_host_ed25519_key
+        """
+        configured = _get("TETHER_SSH_HOST_KEY_PATH")
+        if configured:
+            return os.path.abspath(configured)
+        return os.path.join(settings.data_dir(), "ssh_host_ed25519_key")
+
+    @staticmethod
+    def ssh_authorized_keys_path() -> str:
+        """Path to the authorized client public keys file.
+
+        Env: TETHER_SSH_AUTHORIZED_KEYS_PATH
+        Default: <data_dir>/ssh_authorized_keys
+        """
+        configured = _get("TETHER_SSH_AUTHORIZED_KEYS_PATH")
+        if configured:
+            return os.path.abspath(configured)
+        return os.path.join(settings.data_dir(), "ssh_authorized_keys")
 
     # -------------------------------------------------------------------------
     # Claude Runner Settings
@@ -367,6 +422,38 @@ class Settings:
         Env: TETHER_CODEX_SIDECAR_TOKEN
         """
         return _get("TETHER_CODEX_SIDECAR_TOKEN")
+
+    @staticmethod
+    def codex_sidecar_codex_bin() -> str:
+        """Optional Codex CLI path used by the direct runner fallback.
+
+        Env: TETHER_CODEX_SIDECAR_CODEX_BIN
+        """
+        return _get("TETHER_CODEX_SIDECAR_CODEX_BIN")
+
+    @staticmethod
+    def codex_sidecar_model() -> str:
+        """Optional model override for sidecar or CLI-backed Codex turns.
+
+        Env: TETHER_CODEX_SIDECAR_MODEL
+        """
+        return _get("TETHER_CODEX_SIDECAR_MODEL")
+
+    @staticmethod
+    def codex_sidecar_sandbox_mode() -> str:
+        """Optional sandbox mode override for sidecar or CLI-backed Codex turns.
+
+        Env: TETHER_CODEX_SIDECAR_SANDBOX_MODE
+        """
+        return _get("TETHER_CODEX_SIDECAR_SANDBOX_MODE")
+
+    @staticmethod
+    def codex_sidecar_approval_policy() -> str:
+        """Optional approval policy override for sidecar or CLI-backed Codex turns.
+
+        Env: TETHER_CODEX_SIDECAR_APPROVAL_POLICY
+        """
+        return _get("TETHER_CODEX_SIDECAR_APPROVAL_POLICY")
 
     @staticmethod
     def opencode_sidecar_url() -> str:
@@ -512,6 +599,20 @@ class Settings:
             return 0
 
     @staticmethod
+    def discord_guild_id() -> int:
+        """Discord guild ID used for automatic control-channel bootstrap.
+
+        Env: DISCORD_GUILD_ID
+        """
+        value = os.environ.get("DISCORD_GUILD_ID", "").strip()
+        if not value:
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
+    @staticmethod
     def discord_require_pairing() -> bool:
         """Require Discord users to pair before using the bot.
 
@@ -539,19 +640,15 @@ class Settings:
 
         Env: DISCORD_ALLOWED_USER_IDS (e.g. "123,456")
         """
-        raw = os.environ.get("DISCORD_ALLOWED_USER_IDS", "").strip()
-        if not raw:
-            return set()
-        out: set[int] = set()
-        for part in raw.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                out.add(int(part))
-            except ValueError:
-                continue
-        return out
+        return _get_int_set("DISCORD_ALLOWED_USER_IDS")
+
+    @staticmethod
+    def discord_auto_pair_user_ids() -> set[int]:
+        """Comma-separated Discord user IDs to pre-authorize as paired.
+
+        Env: DISCORD_AUTO_PAIR_USER_IDS (e.g. "123,456")
+        """
+        return _get_int_set("DISCORD_AUTO_PAIR_USER_IDS")
 
 
 # Singleton instance for convenient imports

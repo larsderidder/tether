@@ -39,6 +39,20 @@ _FORCE_SYNC_REPLAY_LIMIT = 75
 _BASELINE_RECOVERY_REPLAY_LIMIT = 25
 
 
+def _external_runner_type_for_session(session) -> ExternalRunnerType:
+    """Infer the external runner type for an attached Tether session."""
+    runner_type = str(getattr(session, "runner_type", "") or "").strip().lower()
+    adapter = str(getattr(session, "adapter", "") or "").strip().lower()
+
+    if runner_type == "pi" or adapter == "pi_rpc":
+        return ExternalRunnerType.PI
+    if runner_type == "codex" or adapter == "codex_sdk_sidecar":
+        return ExternalRunnerType.CODEX
+    if runner_type == "opencode" or adapter == "opencode":
+        return ExternalRunnerType.OPENCODE
+    return ExternalRunnerType.CLAUDE_CODE
+
+
 def _get_pi_metadata(external_id: str) -> dict | None:
     """Fetch model and thinking level for a pi session."""
     try:
@@ -318,17 +332,26 @@ async def attach_to_external_session(
                     if is_new_thread:
                         existing_external_id = store.get_runner_session_id(existing_session.id)
                         if existing_external_id:
+                            existing_runner_type = _external_runner_type_for_session(
+                                existing_session
+                            )
                             hist = get_external_session_detail(
                                 session_id=existing_external_id,
-                                runner_type=parsed_runner_type,
+                                runner_type=existing_runner_type,
                                 limit=_REPLAY_MESSAGES,
                             )
                             if hist:
-                                pi_meta = _get_pi_metadata(existing_external_id) if parsed_runner_type == ExternalRunnerType.PI else None
+                                pi_meta = (
+                                    _get_pi_metadata(existing_external_id)
+                                    if existing_runner_type == ExternalRunnerType.PI
+                                    else None
+                                )
                                 replay = _format_replay(hist.messages, metadata=pi_meta)
                                 if replay:
                                     await bridge_manager.send_replay(
-                                        existing_session.id, replay, platform=payload.platform
+                                        existing_session.id,
+                                        replay,
+                                        platform=payload.platform,
                                     )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
@@ -505,15 +528,7 @@ async def sync_external_session(
             400,
         )
 
-    # Determine external runner type based on session's runner_type
-    if session.runner_type == "codex":
-        runner_type = ExternalRunnerType.CODEX
-    elif session.runner_type == "opencode":
-        runner_type = ExternalRunnerType.OPENCODE
-    elif session.runner_type == "pi":
-        runner_type = ExternalRunnerType.PI
-    else:
-        runner_type = ExternalRunnerType.CLAUDE_CODE
+    runner_type = _external_runner_type_for_session(session)
 
     # Fetch fresh history
     detail = get_external_session_detail(
@@ -528,26 +543,18 @@ async def sync_external_session(
     synced_count = store.get_synced_message_count(session_id)
     messages = detail.messages
 
-    if force and synced_count == 0:
+    if force:
         replay_count = min(len(messages), _FORCE_SYNC_REPLAY_LIMIT)
         start_idx = max(0, len(messages) - replay_count)
         logger.info(
-            "Force sync requested without baseline; replaying recent history window",
+            "Force sync requested; replaying recent history window",
             session_id=session_id,
+            synced_count=synced_count,
             total_messages=len(messages),
             replay_messages=replay_count,
         )
         new_messages = messages[start_idx:]
         base_idx = start_idx
-    elif force:
-        logger.info(
-            "Force sync requested with existing baseline; syncing only new messages",
-            session_id=session_id,
-            synced_count=synced_count,
-            total_messages=len(messages),
-        )
-        new_messages = messages[synced_count:]
-        base_idx = synced_count
     # If synced_count is 0, the in-memory count was likely lost (for example
     # after a restart). Replay a small recent window so users can recover
     # context with plain `!sync` instead of getting a confusing "up to date".
