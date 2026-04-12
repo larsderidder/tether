@@ -14,6 +14,7 @@ from itertools import groupby
 from typing import Callable
 
 import httpx
+
 from tether.platform_defaults import recommended_default_adapter
 
 _DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
