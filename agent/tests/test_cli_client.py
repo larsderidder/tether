@@ -586,6 +586,22 @@ class TestCmdNew:
         assert "TETHER_DEFAULT_AGENT_ADAPTER" in err
         assert "-a" in err
 
+    def test_no_adapter_recommends_opencode_on_termux(self, capsys, monkeypatch):
+        error_resp = _mock_response(422, {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not configured.",
+            }
+        })
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.0")
+        with _patch_client({("POST", "/api/sessions"): error_resp}):
+            with pytest.raises(SystemExit):
+                cli_client.cmd_new("/tmp")
+
+        err = capsys.readouterr().err
+        assert "tether new . -a opencode" in err
+        assert "TETHER_DEFAULT_AGENT_ADAPTER=opencode" in err
+
     def test_new_subcommand_parsed(self, monkeypatch):
         from tether.cli import main
 

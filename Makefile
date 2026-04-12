@@ -1,4 +1,4 @@
-.PHONY: start start-codex install install-codex build-ui verify dev-ui test
+.PHONY: start start-codex start-opencode install install-codex install-opencode build-ui verify dev-ui test
 
 # =============================================================================
 # Native mode (recommended)
@@ -14,6 +14,7 @@ install-sidecars:
 	npm install --workspaces
 
 install-codex: install-sidecars
+install-opencode: install-sidecars
 
 # Build UI for production
 build-ui:
@@ -32,6 +33,10 @@ start: build-ui build-sidecars
 # Start agent + Codex sidecar locally (recommended)
 start-codex: build-ui
 	./scripts/start-codex-local.sh
+
+# Start agent with the managed OpenCode sidecar
+start-opencode: build-ui build-sidecars
+	./scripts/start-opencode-local.sh
 
 # Run UI dev server (hot reload) - run agent separately
 dev-ui:

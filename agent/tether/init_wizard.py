@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import os
 import secrets
-import shutil
 from pathlib import Path
 
 from tether.config import config_dir
+from tether.platform_defaults import recommended_default_adapter_line
 
 
 def run_wizard() -> None:
@@ -41,7 +41,7 @@ def run_wizard() -> None:
     print(f"  tether start")
     print()
     print(f"To create sessions from the CLI or UI, set a default agent adapter:")
-    print(f"  TETHER_DEFAULT_AGENT_ADAPTER=claude_auto   # or opencode, pi_rpc, codex_sdk_sidecar")
+    print(f"  {recommended_default_adapter_line()}")
     print()
     print(f"Your auth token (save this for connecting from your browser):")
     print(f"  {token}")

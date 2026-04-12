@@ -14,6 +14,7 @@ from itertools import groupby
 from typing import Callable
 
 import httpx
+from tether.platform_defaults import recommended_default_adapter
 
 _DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
 _DEFAULT_MUTATION_READ_TIMEOUT_SECONDS = 60.0
@@ -408,10 +409,11 @@ def cmd_new(
                 except Exception:
                     msg = ""
                 if "no default adapter" in msg.lower() or "not configured" in msg.lower():
+                    suggested_adapter = recommended_default_adapter()
                     print(
                         "Error: No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not set.\n"
-                        "Use -a to specify one: tether new . -a claude_auto\n"
-                        "Or set a default: echo 'TETHER_DEFAULT_AGENT_ADAPTER=claude_auto'"
+                        f"Use -a to specify one: tether new . -a {suggested_adapter}\n"
+                        f"Or set a default: echo 'TETHER_DEFAULT_AGENT_ADAPTER={suggested_adapter}'"
                         " >> ~/.config/tether/config.env",
                         file=sys.stderr,
                     )
