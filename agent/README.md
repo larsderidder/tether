@@ -65,6 +65,14 @@ Then open `http://localhost:8787`.
 The `init` wizard generates an auth token, detects your `claude` CLI, and optionally
 configures a messaging bridge. Config is saved to `~/.config/tether/config.env`.
 
+On Android or Termux, prefer `opencode` as the default adapter. The Codex CLI is
+not currently a viable default on Android arm:
+
+```bash
+echo "TETHER_DEFAULT_AGENT_ADAPTER=opencode" >> ~/.config/tether/config.env
+tether start
+```
+
 ### Typical uses
 
 1. Keep long running agent work accountable: audit output, diffs, and approvals after the fact
@@ -156,6 +164,9 @@ sidecar process automatically.
 > **Note:** The Codex and OpenCode adapters require Node.js on your PATH. The sidecar bundles
 > are included in the PyPI package and started automatically.
 
+> **Android / Termux:** use `opencode` as the default adapter unless you have a
+> platform-specific reason to do otherwise.
+
 ## Messaging Bridges
 
 Connect a messaging platform so you can monitor and control sessions from your phone. Configure
@@ -197,6 +208,7 @@ tether start --port 9000 --host 127.0.0.1
 # Client commands (talk to a running server)
 tether status                        # Server health + session summary
 tether open                          # Open web UI in browser
+tether new . -a opencode -m "..."    # Android/Termux-friendly new session
 tether list                          # List Tether sessions
 tether list -s running               # Filter by state
 tether list -d .                     # Filter by directory
@@ -229,6 +241,15 @@ kill $(cat ~/.local/share/tether/tether.pid)
 ```
 
 Or use your system's service manager (systemd, launchd, etc.).
+
+## Local Runner Shortcuts
+
+```bash
+make start-codex
+make start-opencode
+```
+
+`make start-opencode` is the direct local entrypoint for the managed OpenCode sidecar.
 
 ## Configuration
 

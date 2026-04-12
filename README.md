@@ -72,6 +72,14 @@ Open `http://localhost:8787`.
 
 `tether init` generates an auth token and optionally walks you through a messaging bridge. That is all it does. You do not need to configure an agent adapter to get started; just run your agents as usual and attach them.
 
+On Android or Termux, prefer `opencode` as the default adapter. The Codex CLI is
+not currently a viable default on Android arm:
+
+```bash
+echo "TETHER_DEFAULT_AGENT_ADAPTER=opencode" >> ~/.config/tether/config.env
+tether start
+```
+
 ### From source
 
 ```bash
@@ -123,6 +131,9 @@ Set `TETHER_DEFAULT_AGENT_ADAPTER` to use `tether new` or create sessions from t
 | `codex_sdk_sidecar` | Codex via TypeScript sidecar |
 | `pi_rpc` | Pi coding agent via JSON-RPC |
 | `litellm` | Any model via LiteLLM (experimental) |
+
+On Android or Termux, use `opencode` unless you have a platform-specific reason
+to choose something else.
 
 ## CLI
 
@@ -212,6 +223,7 @@ See `.env.example` for the full reference.
 ```bash
 make install    # Python + Node dependencies
 make start      # build UI and start
+make start-opencode   # build UI and start with the managed OpenCode sidecar
 make dev-ui     # hot-reload UI dev server (run agent separately)
 make test       # pytest
 make verify     # health check
