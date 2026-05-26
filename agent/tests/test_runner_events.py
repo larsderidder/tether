@@ -336,10 +336,10 @@ class TestOnAwaitingInput:
         assert updated.state == SessionState.ERROR
 
     @pytest.mark.anyio
-    async def test_finalizes_pending_output_with_stop_footer(
+    async def test_finalizes_pending_output_without_stop_footer(
         self, fresh_store: SessionStore, tmp_path
     ) -> None:
-        """Awaiting-input finalization appends the STOP footer and attachments."""
+        """Awaiting-input finalization keeps the report clean and publishes attachments."""
         from tether.api.runner_events import ApiRunnerEvents
 
         report = tmp_path / "report.txt"
@@ -364,20 +364,20 @@ class TestOnAwaitingInput:
         log = fresh_store.read_event_log(session.id)
         output_events = [event for event in log if event.get("type") == "output"]
         assert output_events
-        assert output_events[-1]["data"]["text"] == "Done.\nSTOP 🛑✅ 12s"
+        assert output_events[-1]["data"]["text"] == "Done."
         assert output_events[-1]["data"]["attachments"][0]["filename"] == "report.txt"
 
         output_final_events = [
             event for event in log if event.get("type") == "output_final"
         ]
         assert output_final_events
-        assert output_final_events[-1]["data"]["text"] == "Done.\nSTOP 🛑✅ 12s"
+        assert output_final_events[-1]["data"]["text"] == "Done."
 
     @pytest.mark.anyio
-    async def test_error_finalizes_pending_output_with_error_footer(
+    async def test_error_finalizes_pending_output_without_error_footer(
         self, fresh_store: SessionStore
     ) -> None:
-        """Errors finalize any pending output with the error STOP footer."""
+        """Errors finalize any pending output without adding a footer."""
         from tether.api.runner_events import ApiRunnerEvents
 
         session = fresh_store.create_session("test", "main")
@@ -397,7 +397,7 @@ class TestOnAwaitingInput:
 
         log = fresh_store.read_event_log(session.id)
         output_events = [event for event in log if event.get("type") == "output"]
-        assert output_events[-1]["data"]["text"] == "Partial final\nSTOP 🛑❌ 5s"
+        assert output_events[-1]["data"]["text"] == "Partial final"
 
 
 class TestOnMetadata:

@@ -8,11 +8,7 @@ import structlog
 
 from tether.api.state import now
 from tether.models import Session
-from tether.output_postprocess import (
-    compose_final_output,
-    duration_from_session,
-    extract_publish_attachments,
-)
+from tether.output_postprocess import compose_final_output, extract_publish_attachments
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
@@ -259,21 +255,16 @@ async def finalize_output(
     *,
     status: Literal["success", "error", "stopped"],
 ) -> None:
-    """Emit the final visible output with its STOP footer exactly once."""
+    """Emit the final visible output exactly once."""
 
     if store.is_turn_finalized(session.id):
         return
 
     pending_text, attachments, warnings = store.get_pending_final_output(session.id)
-    duration_ms = (
-        store.get_duration_ms(session.id)
-        or store.get_last_heartbeat_elapsed_ms(session.id)
-        or duration_from_session(session)
-    )
     visible_text = compose_final_output(
         pending_text or "",
         status=status,
-        duration_ms=duration_ms,
+        duration_ms=None,
         warnings=warnings,
     )
 

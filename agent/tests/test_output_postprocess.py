@@ -1,11 +1,7 @@
-"""Tests for final-output cleanup and STOP footer rendering."""
+"""Tests for final-output cleanup."""
 
 from tether.models import Session, SessionState
-from tether.output_postprocess import (
-    compose_final_output,
-    extract_publish_attachments,
-    format_duration,
-)
+from tether.output_postprocess import compose_final_output, extract_publish_attachments
 
 
 def _session_for_directory(path: str) -> Session:
@@ -62,25 +58,19 @@ class TestExtractPublishAttachments:
 
 
 class TestComposeFinalOutput:
-    def test_footer_is_appended_once(self) -> None:
+    def test_legacy_stop_footer_is_stripped(self) -> None:
         visible = compose_final_output(
             "Result\nSTOP 🛑✅ 1s",
             status="success",
             duration_ms=65_000,
         )
-        assert visible == "Result\nSTOP 🛑✅ 1m 05s"
+        assert visible == "Result"
 
-    def test_warnings_stay_above_stop_footer(self) -> None:
+    def test_warnings_are_appended(self) -> None:
         visible = compose_final_output(
             "Result",
             status="error",
             duration_ms=5_000,
             warnings=["report.md: file not found."],
         )
-        assert visible.endswith("STOP 🛑❌ 5s")
-        assert "Attachment warning: report.md: file not found." in visible
-
-    def test_duration_formatting(self) -> None:
-        assert format_duration(12_000) == "12s"
-        assert format_duration(65_000) == "1m 05s"
-        assert format_duration(3_723_000) == "1h 02m 03s"
+        assert visible == "Result\nAttachment warning: report.md: file not found."

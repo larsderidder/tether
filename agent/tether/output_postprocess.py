@@ -1,4 +1,4 @@
-"""Helpers for final-output cleanup, attachment publishing, and STOP footers."""
+"""Helpers for final-output cleanup and attachment publishing."""
 
 from __future__ import annotations
 
@@ -121,27 +121,16 @@ def compose_final_output(
     duration_ms: int | None,
     warnings: list[str] | tuple[str, ...] | None = None,
 ) -> str:
-    """Compose the final visible report text with exactly one STOP footer."""
+    """Compose the final visible report text."""
+
+    del status, duration_ms
 
     lines = _strip_existing_stop_line(text)
     if warnings:
         lines.extend(
             f"Attachment warning: {warning}" for warning in warnings if warning
         )
-    lines.append(render_stop_footer(status, duration_ms))
     return "\n".join(line for line in lines if line).strip()
-
-
-def render_stop_footer(status: str, duration_ms: int | None) -> str:
-    """Render the terminal STOP footer."""
-
-    emoji_map = {
-        "success": "🛑✅",
-        "error": "🛑❌",
-        "stopped": "🛑⏹️",
-    }
-    emoji = emoji_map.get(status, emoji_map["success"])
-    return f"STOP {emoji} {format_duration(duration_ms)}"
 
 
 def duration_from_session(session: Session) -> int | None:
@@ -157,19 +146,6 @@ def duration_from_session(session: Session) -> int | None:
     except ValueError:
         return None
     return max(0, int((datetime.now(timezone.utc) - started).total_seconds() * 1000))
-
-
-def format_duration(duration_ms: int | None) -> str:
-    """Format elapsed time for the STOP footer."""
-
-    total_seconds = max(0, int(round((duration_ms or 0) / 1000)))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m {seconds:02d}s"
-    if minutes:
-        return f"{minutes}m {seconds:02d}s"
-    return f"{seconds}s"
 
 
 def _strip_existing_stop_line(text: str) -> list[str]:
