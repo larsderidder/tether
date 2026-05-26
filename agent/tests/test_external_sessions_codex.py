@@ -64,13 +64,21 @@ async def test_attach_codex_session(
     monkeypatch.setenv("TETHER_CODEX_SIDECAR_URL", "http://localhost:8788")
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
-    rollout_path = codex_home / "sessions" / "2026" / "02" / "06" / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
     _write_rollout(rollout_path, session_id)
 
     workdir = tmp_path / "repo"
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     response = await api_client.post(
@@ -101,25 +109,33 @@ async def test_attach_codex_session(
 
 
 @pytest.mark.anyio
-async def test_attach_codex_without_sidecar_url_returns_400(
+async def test_attach_codex_without_sidecar_url_still_succeeds(
     api_client: httpx.AsyncClient,
     fresh_store: SessionStore,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """Attaching to Codex sessions without TETHER_CODEX_SIDECAR_URL should fail."""
+    """Attaching to Codex sessions should not depend on explicit sidecar env."""
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
-    rollout_path = codex_home / "sessions" / "2026" / "02" / "06" / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
     _write_rollout(rollout_path, session_id)
 
     workdir = tmp_path / "repo"
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     response = await api_client.post(
@@ -131,9 +147,13 @@ async def test_attach_codex_without_sidecar_url_returns_400(
         },
     )
 
-    assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
+    assert (
+        response.status_code == 201
+    ), f"Expected 201, got {response.status_code}: {response.text}"
     body = response.json()
-    assert "sidecar" in str(body).lower(), f"Expected 'sidecar' in response: {body}"
+    assert body["runner_type"] == "codex"
+    assert body["adapter"] == "codex_sdk_sidecar"
+    assert body["runner_session_id"] == session_id
 
 
 @pytest.mark.anyio
@@ -150,7 +170,11 @@ async def test_sync_after_restart_does_not_duplicate(
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
     rollout_path = (
-        codex_home / "sessions" / "2026" / "02" / "06"
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
         / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
     )
     _write_rollout(rollout_path, session_id)
@@ -159,6 +183,7 @@ async def test_sync_after_restart_does_not_duplicate(
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     # Step 1: Attach — emits history messages

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import structlog
 from fastapi import APIRouter, Depends, Query
 
@@ -79,7 +77,9 @@ def _get_pi_metadata(external_id: str) -> dict | None:
 
 def _format_replay(messages: list, metadata: dict | None = None) -> str | None:
     """Format the last N messages as a compact history replay string."""
-    recent = messages[-_REPLAY_MESSAGES:] if len(messages) > _REPLAY_MESSAGES else messages
+    recent = (
+        messages[-_REPLAY_MESSAGES:] if len(messages) > _REPLAY_MESSAGES else messages
+    )
     if not recent:
         return None
 
@@ -95,9 +95,17 @@ def _format_replay(messages: list, metadata: dict | None = None) -> str | None:
     lines: list[str] = [header + ":\n"]
     for i, msg in enumerate(recent, 1):
         role = (msg.role if hasattr(msg, "role") else msg.get("role", "")).lower()
-        prefix = "\U0001f464" if role == "user" else ("\U0001f916" if role == "assistant" else "?")
-        content = (msg.content if hasattr(msg, "content") else msg.get("content") or "") or ""
-        thinking = (msg.thinking if hasattr(msg, "thinking") else msg.get("thinking") or "") or ""
+        prefix = (
+            "\U0001f464"
+            if role == "user"
+            else ("\U0001f916" if role == "assistant" else "?")
+        )
+        content = (
+            msg.content if hasattr(msg, "content") else msg.get("content") or ""
+        ) or ""
+        thinking = (
+            msg.thinking if hasattr(msg, "thinking") else msg.get("thinking") or ""
+        ) or ""
         content = content.strip()
         thinking = thinking.strip()
         if content and len(content) > _REPLAY_CONTENT_LIMIT:
@@ -111,7 +119,7 @@ def _format_replay(messages: list, metadata: dict | None = None) -> str | None:
 
     text = "\n".join(lines)
     if len(text) > _REPLAY_TOTAL_LIMIT:
-        text = text[:_REPLAY_TOTAL_LIMIT - 3] + "..."
+        text = text[: _REPLAY_TOTAL_LIMIT - 3] + "..."
     return text or None
 
 
@@ -167,11 +175,6 @@ async def list_external_sessions(
         runner_type=parsed_runner_type,
         limit=limit,
     )
-
-    # Hide Codex sessions when the sidecar is not configured
-    codex_enabled = bool(os.environ.get("TETHER_CODEX_SIDECAR_URL"))
-    if not codex_enabled:
-        sessions = [s for s in sessions if s.runner_type != ExternalRunnerType.CODEX]
 
     logger.info("Found external sessions", count=len(sessions))
     return [
@@ -296,7 +299,11 @@ async def attach_to_external_session(
             # If the session is already bound to a different platform, refuse
             # unless force=True is set in the payload (not yet exposed — for
             # now just report the existing binding clearly).
-            if payload.platform and existing_session.platform and existing_session.platform != payload.platform:
+            if (
+                payload.platform
+                and existing_session.platform
+                and existing_session.platform != payload.platform
+            ):
                 raise_http_error(
                     "ALREADY_BOUND",
                     f"Session is already bound to {existing_session.platform}. "
@@ -330,7 +337,9 @@ async def attach_to_external_session(
 
                     # Only replay history into genuinely new threads.
                     if is_new_thread:
-                        existing_external_id = store.get_runner_session_id(existing_session.id)
+                        existing_external_id = store.get_runner_session_id(
+                            existing_session.id
+                        )
                         if existing_external_id:
                             existing_runner_type = _external_runner_type_for_session(
                                 existing_session
@@ -387,13 +396,6 @@ async def attach_to_external_session(
     if parsed_runner_type == ExternalRunnerType.CLAUDE_CODE:
         session.runner_type = "claude-local"
     elif parsed_runner_type == ExternalRunnerType.CODEX:
-        if not os.environ.get("TETHER_CODEX_SIDECAR_URL"):
-            raise_http_error(
-                "CODEX_SIDECAR_REQUIRED",
-                "Attaching to Codex sessions requires the Codex sidecar. "
-                "Set TETHER_CODEX_SIDECAR_URL to enable this feature.",
-                400,
-            )
         session.runner_type = "codex"
         session.adapter = "codex_sdk_sidecar"
     elif parsed_runner_type == ExternalRunnerType.OPENCODE:
@@ -440,7 +442,11 @@ async def attach_to_external_session(
 
             # Only replay history into genuinely new threads.
             if is_new_thread:
-                pi_meta = _get_pi_metadata(external_id) if parsed_runner_type == ExternalRunnerType.PI else None
+                pi_meta = (
+                    _get_pi_metadata(external_id)
+                    if parsed_runner_type == ExternalRunnerType.PI
+                    else None
+                )
                 replay = _format_replay(detail.messages, metadata=pi_meta)
                 if replay:
                     await bridge_manager.send_replay(
