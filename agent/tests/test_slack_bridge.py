@@ -134,8 +134,8 @@ class TestSlackBridgePoC:
 
         first_text = mock_client.chat_postMessage.await_args_list[0].kwargs["text"]
         second_text = mock_client.chat_postMessage.await_args_list[1].kwargs["text"]
-        assert first_text == "🔧 **Tool call** `bash`"
-        assert second_text.startswith("📥 **Tool output** `bash`\n```text\n")
+        assert first_text == "🔧 *Tool call* `bash`"
+        assert second_text.startswith("📥 *Tool output* `bash`\n```text\n")
         assert "/tmp/demo" in second_text
 
     @pytest.mark.anyio

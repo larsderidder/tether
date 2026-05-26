@@ -157,30 +157,34 @@ def _chunk_code_block(body: str, limit: int, language: str = "text") -> list[str
     return chunks or [f"{fence_open}{fence_close}"]
 
 
-def render_markdown_segments(text: str, *, limit: int) -> list[str]:
+def render_markdown_segments(text: str, *, limit: int, bold: str = "**") -> list[str]:
     """Render parsed segments to Discord or Slack friendly markdown."""
     messages: list[str] = []
     for segment in parse_output_segments(text):
         if segment.kind == "assistant":
-            messages.extend(_chunk_plain(_normalize_plain_markdown(segment.text), limit))
+            messages.extend(
+                _chunk_plain(_normalize_plain_markdown(segment.text), limit)
+            )
         elif segment.kind == "thinking":
             body = segment.text.strip() or "Thinking"
             quote = "\n".join(f"> {line}" for line in body.splitlines())
-            messages.extend(_chunk_plain(f"💭 **Thinking**\n{quote}", limit))
+            messages.extend(_chunk_plain(f"💭 {bold}Thinking{bold}\n{quote}", limit))
         elif segment.kind == "tool_call":
             messages.extend(
-                _chunk_plain(f"🔧 **Tool call** `{segment.label or 'tool'}`", limit)
+                _chunk_plain(
+                    f"🔧 {bold}Tool call{bold} `{segment.label or 'tool'}`", limit
+                )
             )
         elif segment.kind == "tool_output":
-            header = f"📥 **Tool output** `{segment.label or 'tool'}`\n"
+            header = f"📥 {bold}Tool output{bold} `{segment.label or 'tool'}`\n"
             body_chunks = _chunk_code_block(segment.text or " ", limit - len(header))
             messages.extend(header + chunk for chunk in body_chunks)
         elif segment.kind == "result":
-            header = "📥 **Tool result**\n"
+            header = f"📥 {bold}Tool result{bold}\n"
             body_chunks = _chunk_code_block(segment.text or " ", limit - len(header))
             messages.extend(header + chunk for chunk in body_chunks)
         elif segment.kind == "error":
-            header = "⚠️ **Tool error**\n"
+            header = f"⚠️ {bold}Tool error{bold}\n"
             body_chunks = _chunk_code_block(segment.text or " ", limit - len(header))
             messages.extend(header + chunk for chunk in body_chunks)
         else:
@@ -189,11 +193,15 @@ def render_markdown_segments(text: str, *, limit: int) -> list[str]:
 
 
 def render_discord_messages(text: str) -> list[str]:
+    """Render output segments for Discord."""
+
     return render_markdown_segments(text, limit=_DISCORD_LIMIT)
 
 
 def render_slack_messages(text: str) -> list[str]:
-    return render_markdown_segments(text, limit=_SLACK_LIMIT)
+    """Render output segments for Slack."""
+
+    return render_markdown_segments(text, limit=_SLACK_LIMIT, bold="*")
 
 
 def render_telegram_messages(text: str) -> list[str]:
@@ -201,7 +209,9 @@ def render_telegram_messages(text: str) -> list[str]:
     messages: list[str] = []
     for segment in parse_output_segments(text):
         if segment.kind == "assistant":
-            rendered = markdown_to_telegram_html(_normalize_plain_markdown(segment.text))
+            rendered = markdown_to_telegram_html(
+                _normalize_plain_markdown(segment.text)
+            )
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "thinking":
             body = html.escape(segment.text.strip() or "Thinking")

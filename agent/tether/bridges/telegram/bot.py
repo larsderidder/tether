@@ -42,7 +42,7 @@ class TelegramBridge(UpstreamTelegramBridge):
                     await self._app.bot.send_message(
                         chat_id=self._forum_group_id,
                         message_thread_id=topic_id,
-                        text=text[:4096],
+                        text=message[:4096],
                     )
                 except Exception:
                     logger.exception(
