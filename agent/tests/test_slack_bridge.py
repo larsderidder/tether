@@ -1,6 +1,6 @@
 """Tests for Slack bridge (Phase 4 PoC)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -108,6 +108,35 @@ class TestSlackBridgePoC:
 
         # Verify message was sent to Slack thread
         assert mock_client.chat_postMessage.called
+
+    @pytest.mark.anyio
+    async def test_on_output_formats_tool_messages_for_slack(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Tool calls and tool output get distinct Slack styling."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "slack"
+        session.platform_thread_id = "1234567890.123456"
+        fresh_store.update_session(session)
+
+        mock_client = AsyncMock()
+
+        bridge = SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+        )
+        bridge._client = mock_client
+        bridge._thread_ts[session.id] = "1234567890.123456"
+
+        await bridge.on_output(session.id, "[tool: bash]\n[bash] pwd\n/tmp/demo")
+
+        first_text = mock_client.chat_postMessage.await_args_list[0].kwargs["text"]
+        second_text = mock_client.chat_postMessage.await_args_list[1].kwargs["text"]
+        assert first_text == "🔧 *Tool call* `bash`"
+        assert second_text.startswith("📥 *Tool output* `bash`\n```text\n")
+        assert "/tmp/demo" in second_text
 
     @pytest.mark.anyio
     async def test_on_output_uploads_requested_attachments(

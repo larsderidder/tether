@@ -95,7 +95,7 @@ async def _init_bridges() -> None:
     telegram_group_id = settings.telegram_group_id()
     if telegram_token and telegram_group_id:
         try:
-            from agent_tether import TelegramBridge
+            from tether.bridges.telegram.bot import TelegramBridge
 
             bridge = TelegramBridge(
                 bot_token=telegram_token,

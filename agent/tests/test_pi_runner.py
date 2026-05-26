@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from tether.runner.pi_rpc import PiRpcRunner, _find_pi_binary
+from tether.runner.pi_rpc import (
+    PiRpcRunner,
+    _TOOL_OUTPUT_MAX_CHARS,
+    _find_pi_binary,
+)
 
 
 class FakeRunnerEvents:
@@ -216,6 +219,54 @@ class TestPiRpcEventHandling:
         assert "[error]" in events.outputs[0]["text"]
 
     @pytest.mark.anyio
+    async def test_handle_tool_execution_update_truncates_large_output(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        text = "A" * (_TOOL_OUTPUT_MAX_CHARS + 250)
+
+        event = {
+            "type": "tool_execution_update",
+            "toolCallId": "call_789",
+            "toolName": "read",
+            "partialResult": {
+                "content": [{"type": "text", "text": text}],
+            },
+        }
+        await runner._handle_event("sess1", proc, event)
+
+        assert len(events.outputs) == 1
+        assert "[read]" in events.outputs[0]["text"]
+        assert "[truncated, 250 more characters omitted]" in events.outputs[0]["text"]
+        assert len(events.outputs[0]["text"]) < len(text)
+
+    @pytest.mark.anyio
+    async def test_handle_tool_execution_end_truncates_large_output(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        text = "B" * (_TOOL_OUTPUT_MAX_CHARS + 125)
+
+        event = {
+            "type": "tool_execution_end",
+            "toolCallId": "call_999",
+            "toolName": "bash",
+            "result": {
+                "content": [{"type": "text", "text": text}],
+                "details": {},
+            },
+            "isError": False,
+        }
+        await runner._handle_event("sess1", proc, event)
+
+        assert len(events.outputs) == 1
+        assert "[result]" in events.outputs[0]["text"]
+        assert "[truncated, 125 more characters omitted]" in events.outputs[0]["text"]
+        assert len(events.outputs[0]["text"]) < len(text)
+
+    @pytest.mark.anyio
     async def test_handle_agent_start_end(self, runner_and_events):
         runner, events = runner_and_events
         proc = MagicMock()
@@ -311,6 +362,37 @@ class TestPiRpcEventHandling:
         await runner._handle_event("sess1", proc, event)
 
         assert any("Extension loaded!" in o["text"] for o in events.outputs)
+
+    @pytest.mark.anyio
+    async def test_text_delta_after_toolish_output_gets_assistant_marker(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "extension_ui_request",
+                "id": "uuid-1",
+                "method": "notify",
+                "message": "Extension loaded!",
+            },
+        )
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "delta": "Perfect. Ready when you are.",
+                },
+            },
+        )
+
+        assert events.outputs[-1]["text"] == "[assistant] Perfect. Ready when you are."
 
     @pytest.mark.anyio
     async def test_handle_failed_prompt_response(self, runner_and_events):

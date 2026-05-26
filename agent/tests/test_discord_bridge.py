@@ -79,6 +79,36 @@ class TestDiscordBridgePoC:
         assert mock_thread.send.called
 
     @pytest.mark.anyio
+    async def test_on_output_formats_tool_messages_for_discord(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Tool calls and tool output get distinct Discord styling."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        await bridge.on_output(session.id, "[tool: bash]\n[bash] pwd\n/tmp/demo")
+
+        sent_messages = [call.args[0] for call in mock_thread.send.await_args_list]
+        assert sent_messages[0] == "🔧 **Tool call** `bash`"
+        assert sent_messages[1].startswith("📥 **Tool output** `bash`\n```text\n")
+        assert "/tmp/demo" in sent_messages[1]
+
+    @pytest.mark.anyio
     async def test_on_output_restores_thread_id_from_persisted_session(
         self, fresh_store: SessionStore
     ) -> None:

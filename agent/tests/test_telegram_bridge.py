@@ -1,20 +1,14 @@
 """Tests for Telegram bridge integration."""
 
-import asyncio
+from importlib.util import find_spec
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tether.bridges.base import ApprovalRequest
-from tether.models import SessionState
 from tether.store import SessionStore
 
-# Check if telegram is installed
-try:
-    import telegram
-    HAS_TELEGRAM = True
-except ImportError:
-    HAS_TELEGRAM = False
+HAS_TELEGRAM = find_spec("telegram") is not None
 
 
 class TestTelegramBridgeIntegration:
@@ -72,6 +66,35 @@ class TestTelegramBridgeIntegration:
         # Verify bot sent message
         assert mock_bot.send_message.called
 
+    @pytest.mark.anyio
+    async def test_on_output_formats_tool_messages_for_telegram(self, fresh_store: SessionStore) -> None:
+        """Tool calls and tool output get distinct Telegram styling."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "telegram"
+        session.platform_thread_id = "12345"
+        fresh_store.update_session(session)
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        await bridge.on_output(session.id, "[tool: bash]\n[bash] pwd\n/tmp/demo")
+
+        first_text = mock_bot.send_message.await_args_list[0].kwargs["text"]
+        second_text = mock_bot.send_message.await_args_list[1].kwargs["text"]
+        assert first_text == "🔧 <b>Tool call</b> <code>bash</code>"
+        assert second_text.startswith("📥 <b>Tool output</b> <code>bash</code>\n<pre>")
+        assert "/tmp/demo" in second_text
+
     @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
     @pytest.mark.anyio
     async def test_on_approval_request_creates_inline_keyboard(self, fresh_store: SessionStore) -> None:
@@ -106,8 +129,9 @@ class TestTelegramBridgeIntegration:
         )
 
         # Mock the telegram imports that happen inside the method
-        with patch("telegram.InlineKeyboardButton") as mock_button, \
-             patch("telegram.InlineKeyboardMarkup") as mock_markup:
+        with patch("telegram.InlineKeyboardButton"), patch(
+            "telegram.InlineKeyboardMarkup"
+        ):
 
             # Send approval
             await bridge.on_approval_request(session.id, request)

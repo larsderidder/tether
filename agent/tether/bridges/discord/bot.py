@@ -24,6 +24,7 @@ from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.rich_output import render_discord_messages
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
     parse_reaction_shortcut_message,
@@ -432,7 +433,38 @@ class DiscordBridge(UpstreamDiscordBridge):
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
         self._hydrate_thread_binding(session_id)
-        await super().on_output(session_id, text, metadata=metadata)
+        if not self._client:
+            logger.warning("Discord client not initialized")
+            return
+
+        thread_id = self._thread_ids.get(session_id)
+        if not thread_id:
+            logger.warning("No Discord thread for session", session_id=session_id)
+            return
+
+        try:
+            thread = self._client.get_channel(thread_id)
+            if thread is None:
+                logger.debug(
+                    "Discord thread not in cache, fetching from API",
+                    session_id=session_id,
+                    thread_id=thread_id,
+                )
+                try:
+                    thread = await self._client.fetch_channel(thread_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to fetch Discord thread",
+                        session_id=session_id,
+                        thread_id=thread_id,
+                    )
+                    return
+            if thread:
+                for message in render_discord_messages(text) or [text]:
+                    await thread.send(message[:_DISCORD_STARTER_TEXT_LIMIT])
+        except Exception:
+            logger.exception("Failed to send Discord message", session_id=session_id)
+
         status = "done" if bool((metadata or {}).get("final")) else "streaming"
         self._update_starter_state(
             session_id,

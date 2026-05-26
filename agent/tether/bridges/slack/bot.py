@@ -12,6 +12,7 @@ from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.rich_output import render_slack_messages
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
     parse_reaction_shortcut_message,
@@ -65,7 +66,25 @@ class SlackBridge(UpstreamSlackBridge):
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
-        await super().on_output(session_id, text, metadata=metadata)
+        if not self._client:
+            logger.warning("Slack client not initialized")
+            return
+
+        thread_ts = self._thread_ts.get(session_id)
+        if not thread_ts:
+            logger.warning("No Slack thread for session", session_id=session_id)
+            return
+
+        try:
+            for message in render_slack_messages(text) or [text]:
+                await self._client.chat_postMessage(
+                    channel=self._channel_id,
+                    thread_ts=thread_ts,
+                    text=message,
+                )
+        except Exception:
+            logger.exception("Failed to send Slack message", session_id=session_id)
+
         await self._send_requested_output_attachments(session_id, metadata=metadata)
 
     async def start(self) -> None:

@@ -27,9 +27,19 @@ logger = structlog.get_logger(__name__)
 
 HEARTBEAT_INTERVAL = 5.0
 PERMISSION_TIMEOUT = 300.0
+_TOOL_OUTPUT_MAX_CHARS = 4000
 
 # Pi tool calls that should trigger permission requests in Tether
 _PERMISSION_TOOLS = {"bash", "write", "edit"}
+
+
+def _truncate_tool_output(text: str, *, limit: int = _TOOL_OUTPUT_MAX_CHARS) -> str:
+    """Keep tool output readable in chat surfaces."""
+
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:limit].rstrip()}\n\n[truncated, {omitted} more characters omitted]"
 
 
 def _find_pi_binary() -> str | None:
@@ -72,6 +82,7 @@ class PiRpcRunner:
         self._is_streaming: dict[str, bool] = {}
         self._streamed_text: dict[str, bool] = {}  # True if text_delta events were received
         self._tool_had_updates: dict[str, set[str]] = {}  # tool_call_ids with streamed output
+        self._assistant_marker_needed: dict[str, bool] = {}
         self._pi_binary: str | None = None
 
     # ------------------------------------------------------------------
@@ -303,6 +314,7 @@ class PiRpcRunner:
         self._is_streaming.pop(session_id, False)
         self._streamed_text.pop(session_id, False)
         self._tool_had_updates.pop(session_id, None)
+        self._assistant_marker_needed.pop(session_id, None)
         store.clear_process(session_id)
 
     # ------------------------------------------------------------------
@@ -428,6 +440,7 @@ class PiRpcRunner:
         if etype == "agent_start":
             self._is_streaming[session_id] = True
             self._streamed_text[session_id] = False
+            self._assistant_marker_needed[session_id] = False
 
         elif etype == "agent_end":
             self._is_streaming.pop(session_id, False)
@@ -443,13 +456,19 @@ class PiRpcRunner:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 text = block.get("text", "")
                                 if text:
+                                    prefix = (
+                                        "[assistant] "
+                                        if self._assistant_marker_needed.get(session_id)
+                                        else ""
+                                    )
                                     await self._events.on_output(
                                         session_id,
                                         "combined",
-                                        text,
+                                        f"{prefix}{text}",
                                         kind="final",
                                         is_final=True,
                                     )
+                                    self._assistant_marker_needed[session_id] = False
             # Agent finished its turn; signal waiting for input.
             # The pi process stays alive between turns, so the finally
             # block in _read_events won't fire until the process exits.
@@ -464,13 +483,19 @@ class PiRpcRunner:
                 delta = delta_event.get("delta", "")
                 if delta:
                     self._streamed_text[session_id] = True
+                    prefix = (
+                        "[assistant] "
+                        if self._assistant_marker_needed.get(session_id)
+                        else ""
+                    )
                     await self._events.on_output(
                         session_id,
                         "combined",
-                        delta,
+                        f"{prefix}{delta}",
                         kind="step",
                         is_final=False,
                     )
+                    self._assistant_marker_needed[session_id] = False
 
             elif delta_type == "thinking_delta":
                 delta = delta_event.get("delta", "")
@@ -482,6 +507,7 @@ class PiRpcRunner:
                         kind="step",
                         is_final=False,
                     )
+                    self._assistant_marker_needed[session_id] = True
 
             elif delta_type == "done":
                 # Message complete — the agent_end event will carry the final text
@@ -505,6 +531,7 @@ class PiRpcRunner:
                 kind="step",
                 is_final=False,
             )
+            self._assistant_marker_needed[session_id] = True
 
             # For write/edit/bash, emit permission request
             if tool_name in _PERMISSION_TOOLS:
@@ -546,13 +573,15 @@ class PiRpcRunner:
                         self._tool_had_updates.setdefault(session_id, set()).add(
                             event.get("toolCallId", "")
                         )
+                        truncated = _truncate_tool_output(text)
                         await self._events.on_output(
                             session_id,
                             "combined",
-                            f"[{tool_name}] {text}\n",
+                            f"[{tool_name}] {truncated}\n",
                             kind="step",
                             is_final=False,
                         )
+                        self._assistant_marker_needed[session_id] = True
 
         elif etype == "tool_execution_end":
             tool_call_id = event.get("toolCallId", "")
@@ -574,7 +603,7 @@ class PiRpcRunner:
             text = "\n".join(text_parts)
 
             if text and (is_error or not already_streamed):
-                truncated = text[:500] + "..." if len(text) > 500 else text
+                truncated = _truncate_tool_output(text)
                 prefix = "[error] " if is_error else "[result] "
                 await self._events.on_output(
                     session_id,
@@ -583,6 +612,7 @@ class PiRpcRunner:
                     kind="step",
                     is_final=False,
                 )
+                self._assistant_marker_needed[session_id] = True
 
         # -- Compaction --
         elif etype == "auto_compaction_start":
@@ -640,6 +670,7 @@ class PiRpcRunner:
                         kind="step",
                         is_final=False,
                     )
+                    self._assistant_marker_needed[session_id] = True
 
     async def _handle_response(self, session_id: str, event: dict) -> None:
         """Handle a command response from pi."""
