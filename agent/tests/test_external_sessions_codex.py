@@ -85,7 +85,15 @@ def _write_sqlite_thread(
             INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, first_user_message)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, rollout_path, created_at, updated_at, cwd, title, first_user_message),
+            (
+                session_id,
+                rollout_path,
+                created_at,
+                updated_at,
+                cwd,
+                title,
+                first_user_message,
+            ),
         )
         conn.commit()
 
@@ -98,7 +106,9 @@ class MockBridge:
         self.thread_calls: list[dict] = []
         self.typing_stopped_calls: list[str] = []
 
-    async def on_output(self, session_id: str, text: str, metadata: dict | None = None) -> None:
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
         self.output_calls.append(
             {"session_id": session_id, "text": text, "metadata": metadata}
         )
@@ -123,9 +133,23 @@ class MockBridge:
     async def on_session_removed(self, session_id: str) -> None:
         return None
 
-    async def create_thread(self, session_id: str, session_name: str) -> dict:
-        self.thread_calls.append({"session_id": session_id, "session_name": session_name})
-        return {"thread_id": f"mock_{session_id}", "platform": "mock"}
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
+        self.thread_calls.append(
+            {
+                "session_id": session_id,
+                "session_name": session_name,
+                "existing_thread_id": existing_thread_id,
+            }
+        )
+        return {
+            "thread_id": existing_thread_id or f"mock_{session_id}",
+            "platform": "mock",
+        }
 
 
 @pytest.mark.anyio
@@ -140,13 +164,21 @@ async def test_attach_codex_session(
     monkeypatch.setenv("TETHER_CODEX_SIDECAR_URL", "http://localhost:8788")
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
-    rollout_path = codex_home / "sessions" / "2026" / "02" / "06" / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
     _write_rollout(rollout_path, session_id)
 
     workdir = tmp_path / "repo"
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     response = await api_client.post(
@@ -190,7 +222,11 @@ async def test_attach_codex_session_replays_history_to_platform_thread(
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
     rollout_path = (
-        codex_home / "sessions" / "2026" / "02" / "06"
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
         / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
     )
     _write_rollout(rollout_path, session_id)
@@ -234,13 +270,21 @@ async def test_attach_codex_without_sidecar_url_still_succeeds(
     monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
-    rollout_path = codex_home / "sessions" / "2026" / "02" / "06" / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
     _write_rollout(rollout_path, session_id)
 
     workdir = tmp_path / "repo"
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     response = await api_client.post(
@@ -252,9 +296,9 @@ async def test_attach_codex_without_sidecar_url_still_succeeds(
         },
     )
 
-    assert response.status_code == 201, (
-        f"Expected 201, got {response.status_code}: {response.text}"
-    )
+    assert (
+        response.status_code == 201
+    ), f"Expected 201, got {response.status_code}: {response.text}"
     body = response.json()
     assert body["runner_type"] == "codex"
     assert body["adapter"] == "codex_sdk_sidecar"
@@ -275,7 +319,11 @@ async def test_attach_existing_codex_session_replays_history_when_binding_platfo
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
     rollout_path = (
-        codex_home / "sessions" / "2026" / "02" / "06"
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
         / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
     )
     _write_rollout(rollout_path, session_id)
@@ -361,7 +409,11 @@ async def test_sync_after_restart_does_not_duplicate(
 
     session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
     rollout_path = (
-        codex_home / "sessions" / "2026" / "02" / "06"
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
         / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
     )
     _write_rollout(rollout_path, session_id)
@@ -370,6 +422,7 @@ async def test_sync_after_restart_does_not_duplicate(
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     # Step 1: Attach — emits history messages
@@ -449,7 +502,11 @@ async def test_sync_codex_replays_delta_to_platform_thread(
     ]
 
     rollout_path = (
-        codex_home / "sessions" / "2026" / "02" / "06"
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
         / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
     )
     _write_rollout(rollout_path, session_id)
@@ -488,6 +545,7 @@ async def test_attach_codex_from_sqlite_then_sync_rollout_delta(
     workdir.mkdir()
 
     import tether.api.external_sessions as external_sessions
+
     monkeypatch.setattr(external_sessions, "store", fresh_store)
 
     attach_resp = await api_client.post(
@@ -510,7 +568,11 @@ async def test_attach_codex_from_sqlite_then_sync_rollout_delta(
     assert user_events_after_attach[0]["data"]["is_history"] is True
 
     rollout_path = (
-        codex_home / "sessions" / "2026" / "02" / "06"
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
         / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
     )
     _write_rollout(rollout_path, session_id)
@@ -522,7 +584,9 @@ async def test_attach_codex_from_sqlite_then_sync_rollout_delta(
     assert sync_data["total"] == 2
 
     events_after_sync = fresh_store.read_event_log(tether_session_id, since_seq=0)
-    output_events_after_sync = [event for event in events_after_sync if event["type"] == "output"]
+    output_events_after_sync = [
+        event for event in events_after_sync if event["type"] == "output"
+    ]
     assert len(output_events_after_sync) == 1
     assert output_events_after_sync[0]["data"]["text"] == "Hi there"
     assert output_events_after_sync[0]["data"]["is_history"] is True

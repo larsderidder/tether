@@ -151,7 +151,7 @@ class BridgeSubscriber:
                         text = data.get("text", "")
                         if not text:
                             continue
-                        is_final = bool(data.get("final"))
+                        is_final = bool(data.get("final") or data.get("is_final"))
 
                         if is_final:
                             await self._flush_output(session_id, bridge)
