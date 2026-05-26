@@ -42,6 +42,10 @@ docker.env
 discord_threads.json
 discord_pairing.json
 slack_threads.json
+agent/telegram_state.json
+
+# Generated frontend assets
+ui/src/generated.css
 
 # Reference data
 codex-src
