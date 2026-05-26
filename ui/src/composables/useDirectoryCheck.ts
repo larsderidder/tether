@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { watchDebounced } from "@vueuse/core";
 import { checkDirectory, type DirectoryCheck } from "@/api";
 
@@ -32,22 +32,18 @@ export function useDirectoryCheck(debounceMs = 400) {
     }
   };
 
-  // Auto-check when input changes (debounced)
-  watchDebounced(
-    input,
-    (value) => {
-      const trimmed = value.trim();
-      if (!trimmed) {
-        probe.value = null;
-        error.value = "";
-        checking.value = false;
-        return;
-      }
-      checking.value = true;
-      check(trimmed);
-    },
-    { debounce: debounceMs }
-  );
+  watch(input, (value) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      probe.value = null;
+      error.value = "";
+      checking.value = false;
+      return;
+    }
+    checking.value = true;
+  });
+
+  watchDebounced(input, (value) => check(value), { debounce: debounceMs });
 
   return {
     input,
