@@ -63,6 +63,8 @@ Routes store events to bridge methods:
 - Socket mode for real-time events (requires `SLACK_APP_TOKEN`)
 - Text-based approval: reply `allow`, `deny`, `allow all`, `allow {tool}`
 - Auto-approve sends `✅ *Tool* — auto-approved (reason)` notification
+- Optional reaction shortcut: react with `✅` to a top-level control-channel message whose first line starts with `!new ...` and whose remaining body is the initial prompt
+- Optional plain-message reaction mode: when `TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES=1`, react with `✅` to any top-level non-command control-channel message to use that full message as the initial prompt in the Tether server's current working directory
 
 ### Discord (`agent/tether/bridges/discord/`)
 - **bot.py** — Thread-based: same `!` commands as Slack
@@ -70,6 +72,8 @@ Routes store events to bridge methods:
 - discord.py client with message_content intent
 - Text-based approval: same as Slack
 - Auto-approve sends `✅ **Tool** — auto-approved (reason)` notification
+- Optional reaction shortcut: react with `✅` to a top-level control-channel message whose first line starts with `!new ...` and whose remaining body is the initial prompt
+- Optional plain-message reaction mode: when `TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES=1`, react with `✅` to any top-level non-command control-channel message to use that full message as the initial prompt in the Tether server's current working directory
 - Optional pairing/allowlist: when enabled, only authorized Discord user IDs can run commands or send input
 - Optional no-ID setup: if `DISCORD_CHANNEL_ID` is unset, run `!setup <code>` in the desired channel to configure it
 
@@ -112,6 +116,9 @@ Stored in base class as in-memory dicts:
 | `DISCORD_REQUIRE_PAIRING` | Require pairing before using the Discord bot (0/1) |
 | `DISCORD_PAIRING_CODE` | Optional fixed pairing code (if unset and pairing is required, one is generated and logged) |
 | `DISCORD_ALLOWED_USER_IDS` | Comma-separated Discord user IDs that are always authorized |
+| `TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED` | Enable the `!new` plus checkmark reaction shortcut in Slack and Discord (default `1`) |
+| `TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI` | Emoji or reaction name used for the new-session shortcut (default `✅`) |
+| `TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES` | Allow reacted top-level non-command control-channel messages to use their full text as the prompt in the Tether server's current working directory (default `0`) |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 
