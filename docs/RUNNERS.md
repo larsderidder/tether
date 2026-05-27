@@ -19,7 +19,7 @@ Callbacks from runner → session engine:
 
 | Callback | Purpose |
 |----------|---------|
-| `on_output(session_id, stream, text, kind, is_final)` | Agent output text |
+| `on_output(session_id, stream, text, kind, is_final, bridge_segments)` | Agent output text plus optional structured bridge segments |
 | `on_header(session_id, title, model, provider, ...)` | Session metadata header |
 | `on_error(session_id, code, message)` | Agent error |
 | `on_exit(session_id, exit_code)` | Process terminated |
@@ -29,7 +29,7 @@ Callbacks from runner → session engine:
 | `on_permission_request(session_id, request_id, ...)` | Permission request from agent |
 | `on_permission_resolved(session_id, request_id, ...)` | Permission resolved |
 
-Implemented by `ApiRunnerEvents` in `api/runner_events.py` which bridges to SSE events.
+Implemented by `ApiRunnerEvents` in `api/runner_events.py` which bridges to SSE events. `bridge_segments` is optional and lets runners send typed bridge output (`assistant`, `thinking`, `tool_call`, `tool_output`, `tool_result`, `tool_error`, `status`) while preserving plain text for the web UI and older consumers.
 
 ## Adapter Implementations
 

@@ -71,7 +71,12 @@ async def emit_state(session: Session) -> None:
 
 
 async def emit_output(
-    session: Session, text: str, *, kind: str, is_final: bool | None
+    session: Session,
+    text: str,
+    *,
+    kind: str,
+    is_final: bool | None,
+    bridge_segments: list[dict[str, str]] | None = None,
 ) -> None:
     """Emit output text if it is not a recent duplicate.
 
@@ -97,6 +102,7 @@ async def emit_output(
                 "text": text,
                 "kind": kind,
                 "final": is_final,
+                **({"bridge_segments": bridge_segments} if bridge_segments else {}),
             },
         },
     )
@@ -382,7 +388,9 @@ async def emit_history_message(
     else:
         # For assistant messages, emit thinking first (as step), then content
         if thinking:
-            thinking_text = thinking if is_history else f"Assistant (thinking): {thinking}"
+            thinking_text = (
+                thinking if is_history else f"Assistant (thinking): {thinking}"
+            )
             await store.emit(
                 session.id,
                 {

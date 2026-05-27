@@ -42,6 +42,17 @@ def _truncate_tool_output(text: str, *, limit: int = _TOOL_OUTPUT_MAX_CHARS) -> 
     return f"{text[:limit].rstrip()}\n\n[truncated, {omitted} more characters omitted]"
 
 
+def _bridge_segment(
+    kind: str, text: str = "", label: str | None = None
+) -> list[dict[str, str]]:
+    """Build a serialized bridge output segment."""
+
+    segment = {"kind": kind, "text": text}
+    if label:
+        segment["label"] = label
+    return [segment]
+
+
 def _find_pi_binary() -> str | None:
     """Locate the pi binary on PATH or in common locations."""
     found = shutil.which("pi")
@@ -80,8 +91,12 @@ class PiRpcRunner:
         self._session_files: dict[str, str] = {}  # tether session_id -> pi session file
         self._pending_inputs: dict[str, list[str]] = {}
         self._is_streaming: dict[str, bool] = {}
-        self._streamed_text: dict[str, bool] = {}  # True if text_delta events were received
-        self._tool_had_updates: dict[str, set[str]] = {}  # tool_call_ids with streamed output
+        self._streamed_text: dict[str, bool] = (
+            {}
+        )  # True if text_delta events were received
+        self._tool_had_updates: dict[str, set[str]] = (
+            {}
+        )  # tool_call_ids with streamed output
         self._assistant_marker_needed: dict[str, bool] = {}
         self._pi_binary: str | None = None
 
@@ -141,10 +156,13 @@ class PiRpcRunner:
 
         if self._is_streaming.get(session_id):
             # Agent is busy — queue as follow-up
-            await self._write_cmd_async(proc, {
-                "type": "follow_up",
-                "message": text,
-            })
+            await self._write_cmd_async(
+                proc,
+                {
+                    "type": "follow_up",
+                    "message": text,
+                },
+            )
         else:
             await self._send_prompt(session_id, text)
 
@@ -260,11 +278,16 @@ class PiRpcRunner:
             logger.warning("No pi process to send prompt to", session_id=session_id)
             return
 
-        logger.info("Sending prompt to pi", session_id=session_id, text_length=len(text))
-        await self._write_cmd_async(proc, {
-            "type": "prompt",
-            "message": text,
-        })
+        logger.info(
+            "Sending prompt to pi", session_id=session_id, text_length=len(text)
+        )
+        await self._write_cmd_async(
+            proc,
+            {
+                "type": "prompt",
+                "message": text,
+            },
+        )
 
     def _write_cmd(self, proc: asyncio.subprocess.Process, cmd: dict) -> None:
         """Write a JSON-line command to the subprocess stdin (sync version)."""
@@ -273,8 +296,10 @@ class PiRpcRunner:
         line = json.dumps(cmd, separators=(",", ":")) + "\n"
         proc.stdin.write(line.encode())
         # Note: This doesn't await drain(). Use _write_cmd_async for async contexts.
-    
-    async def _write_cmd_async(self, proc: asyncio.subprocess.Process, cmd: dict) -> None:
+
+    async def _write_cmd_async(
+        self, proc: asyncio.subprocess.Process, cmd: dict
+    ) -> None:
         """Write a JSON-line command to the subprocess stdin and await flush."""
         if proc.stdin is None:
             return
@@ -354,16 +379,16 @@ class PiRpcRunner:
                 if not raw:
                     logger.info("Pi stdout EOF", session_id=session_id)
                     break
-                
+
                 # Strip terminal escape sequences (e.g., ]777;notify;...)
                 # Pi emits OSC notifications before agent_end JSON
                 line = raw.decode() if isinstance(raw, bytes) else raw
-                if ']777;notify;' in line:
+                if "]777;notify;" in line:
                     # Find the start of JSON (after the notification)
                     json_start = line.find('{"type":')
                     if json_start > 0:
                         line = line[json_start:]
-                
+
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -467,6 +492,9 @@ class PiRpcRunner:
                                         f"{prefix}{text}",
                                         kind="final",
                                         is_final=True,
+                                        bridge_segments=_bridge_segment(
+                                            "assistant", text
+                                        ),
                                     )
                                     self._assistant_marker_needed[session_id] = False
             # Agent finished its turn; signal waiting for input.
@@ -494,6 +522,7 @@ class PiRpcRunner:
                         f"{prefix}{delta}",
                         kind="step",
                         is_final=False,
+                        bridge_segments=_bridge_segment("assistant", delta),
                     )
                     self._assistant_marker_needed[session_id] = False
 
@@ -506,6 +535,7 @@ class PiRpcRunner:
                         f"[thinking] {delta}",
                         kind="step",
                         is_final=False,
+                        bridge_segments=_bridge_segment("thinking", delta),
                     )
                     self._assistant_marker_needed[session_id] = True
 
@@ -530,6 +560,11 @@ class PiRpcRunner:
                 f"[tool: {tool_name}]\n",
                 kind="step",
                 is_final=False,
+                bridge_segments=_bridge_segment(
+                    "tool_call",
+                    json.dumps(args, ensure_ascii=False) if args else "",
+                    str(tool_name),
+                ),
             )
             self._assistant_marker_needed[session_id] = True
 
@@ -546,12 +581,12 @@ class PiRpcRunner:
                 store.add_pending_permission(
                     session_id, request_id, tool_name, args, future
                 )
-                
+
                 # Auto-resolve immediately (don't emit permission_request to UI)
                 store.resolve_pending_permission(
                     session_id, request_id, {"behavior": "allow"}
                 )
-                
+
                 # Emit resolved event for logging/tracking
                 await self._events.on_permission_resolved(
                     session_id,
@@ -580,6 +615,11 @@ class PiRpcRunner:
                             f"[{tool_name}] {truncated}\n",
                             kind="step",
                             is_final=False,
+                            bridge_segments=_bridge_segment(
+                                "tool_output",
+                                truncated,
+                                str(tool_name),
+                            ),
                         )
                         self._assistant_marker_needed[session_id] = True
 
@@ -611,6 +651,11 @@ class PiRpcRunner:
                     f"{prefix}{truncated}\n",
                     kind="step",
                     is_final=False,
+                    bridge_segments=_bridge_segment(
+                        "tool_error" if is_error else "tool_result",
+                        truncated,
+                        str(tool_name),
+                    ),
                 )
                 self._assistant_marker_needed[session_id] = True
 
@@ -622,6 +667,7 @@ class PiRpcRunner:
                 "[compacting context...]\n",
                 kind="step",
                 is_final=False,
+                bridge_segments=_bridge_segment("status", "compacting context..."),
             )
 
         elif etype == "auto_compaction_end":
@@ -634,6 +680,10 @@ class PiRpcRunner:
                     f"[compaction done — was {tokens_before} tokens]\n",
                     kind="step",
                     is_final=False,
+                    bridge_segments=_bridge_segment(
+                        "status",
+                        f"compaction done, was {tokens_before} tokens",
+                    ),
                 )
 
         # -- Retry --
@@ -647,6 +697,10 @@ class PiRpcRunner:
                 f"[retry {attempt}/{max_attempts}, waiting {delay_ms}ms...]\n",
                 kind="step",
                 is_final=False,
+                bridge_segments=_bridge_segment(
+                    "status",
+                    f"retry {attempt}/{max_attempts}, waiting {delay_ms}ms",
+                ),
             )
 
         elif etype == "auto_retry_end":
@@ -669,6 +723,7 @@ class PiRpcRunner:
                         f"[notify] {msg}\n",
                         kind="step",
                         is_final=False,
+                        bridge_segments=_bridge_segment("status", msg),
                     )
                     self._assistant_marker_needed[session_id] = True
 

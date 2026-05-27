@@ -3,6 +3,7 @@
 from tether.bridges.rich_output import (
     parse_output_segments,
     render_discord_messages,
+    render_slack_messages,
     render_telegram_messages,
 )
 from tether.bridges.telegram.formatting import (
@@ -42,7 +43,9 @@ class TestMarkdownToTelegramHtml:
     def test_code_block_language_stripped(self) -> None:
         md = "```js\nconsole.log('hi')\n```"
         result = markdown_to_telegram_html(md)
-        assert "js" not in result.split("<pre>")[0]  # language tag not in output before <pre>
+        assert (
+            "js" not in result.split("<pre>")[0]
+        )  # language tag not in output before <pre>
 
     def test_link(self) -> None:
         result = markdown_to_telegram_html("[click](https://example.com)")
@@ -114,6 +117,7 @@ class TestMarkdownTableToPre:
 
     def test_html_escaped_content(self) -> None:
         import html
+
         table = html.escape("| A<b> | B |\n|------|---|\n| 1 | 2 |")
         # Already escaped, should not break
         result = _markdown_table_to_pre(table)
@@ -207,10 +211,7 @@ class TestRichOutputFormatting:
 
     def test_parse_output_segments_classifies_tool_blocks(self) -> None:
         segments = parse_output_segments(
-            "[tool: bash]\n"
-            "[bash] pwd\n"
-            "/tmp/demo\n"
-            "[result] ok"
+            "[tool: bash]\n" "[bash] pwd\n" "/tmp/demo\n" "[result] ok"
         )
 
         assert [segment.kind for segment in segments] == [
@@ -246,9 +247,34 @@ class TestRichOutputFormatting:
     def test_render_telegram_messages_formats_tool_output_as_pre(self) -> None:
         messages = render_telegram_messages("[error] invalid_grant")
 
-        assert messages == [
-            "⚠️ <b>Tool error</b>\n<pre>invalid_grant</pre>"
-        ]
+        assert messages == ["⚠️ <b>Tool error</b>\n<pre>invalid_grant</pre>"]
+
+    def test_render_discord_messages_prefers_structured_segments(self) -> None:
+        messages = render_discord_messages(
+            "[notify] fallback text",
+            metadata={
+                "bridge_segments": [
+                    {"kind": "status", "text": "extension ready"},
+                    {"kind": "assistant", "text": "Ready."},
+                ]
+            },
+        )
+
+        assert messages == ["ℹ️ extension ready", "Ready."]
+
+    def test_render_slack_messages_uses_slack_bold_for_structured_tool_result(
+        self,
+    ) -> None:
+        messages = render_slack_messages(
+            "[result] fallback",
+            metadata={
+                "bridge_segments": [
+                    {"kind": "tool_result", "label": "bash", "text": "ok"}
+                ]
+            },
+        )
+
+        assert messages[0].startswith("📥 *Tool result* `bash`\n```text\nok")
 
     def test_render_discord_messages_splits_explicit_assistant_marker(self) -> None:
         messages = render_discord_messages(

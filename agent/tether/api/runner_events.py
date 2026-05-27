@@ -26,6 +26,7 @@ logger = structlog.get_logger(__name__)
 
 # Import at end to avoid circular dependency
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from tether.api.runner_registry import RunnerRegistry
 
@@ -41,6 +42,7 @@ class ApiRunnerEvents:
         *,
         kind: str = "final",
         is_final: bool | None = None,
+        bridge_segments: list[dict[str, str]] | None = None,
     ) -> None:
         """Handle output emitted by runners.
 
@@ -60,7 +62,13 @@ class ApiRunnerEvents:
             return
         session.last_activity_at = now()
         store.update_session(session)
-        await emit_output(session, text, kind=kind, is_final=is_final)
+        await emit_output(
+            session,
+            text,
+            kind=kind,
+            is_final=is_final,
+            bridge_segments=bridge_segments,
+        )
 
     async def on_header(
         self,
@@ -119,11 +127,17 @@ class ApiRunnerEvents:
             if not session:
                 return
             # Already in a terminal or idle state
-            if session.state in (SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR):
+            if session.state in (
+                SessionState.AWAITING_INPUT,
+                SessionState.INTERRUPTING,
+                SessionState.ERROR,
+            ):
                 return
             # Non-zero exit code indicates an error
             if exit_code not in (0, None):
-                transition(session, SessionState.ERROR, ended_at=True, exit_code=exit_code)
+                transition(
+                    session, SessionState.ERROR, ended_at=True, exit_code=exit_code
+                )
                 await emit_state(session)
 
     async def on_awaiting_input(self, session_id: str) -> None:
@@ -271,6 +285,7 @@ def get_runner_registry() -> "RunnerRegistry":
     global _registry
     if _registry is None:
         from tether.api.runner_registry import RunnerRegistry
+
         _registry = RunnerRegistry(ApiRunnerEvents())
     return _registry
 

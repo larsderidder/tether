@@ -76,7 +76,7 @@ class SlackBridge(UpstreamSlackBridge):
             return
 
         try:
-            for message in render_slack_messages(text) or [text]:
+            for message in render_slack_messages(text, metadata=metadata) or [text]:
                 await self._client.chat_postMessage(
                     channel=self._channel_id,
                     thread_ts=thread_ts,

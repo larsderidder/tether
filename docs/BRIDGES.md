@@ -41,8 +41,9 @@ Shared helpers (in base class):
 ## BridgeSubscriber (`agent/tether/bridges/subscriber.py`)
 
 Routes store events to bridge methods:
-- `output` with `final=True` → `on_output()` (skips non-final, history, empty)
-- `output_final` → skipped (accumulated blob, bridges get individual finals)
+- `output` with `bridge_segments` → `on_output()` with structured metadata, avoiding marker parsing
+- `output` with `final=True` → `on_output()` (skips history and empty output)
+- `output_final` → skipped (accumulated blob, bridges get individual output events)
 - `permission_request` → builds `ApprovalRequest`, calls `on_approval_request()`
 - `session_state` RUNNING → `on_typing()`
 - `session_state` ERROR → `on_status_change("error")`

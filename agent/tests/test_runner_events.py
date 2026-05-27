@@ -41,6 +41,30 @@ class TestOnOutput:
         assert updated.runner_header == "Claude Code v1.0"
 
     @pytest.mark.anyio
+    async def test_output_preserves_bridge_segments(self, fresh_store: SessionStore) -> None:
+        """on_output stores structured bridge metadata on output events."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "[tool: bash]\n",
+            kind="step",
+            bridge_segments=[{"kind": "tool_call", "label": "bash", "text": "pwd"}],
+        )
+
+        log = fresh_store.read_event_log(session.id)
+        output_events = [event for event in log if event.get("type") == "output"]
+        assert output_events[-1]["data"]["bridge_segments"] == [
+            {"kind": "tool_call", "label": "bash", "text": "pwd"}
+        ]
+
+    @pytest.mark.anyio
     async def test_output_missing_session_noop(self, fresh_store: SessionStore) -> None:
         """on_output with unknown session_id is a no-op."""
         from tether.api.runner_events import ApiRunnerEvents

@@ -190,6 +190,20 @@ Push events from external agents (output, status, permission_request).
 {"type": "permission_request", "data": {"request_id": "p1", "tool_name": "Read", "tool_input": {}}}
 ```
 
+Output events may include optional `bridge_segments` metadata for Discord, Slack, and Telegram rendering:
+
+```json
+{
+  "type": "output",
+  "data": {
+    "text": "[tool: bash]\n",
+    "bridge_segments": [
+      {"kind": "tool_call", "label": "bash", "text": "{\"command\": \"pwd\"}"}
+    ]
+  }
+}
+```
+
 ### `GET /api/sessions/{id}/events/poll`
 Poll for events (user_input, approval_response). Params: `since_seq`.
 

@@ -27,21 +27,35 @@ class FakeRunnerEvents:
         self.awaiting_input_count = 0
         self.exit_count = 0
 
-    async def on_output(self, session_id, stream, text, *, kind="final", is_final=None):
-        self.outputs.append({
-            "session_id": session_id,
-            "stream": stream,
-            "text": text,
-            "kind": kind,
-            "is_final": is_final,
-        })
+    async def on_output(
+        self,
+        session_id,
+        stream,
+        text,
+        *,
+        kind="final",
+        is_final=None,
+        bridge_segments=None,
+    ):
+        self.outputs.append(
+            {
+                "session_id": session_id,
+                "stream": stream,
+                "text": text,
+                "kind": kind,
+                "is_final": is_final,
+                "bridge_segments": bridge_segments,
+            }
+        )
 
     async def on_error(self, session_id, code, message):
-        self.errors.append({
-            "session_id": session_id,
-            "code": code,
-            "message": message,
-        })
+        self.errors.append(
+            {
+                "session_id": session_id,
+                "code": code,
+                "message": message,
+            }
+        )
 
     async def on_exit(self, session_id, exit_code):
         self.exit_count += 1
@@ -56,28 +70,38 @@ class FakeRunnerEvents:
         self.heartbeats.append({"session_id": session_id, "done": done})
 
     async def on_header(self, session_id, *, title, model=None, provider=None, **kw):
-        self.headers.append({
-            "session_id": session_id,
-            "title": title,
-            "model": model,
-            "provider": provider,
-        })
+        self.headers.append(
+            {
+                "session_id": session_id,
+                "title": title,
+                "model": model,
+                "provider": provider,
+            }
+        )
 
-    async def on_permission_request(self, session_id, request_id, tool_name, tool_input, suggestions=None):
-        self.permissions.append({
-            "session_id": session_id,
-            "request_id": request_id,
-            "tool_name": tool_name,
-            "tool_input": tool_input,
-        })
+    async def on_permission_request(
+        self, session_id, request_id, tool_name, tool_input, suggestions=None
+    ):
+        self.permissions.append(
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            }
+        )
 
-    async def on_permission_resolved(self, session_id, request_id, resolved_by, allowed, message=None):
-        self.permission_resolved.append({
-            "session_id": session_id,
-            "request_id": request_id,
-            "resolved_by": resolved_by,
-            "allowed": allowed,
-        })
+    async def on_permission_resolved(
+        self, session_id, request_id, resolved_by, allowed, message=None
+    ):
+        self.permission_resolved.append(
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "resolved_by": resolved_by,
+                "allowed": allowed,
+            }
+        )
 
 
 def test_find_pi_binary() -> None:
@@ -114,6 +138,9 @@ class TestPiRpcEventHandling:
         assert events.outputs[0]["text"] == "Hello world"
         assert events.outputs[0]["kind"] == "step"
         assert events.outputs[0]["is_final"] is False
+        assert events.outputs[0]["bridge_segments"] == [
+            {"kind": "assistant", "text": "Hello world"}
+        ]
 
     @pytest.mark.anyio
     async def test_handle_thinking_delta(self, runner_and_events):
@@ -132,6 +159,9 @@ class TestPiRpcEventHandling:
         assert len(events.outputs) == 1
         assert "[thinking]" in events.outputs[0]["text"]
         assert "Let me consider..." in events.outputs[0]["text"]
+        assert events.outputs[0]["bridge_segments"] == [
+            {"kind": "thinking", "text": "Let me consider..."}
+        ]
 
     @pytest.mark.anyio
     async def test_handle_tool_execution_start(self, runner_and_events, fresh_store):
@@ -152,6 +182,9 @@ class TestPiRpcEventHandling:
 
         # Should emit output for the tool start
         assert any("[tool: bash]" in o["text"] for o in events.outputs)
+        assert events.outputs[0]["bridge_segments"] == [
+            {"kind": "tool_call", "text": '{"command": "ls -la"}', "label": "bash"}
+        ]
 
         # Pi auto-approves tools, so no permission request should be emitted
         # Instead, should directly emit permission_resolved
@@ -161,7 +194,9 @@ class TestPiRpcEventHandling:
         assert events.permission_resolved[0]["resolved_by"] == "auto"
 
     @pytest.mark.anyio
-    async def test_handle_tool_execution_start_read_no_permission(self, runner_and_events):
+    async def test_handle_tool_execution_start_read_no_permission(
+        self, runner_and_events
+    ):
         runner, events = runner_and_events
         proc = MagicMock()
 
@@ -197,6 +232,9 @@ class TestPiRpcEventHandling:
         assert len(events.outputs) == 1
         assert "[result]" in events.outputs[0]["text"]
         assert "file1.txt" in events.outputs[0]["text"]
+        assert events.outputs[0]["bridge_segments"] == [
+            {"kind": "tool_result", "text": "file1.txt\nfile2.txt", "label": "bash"}
+        ]
 
     @pytest.mark.anyio
     async def test_handle_tool_execution_end_error(self, runner_and_events):
@@ -217,6 +255,9 @@ class TestPiRpcEventHandling:
 
         assert len(events.outputs) == 1
         assert "[error]" in events.outputs[0]["text"]
+        assert events.outputs[0]["bridge_segments"] == [
+            {"kind": "tool_error", "text": "command not found", "label": "bash"}
+        ]
 
     @pytest.mark.anyio
     async def test_handle_tool_execution_update_truncates_large_output(
@@ -274,13 +315,19 @@ class TestPiRpcEventHandling:
         await runner._handle_event("sess1", proc, {"type": "agent_start"})
         assert runner._is_streaming.get("sess1") is True
 
-        await runner._handle_event("sess1", proc, {
-            "type": "agent_end",
-            "messages": [{
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Final answer"}],
-            }],
-        })
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "agent_end",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Final answer"}],
+                    }
+                ],
+            },
+        )
         assert not runner._is_streaming.get("sess1")
 
         # Should have emitted the final text
@@ -336,16 +383,24 @@ class TestPiRpcEventHandling:
         runner, events = runner_and_events
         proc = MagicMock()
 
-        await runner._handle_event("sess1", proc, {
-            "type": "auto_compaction_start",
-            "reason": "threshold",
-        })
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "auto_compaction_start",
+                "reason": "threshold",
+            },
+        )
         assert any("compacting" in o["text"] for o in events.outputs)
 
-        await runner._handle_event("sess1", proc, {
-            "type": "auto_compaction_end",
-            "result": {"tokensBefore": 150000},
-        })
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "auto_compaction_end",
+                "result": {"tokensBefore": 150000},
+            },
+        )
         assert any("150000" in o["text"] for o in events.outputs)
 
     @pytest.mark.anyio
@@ -411,7 +466,9 @@ class TestPiRpcEventHandling:
         assert "Agent is busy" in events.errors[0]["message"]
 
     @pytest.mark.anyio
-    async def test_handle_agent_end_with_escape_sequences(self, runner_and_events, fresh_store):
+    async def test_handle_agent_end_with_escape_sequences(
+        self, runner_and_events, fresh_store
+    ):
         """Test that terminal escape sequences are stripped from agent_end events."""
         runner, events = runner_and_events
         proc = MagicMock()
@@ -423,15 +480,15 @@ class TestPiRpcEventHandling:
         # Simulate the actual output from pi with OSC notification escape sequence
         # This is what pi emits: ]777;notify;π;Hey!{"type":"agent_end",...}
         raw_line = ']777;notify;π;Ready!{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"Ready!"}]}]}'
-        
+
         # The reader should strip the escape sequence and parse the JSON
         # Simulate what _read_events does
         line = raw_line
-        if ']777;notify;' in line:
+        if "]777;notify;" in line:
             json_start = line.find('{"type":')
             if json_start > 0:
                 line = line[json_start:]
-        
+
         event = json.loads(line)
         await runner._handle_event(session_id, proc, event)
 

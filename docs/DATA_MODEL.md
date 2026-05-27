@@ -84,6 +84,21 @@ Events persisted to `{data_dir}/sessions/{session_id}/events.jsonl`. Each line:
 
 Event types: `output`, `output_final`, `session_state`, `metadata`, `heartbeat`, `error`, `warning`, `input_required`, `user_input`, `permission_request`, `permission_resolved`, `header`, `checkpoint`.
 
+### Structured bridge output
+
+`output.data.bridge_segments` is optional metadata for bridge renderers. It is a list of small typed segments with `kind`, `text`, and optional `label` fields. Bridges prefer these segments over parsing marker text, while the UI and old consumers can keep using `output.data.text`.
+
+Supported segment kinds: `assistant`, `thinking`, `tool_call`, `tool_output`, `tool_result`, `tool_error`, `status`.
+
+```json
+{
+  "text": "[tool: bash]\n",
+  "bridge_segments": [
+    {"kind": "tool_call", "label": "bash", "text": "{\"command\": \"pwd\"}"}
+  ]
+}
+```
+
 ### `checkpoint` event
 
 Emitted after `on_awaiting_input` when `TETHER_GIT_AUTO_CHECKPOINT=true` and the session workspace is a git repository with uncommitted changes.

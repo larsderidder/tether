@@ -460,7 +460,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                     )
                     return
             if thread:
-                for message in render_discord_messages(text) or [text]:
+                for message in render_discord_messages(text, metadata=metadata) or [text]:
                     await thread.send(message[:_DISCORD_STARTER_TEXT_LIMIT])
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
