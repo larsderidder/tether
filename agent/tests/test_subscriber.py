@@ -263,6 +263,66 @@ class TestEventRouting:
         assert fake_bridge.output_calls[0]["text"] == "same answer"
 
     @pytest.mark.anyio
+    async def test_duplicate_output_final_only_sent_once(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """A bridge turn can publish only one final assistant message."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        event = {
+            "session_id": session.id,
+            "type": "output_final",
+            "data": {"text": "same final", "turn_id": "turn-1"},
+        }
+        await self._emit_and_wait(fresh_store, session.id, event)
+        await self._emit_and_wait(fresh_store, session.id, event)
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["text"] == "same final"
+        assert fake_bridge.output_calls[0]["metadata"]["turn_id"] == "turn-1"
+
+    @pytest.mark.anyio
+    async def test_running_state_starts_new_bridge_turn(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """A new RUNNING state permits the next final answer to be delivered."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "first", "turn_id": "turn-1"},
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "session_state",
+                "data": {"state": "RUNNING"},
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "second", "turn_id": "turn-2"},
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert [call["text"] for call in fake_bridge.output_calls] == ["first", "second"]
+
+    @pytest.mark.anyio
     async def test_routes_output_final_blob(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:

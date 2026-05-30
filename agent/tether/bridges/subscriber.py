@@ -11,6 +11,8 @@ from agent_tether.base import ApprovalRequest
 from agent_tether.manager import BridgeManager
 from agent_tether.subscriber import _OUTPUT_FLUSH_DELAY_S, _OUTPUT_FLUSH_MAX_CHARS
 
+from tether.bridges.turn_accumulator import BridgeTurnAccumulator
+
 logger = structlog.get_logger(__name__)
 
 
@@ -43,8 +45,7 @@ class BridgeSubscriber:
         self._remove_subscriber = remove_subscriber
         self._tasks: dict[str, asyncio.Task] = {}
         self._queues: dict[str, asyncio.Queue] = {}
-        self._output_buffers: dict[str, list[str]] = {}
-        self._segment_buffers: dict[str, list[dict[str, str]]] = {}
+        self._turns = BridgeTurnAccumulator()
         self._output_flush_tasks: dict[str, asyncio.Task] = {}
 
     def subscribe(self, session_id: str, platform: str) -> None:
@@ -75,6 +76,7 @@ class BridgeSubscriber:
             if bridge:
                 await self._flush_output(session_id, bridge)
                 await bridge.on_session_removed(session_id)
+        self._turns.remove(session_id)
 
     def _buffer_output(
         self,
@@ -83,13 +85,11 @@ class BridgeSubscriber:
         bridge_segments: list[dict[str, str]] | None = None,
     ) -> None:
         """Add text and optional structured bridge segments to the output buffer."""
-        self._output_buffers.setdefault(session_id, []).append(text)
-        if bridge_segments:
-            self._segment_buffers.setdefault(session_id, []).extend(bridge_segments)
+        self._turns.buffer_stream(session_id, text, bridge_segments)
 
     def _buffer_size(self, session_id: str) -> int:
         """Return the total character count in the output buffer."""
-        return sum(len(text) for text in self._output_buffers.get(session_id, []))
+        return self._turns.buffered_size(session_id)
 
     @staticmethod
     def _is_streaming_prose(
@@ -108,8 +108,7 @@ class BridgeSubscriber:
         task = self._output_flush_tasks.pop(session_id, None)
         if task and not task.done():
             task.cancel()
-        self._output_buffers.pop(session_id, None)
-        self._segment_buffers.pop(session_id, None)
+        self._turns.discard(session_id)
 
     async def _flush_output(self, session_id: str, bridge: object) -> None:
         """Send all buffered output for a session to the bridge."""
@@ -117,18 +116,12 @@ class BridgeSubscriber:
         if task and not task.done():
             task.cancel()
 
-        buffered = self._output_buffers.pop(session_id, [])
-        bridge_segments = self._segment_buffers.pop(session_id, [])
-        if not buffered and not bridge_segments:
+        flush = self._turns.flush_stream(session_id)
+        if not flush:
             return
 
-        text = "".join(buffered)
-        if not text.strip() and not bridge_segments:
-            return
-
-        metadata = {"bridge_segments": bridge_segments} if bridge_segments else None
         try:
-            await bridge.on_output(session_id, text, metadata=metadata)
+            await bridge.on_output(session_id, flush.text, metadata=flush.metadata)
         except Exception:
             logger.exception("Failed to flush output to bridge", session_id=session_id)
 
@@ -202,8 +195,6 @@ class BridgeSubscriber:
                     elif event_type == "output_final":
                         self._discard_buffered_output(session_id)
                         text = data.get("text", "")
-                        if not text:
-                            continue
                         metadata = {
                             "final": True,
                             "kind": str(data.get("kind") or "final"),
@@ -214,7 +205,18 @@ class BridgeSubscriber:
                         warnings = data.get("attachment_warnings")
                         if warnings:
                             metadata["attachment_warnings"] = warnings
-                        await bridge.on_output(session_id, text, metadata=metadata)
+                        turn_id = data.get("turn_id")
+                        flush = self._turns.final_output(
+                            session_id,
+                            text,
+                            metadata,
+                            turn_id=str(turn_id) if turn_id else None,
+                        )
+                        if flush:
+                            await bridge.on_output(
+                                session_id, flush.text, metadata=flush.metadata
+                            )
+                            self._turns.mark_final_sent(session_id, flush.final_key)
 
                     elif event_type == "permission_request":
                         await self._flush_output(session_id, bridge)
@@ -224,6 +226,7 @@ class BridgeSubscriber:
                     elif event_type == "session_state":
                         state = data.get("state", "")
                         if state == "RUNNING":
+                            self._turns.reset_turn(session_id)
                             await bridge.on_typing(session_id)
                         elif state == "AWAITING_INPUT":
                             await self._flush_output(session_id, bridge)
