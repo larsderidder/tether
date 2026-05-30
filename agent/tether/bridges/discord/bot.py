@@ -643,13 +643,18 @@ class DiscordBridge(UpstreamDiscordBridge):
             content_type = getattr(attachment, "content_type", None)
             guessed_type = mimetypes.guess_type(str(filename or ""))[0] or ""
             content_type_text = str(content_type or guessed_type or "").lower()
+            generic_type = content_type_text in {
+                "",
+                "application/octet-stream",
+                "binary/octet-stream",
+            }
             effective_type = content_type_text
-            if content_type_text in {"application/octet-stream", "binary/octet-stream"} and guessed_type:
+            if generic_type and guessed_type:
                 effective_type = guessed_type.lower()
             size = int(getattr(attachment, "size", 0) or 0)
             if size <= 0:
                 continue
-            if effective_type.startswith("image/") or not effective_type:
+            if effective_type.startswith("image/") or generic_type:
                 if len(images) >= MAX_IMAGES_PER_MESSAGE:
                     await message.channel.send(
                         f"⚠️ Skipped image: maximum {MAX_IMAGES_PER_MESSAGE} images per message."
@@ -774,6 +779,11 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         if not text.strip() and images:
             text = "Please look at this image."
+        if not text.strip() and not images:
+            await message.channel.send(
+                "⚠️ I couldn't find a supported image or attachment in that message."
+            )
+            return
 
         try:
             if images:
