@@ -11,6 +11,7 @@ import structlog
 from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
+from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.rich_output import render_slack_messages
 from tether.bridges.reaction_shortcuts import (
@@ -18,7 +19,6 @@ from tether.bridges.reaction_shortcuts import (
     parse_reaction_shortcut_message,
     reaction_matches,
 )
-from tether.output_postprocess import PublishedAttachment
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -242,14 +242,7 @@ class SlackBridge(UpstreamSlackBridge):
         if not self._client:
             return
 
-        attachments = [
-            attachment
-            for attachment in (
-                PublishedAttachment.from_metadata(item)
-                for item in (metadata or {}).get("attachments") or []
-            )
-            if attachment is not None
-        ]
+        attachments = attachments_from_metadata(metadata)
         if not attachments:
             return
 
@@ -263,15 +256,15 @@ class SlackBridge(UpstreamSlackBridge):
                 await self._client.files_upload_v2(
                     channel=self._channel_id,
                     thread_ts=thread_ts,
-                    file=attachment.path,
+                    file=str(attachment.path),
                     filename=attachment.filename,
-                    title=attachment.title or attachment.filename,
+                    title=attachment.caption,
                 )
             except Exception:
                 logger.exception(
                     "Failed to upload Slack output attachment",
                     session_id=session_id,
-                    attachment_path=attachment.path,
+                    attachment_path=str(attachment.path),
                 )
                 failures.append(attachment.filename)
 
