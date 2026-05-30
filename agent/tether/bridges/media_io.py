@@ -75,12 +75,20 @@ async def download_with_media_policy(
     *,
     platform: str,
     url: object = None,
+    idle_timeout_s: float = BRIDGE_MEDIA_IDLE_TIMEOUT_S,
     total_timeout_s: float = BRIDGE_MEDIA_TOTAL_TIMEOUT_S,
 ) -> bytes:
-    """Run a bridge media download with host checks and a total timeout."""
+    """Run a bridge media download with host checks and bounded waits."""
 
     validate_media_download_url(platform, url)
-    data = await asyncio.wait_for(operation(), timeout=total_timeout_s)
+
+    async def _download_with_idle_timeout() -> bytes | bytearray:
+        return await asyncio.wait_for(operation(), timeout=idle_timeout_s)
+
+    data = await asyncio.wait_for(
+        _download_with_idle_timeout(),
+        timeout=total_timeout_s,
+    )
     return bytes(data)
 
 

@@ -44,6 +44,24 @@ async def test_download_with_media_policy_applies_total_timeout() -> None:
 
 
 @pytest.mark.anyio
+async def test_download_with_media_policy_applies_idle_timeout() -> None:
+    """Downloads that do not complete within the idle window are cancelled."""
+
+    async def idle_download() -> bytes:
+        import asyncio
+
+        await asyncio.sleep(0.05)
+        return b"late"
+
+    with pytest.raises(TimeoutError):
+        await download_with_media_policy(
+            idle_download,
+            platform="discord",
+            idle_timeout_s=0.001,
+        )
+
+
+@pytest.mark.anyio
 async def test_download_with_media_policy_returns_bytes() -> None:
     """Successful downloads are normalized to bytes."""
 

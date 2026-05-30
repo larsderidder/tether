@@ -181,7 +181,7 @@ class TelegramBridge(UpstreamTelegramBridge):
         topic_id = getattr(message, "message_thread_id", None)
         if not topic_id:
             await message.reply_text(
-                "💡 Send images in a session topic to interact with that agent."
+                "💡 Send attachments in a session topic to interact with that agent."
             )
             return
 

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 import io
+import mimetypes
 import os
 import re
 import socket
@@ -638,9 +639,11 @@ class DiscordBridge(UpstreamDiscordBridge):
         images: list[dict[str, str]] = []
         files: list[BridgeMediaFile] = []
         for attachment in await self._message_image_attachments(message):
-            content_type = getattr(attachment, "content_type", None)
-            content_type_text = str(content_type or "").lower()
             filename = getattr(attachment, "filename", None)
+            content_type = getattr(attachment, "content_type", None)
+            content_type_text = str(
+                content_type or mimetypes.guess_type(str(filename or ""))[0] or ""
+            ).lower()
             size = int(getattr(attachment, "size", 0) or 0)
             if size <= 0:
                 continue
@@ -1053,7 +1056,7 @@ class DiscordBridge(UpstreamDiscordBridge):
             return
 
         text = message.content.strip()
-        has_attachments = bool(getattr(message, "attachments", None))
+        has_attachments = self._message_has_media(message)
         if not text and not has_attachments:
             return
 
@@ -1088,6 +1091,21 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         if not self._channel_id and text.lower().startswith("!setup"):
             await self._dispatch_command(message, text)
+
+    def _message_has_media(self, message: Any) -> bool:
+        """Return true when a Discord message may carry bridgeable media."""
+
+        if getattr(message, "attachments", None):
+            return True
+        if self._forwarded_message_attachments(message):
+            return True
+        reference = getattr(message, "reference", None)
+        if reference is None:
+            return False
+        resolved = getattr(reference, "resolved", None)
+        if resolved is not None and getattr(resolved, "attachments", None):
+            return True
+        return bool(getattr(reference, "message_id", None))
 
     def _should_ignore_inbound_message(self, message: Any) -> bool:
         """Suppress duplicate Discord deliveries and obvious bot loops."""

@@ -1034,6 +1034,65 @@ class TestDiscordBridgePoC:
             ],
         )
 
+    def test_message_has_media_detects_forwarded_snapshots(self) -> None:
+        """Forwarded snapshot-only messages are not dropped as empty."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=_mock_callbacks(),
+        )
+        message = MagicMock()
+        message.attachments = []
+        message.messageSnapshots = [
+            {"message": {"attachments": [{"filename": "forwarded.png"}]}}
+        ]
+        message.reference = None
+
+        assert bridge._message_has_media(message) is True
+
+    @pytest.mark.anyio
+    async def test_forward_input_saves_attachment_without_content_type(
+        self, fresh_store: SessionStore, tmp_path, monkeypatch
+    ) -> None:
+        """Discord uses the filename when content type is absent."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        monkeypatch.setattr("tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path))
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = _mock_callbacks()
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+
+        attachment = AsyncMock()
+        attachment.content_type = None
+        attachment.filename = "notes.txt"
+        attachment.size = 5
+        attachment.read.return_value = b"hello"
+
+        mock_channel = AsyncMock()
+        mock_channel.id = 9876543210
+        mock_message = MagicMock()
+        mock_message.id = 43
+        mock_message.attachments = [attachment]
+        mock_message.messageSnapshots = []
+        mock_message.reference = None
+        mock_message.channel = mock_channel
+        mock_message.author.id = 7
+        mock_message.author.name = "testuser"
+
+        await bridge._forward_input(mock_message, session.id, "summarize")
+
+        callbacks.send_input.assert_awaited_once()
+        sent_text = callbacks.send_input.await_args.args[1]
+        assert "Attached files saved locally:" in sent_text
+        assert "notes.txt" in sent_text
+        assert "images" not in callbacks.send_input.await_args.kwargs
+
     @pytest.mark.anyio
     async def test_forward_input_saves_non_image_attachment(
         self, fresh_store: SessionStore, tmp_path, monkeypatch
