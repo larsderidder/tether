@@ -254,6 +254,68 @@ class Settings:
         return _get_bool("TETHER_DEBUG_ATTACH_LOGS", default=True)
 
     @staticmethod
+    def git_auto_checkpoint() -> bool:
+        """Auto-commit dirty git worktrees after each completed turn.
+
+        Env: TETHER_GIT_AUTO_CHECKPOINT (default: 0)
+        """
+        return _get_bool("TETHER_GIT_AUTO_CHECKPOINT", default=False)
+
+    @staticmethod
+    def git_auto_branch() -> bool:
+        """Auto-create a working branch for cloned workspaces.
+
+        Env: TETHER_GIT_AUTO_BRANCH (default: 0)
+        """
+        return _get_bool("TETHER_GIT_AUTO_BRANCH", default=False)
+
+    @staticmethod
+    def git_branch_pattern() -> str:
+        """Branch name pattern for auto-created working branches.
+
+        Env: TETHER_GIT_BRANCH_PATTERN (default: tether/{session_id})
+        """
+        return _get("TETHER_GIT_BRANCH_PATTERN", default="tether/{session_id}")
+
+    @staticmethod
+    def git_fetch_cache_seconds() -> int:
+        """Per-repo fetch cache TTL in seconds.
+
+        Env: TETHER_GIT_FETCH_CACHE_SECONDS (default: 300)
+        """
+        return _get_int("TETHER_GIT_FETCH_CACHE_SECONDS", default=300)
+
+    @staticmethod
+    def git_fetch_timeout() -> int:
+        """Timeout for `git fetch origin` in seconds.
+
+        Env: TETHER_GIT_FETCH_TIMEOUT (default: 30)
+        """
+        return _get_int("TETHER_GIT_FETCH_TIMEOUT", default=30)
+
+    @staticmethod
+    def repo_retention_days() -> int:
+        """Days to keep unused shared repo clones before pruning.
+
+        Env: TETHER_REPO_RETENTION_DAYS (default: 30)
+        """
+        return _get_int("TETHER_REPO_RETENTION_DAYS", default=30)
+
+    @staticmethod
+    def workspace_max_disk_gb() -> float | None:
+        """Optional workspace disk usage warning threshold in gigabytes.
+
+        Env: TETHER_WORKSPACE_MAX_DISK_GB
+        """
+        value = os.environ.get("TETHER_WORKSPACE_MAX_DISK_GB", "").strip()
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    @staticmethod
     def turn_timeout_seconds() -> int:
         """Maximum seconds for a runner turn before timeout. 0 disables.
 

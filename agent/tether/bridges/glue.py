@@ -91,6 +91,35 @@ def make_thread_name(
     )
 
 
+async def create_or_reuse_thread(
+    session_id: str,
+    session_name: str,
+    *,
+    platform: str,
+    existing_thread_id: str | None = None,
+) -> dict:
+    """Create or reuse a bridge thread with compatibility fallback."""
+    try:
+        return await bridge_manager.create_thread(
+            session_id,
+            session_name,
+            platform=platform,
+            existing_thread_id=existing_thread_id,
+        )
+    except TypeError as exc:
+        if "existing_thread_id" not in str(exc):
+            raise
+        logger.warning(
+            "Bridge does not support existing_thread_id, retrying without reuse",
+            session_id=session_id,
+            platform=platform,
+        )
+        bridge = bridge_manager.get_bridge(platform)
+        if bridge is None:
+            raise RuntimeError(f"No bridge registered for platform: {platform}")
+        return await bridge.create_thread(session_id, session_name)
+
+
 def preferred_thread_name(session) -> str | None:
     """Return the user-facing session title when it should drive thread naming."""
     if not getattr(session, "name", None):

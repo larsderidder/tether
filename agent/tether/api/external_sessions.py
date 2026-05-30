@@ -447,6 +447,7 @@ async def attach_to_external_session(
                 try:
                     from tether.bridges.glue import (
                         bridge_manager,
+                        create_or_reuse_thread,
                         make_thread_name,
                         preferred_thread_name_for_platform,
                     )
@@ -468,10 +469,30 @@ async def attach_to_external_session(
                     is_new_thread = new_thread_id != existing_session.platform_thread_id
                     existing_session.platform_thread_id = new_thread_id
                     store.update_session(existing_session)
-                    await _replay_stored_history_to_bridge(
-                        session=existing_session,
-                        bridge=_get_bound_bridge(existing_session),
+                    actual_runner_type = _external_runner_type_for_session(existing_session)
+                    detail = get_external_session_detail(
+                        session_id=external_id,
+                        runner_type=actual_runner_type,
+                        limit=100,
                     )
+                    if actual_runner_type == ExternalRunnerType.CODEX:
+                        await _replay_stored_history_to_bridge(
+                            session=existing_session,
+                            bridge=_get_bound_bridge(existing_session),
+                        )
+                    else:
+                        pi_meta = (
+                            _get_pi_metadata(external_id)
+                            if actual_runner_type == ExternalRunnerType.PI
+                            else None
+                        )
+                        replay = _format_replay(
+                            detail.messages if detail else [], metadata=pi_meta
+                        )
+                        if replay:
+                            await bridge_manager.send_replay(
+                                existing_session.id, replay, platform=payload.platform
+                            )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
             # Subscribe bridge if platform is bound
@@ -532,6 +553,7 @@ async def attach_to_external_session(
         try:
             from tether.bridges.glue import (
                 bridge_manager,
+                create_or_reuse_thread,
                 make_thread_name,
                 preferred_thread_name_for_platform,
             )
@@ -552,18 +574,6 @@ async def attach_to_external_session(
             is_new_thread = new_thread_id != session.platform_thread_id
             session.platform_thread_id = new_thread_id
 
-            # Only replay history into genuinely new threads.
-            if is_new_thread:
-                pi_meta = (
-                    _get_pi_metadata(external_id)
-                    if parsed_runner_type == ExternalRunnerType.PI
-                    else None
-                )
-                replay = _format_replay(detail.messages, metadata=pi_meta)
-                if replay:
-                    await bridge_manager.send_replay(
-                        session.id, replay, platform=payload.platform
-                    )
         except (ValueError, RuntimeError) as exc:
             store.delete_session(session.id)
             raise_http_error("VALIDATION_ERROR", str(exc), 400)
@@ -600,7 +610,7 @@ async def attach_to_external_session(
             thinking=msg.thinking,
             timestamp=msg.timestamp,
             is_final=is_final,
-            is_history=False,
+            is_history=True,
         )
         await _relay_history_message_to_bridge(
             session=session,
@@ -704,6 +714,18 @@ async def sync_external_session(
         logger.info("No new messages to sync", session_id=session_id)
         return SyncResult(synced=0, total=len(messages))
 
+    if not force and synced_count == 0:
+        existing_history = [
+            event
+            for event in store.read_event_log(session_id, since_seq=0)
+            if (event.get("data") or {}).get("is_history")
+            and event.get("type") in {"user_input", "output"}
+        ]
+        if len(existing_history) >= len(messages):
+            turn_count = sum(1 for m in messages if m.role == "user")
+            store.set_synced_message_count(session_id, len(messages), turn_count)
+            return SyncResult(synced=len(new_messages), total=len(messages))
+
     # Emit new messages
     history_bridge = _get_bound_bridge(session)
     for i, msg in enumerate(new_messages):
@@ -721,7 +743,7 @@ async def sync_external_session(
             thinking=msg.thinking,
             timestamp=msg.timestamp,
             is_final=is_final,
-            is_history=False,
+            is_history=True,
         )
         await _relay_history_message_to_bridge(
             session=session,

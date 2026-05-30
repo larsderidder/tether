@@ -136,6 +136,52 @@ def _get_json(path: str, *, params: dict[str, str] | None = None) -> list | dict
         return resp.json()
 
 
+def _get_running_platforms() -> list[str]:
+    """Return running bridge platform names, sorted alphabetically."""
+    try:
+        with _client() as c:
+            resp = c.get("/api/status/bridges")
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+
+        running = {
+            b.get("platform")
+            for b in data.get("bridges", [])
+            if b.get("status") == "running" and b.get("platform")
+        }
+        return sorted(running, key=str.casefold)
+    except Exception:
+        return []
+
+
+def _detect_platform() -> str | None:
+    """Return the single active bridge platform, or None."""
+    running = _get_running_platforms()
+    return running[0] if len(running) == 1 else None
+
+
+def _prompt_platform() -> str | None:
+    """Auto-select or prompt the user to pick a bridge platform."""
+    running = _get_running_platforms()
+    if not running:
+        return None
+    if len(running) == 1:
+        return running[0]
+    print("Multiple bridges are running. Pick one to bind this session to:")
+    for i, name in enumerate(running, 1):
+        print(f"  {i}) {name}")
+    print(f"  {len(running) + 1}) none (skip)")
+    try:
+        choice = input("Bridge [1]: ").strip() or "1"
+        idx = int(choice) - 1
+    except (ValueError, EOFError, KeyboardInterrupt):
+        return None
+    if 0 <= idx < len(running):
+        return running[idx]
+    return None
+
+
 def _fetch_external_sessions(
     *,
     directory: str | None = None,
@@ -175,6 +221,27 @@ def _is_external_not_found_response(resp: httpx.Response) -> bool:
     if not message:
         return True
     return "external session not found" in message.lower()
+
+
+# ---------------------------------------------------------------------------
+# Context banner
+# ---------------------------------------------------------------------------
+
+
+def _print_context_banner() -> None:
+    """Print the active context as a one-liner when using a remote server."""
+    from tether.servers import get_active_context, get_server
+
+    active = get_active_context()
+    if active is None:
+        return
+    profile = get_server(active)
+    if profile:
+        host = profile.get("host", "?")
+        port = profile.get("port", "8787")
+        print(f"→ {active} ({host}:{port})")
+    else:
+        print(f"→ {active}")
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +640,8 @@ def cmd_attach(
             resolved_id = external_id
             resolved_runner_type = _normalize_runner_type(runner_type)
             resolved_directory = directory
+            if not platform:
+                platform = _prompt_platform()
 
             body: dict = {
                 "external_id": resolved_id,

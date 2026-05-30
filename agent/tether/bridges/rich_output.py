@@ -100,6 +100,12 @@ def _escape_code(text: str) -> str:
     return text.replace("```", "``\u200b`")
 
 
+def _clean_thinking_markers(text: str) -> str:
+    """Remove legacy inline thinking markers from token-streamed output."""
+
+    return re.sub(r"\[thinking\]\s*", "", text)
+
+
 def _chunk_plain(text: str, limit: int) -> list[str]:
     if len(text) <= limit:
         return [text]
@@ -125,7 +131,7 @@ def render_markdown_segments(text: str, *, limit: int, bold: str = "**") -> list
         if segment.kind == "assistant":
             messages.extend(_chunk_plain(segment.text, limit))
         elif segment.kind == "thinking":
-            body = segment.text.strip() or "Thinking"
+            body = _clean_thinking_markers(segment.text).strip() or "Thinking"
             quote = "\n".join(f"> {line}" for line in body.splitlines())
             messages.extend(_chunk_plain(f"💭 {bold}Thinking{bold}\n{quote}", limit))
         elif segment.kind == "tool_call":
@@ -171,7 +177,7 @@ def render_telegram_messages(text: str) -> list[str]:
             rendered = markdown_to_telegram_html(segment.text)
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "thinking":
-            body = html.escape(segment.text.strip() or "Thinking")
+            body = html.escape(_clean_thinking_markers(segment.text).strip() or "Thinking")
             rendered = f"💭 <b>Thinking</b>\n<i>{body}</i>"
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "tool_call":

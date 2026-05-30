@@ -42,6 +42,7 @@ from tether.api.state import (
 )
 from tether.bridges.glue import (
     bridge_manager,
+    create_or_reuse_thread,
     make_thread_name,
     preferred_thread_name_for_platform,
     sync_bound_thread_name,
