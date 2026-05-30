@@ -28,7 +28,7 @@ class TelegramBridge(UpstreamTelegramBridge):
             logger.warning("No Telegram topic for session", session_id=session_id)
             return
 
-        messages = render_telegram_messages(text) or [text]
+        messages = render_telegram_messages(text, metadata=metadata) or [text]
         for message in messages:
             try:
                 await self._app.bot.send_message(

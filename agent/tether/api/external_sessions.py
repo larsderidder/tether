@@ -466,7 +466,6 @@ async def attach_to_external_session(
                         existing_thread_id=existing_session.platform_thread_id,
                     )
                     new_thread_id = thread_info.get("thread_id")
-                    is_new_thread = new_thread_id != existing_session.platform_thread_id
                     existing_session.platform_thread_id = new_thread_id
                     store.update_session(existing_session)
                     actual_runner_type = _external_runner_type_for_session(existing_session)
@@ -571,7 +570,6 @@ async def attach_to_external_session(
                 existing_thread_id=session.platform_thread_id,
             )
             new_thread_id = thread_info.get("thread_id")
-            is_new_thread = new_thread_id != session.platform_thread_id
             session.platform_thread_id = new_thread_id
 
         except (ValueError, RuntimeError) as exc:

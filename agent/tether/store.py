@@ -20,7 +20,7 @@ from sqlmodel import select
 
 from tether.db import get_session as get_db_session, init_db
 from tether.git import has_git_repository, normalize_directory_path
-from tether.models import Message, RepoRef, Session, SessionState
+from tether.models import Message, Session, SessionState
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)

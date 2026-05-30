@@ -237,6 +237,18 @@ class TestRichOutputFormatting:
         assert messages[1].startswith("📥 **Tool output** `bash`\n```text\n")
         assert "/tmp/demo" in messages[1]
 
+    def test_render_discord_messages_prefers_structured_segments(self) -> None:
+        messages = render_discord_messages(
+            "[thinking] The[thinking] noisy marker",
+            metadata={
+                "bridge_segments": [
+                    {"kind": "thinking", "text": "The[thinking] noisy marker"}
+                ]
+            },
+        )
+
+        assert messages == ["💭 **Thinking**\n> The noisy marker"]
+
     def test_render_telegram_messages_formats_tool_output_as_pre(self) -> None:
         messages = render_telegram_messages("[error] invalid_grant")
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
 
 from tether.api.emit import (
@@ -20,13 +22,10 @@ from tether.api.emit import (
 )
 from tether.api.state import now, session_lock, transition
 from tether.models import SessionState
-from tether.runner import Runner, get_runner
+from tether.runner import Runner
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
-
-# Import at end to avoid circular dependency
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tether.api.runner_registry import RunnerRegistry

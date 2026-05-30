@@ -1,4 +1,4 @@
-"""Tether-local bridge subscriber with final-output metadata passthrough."""
+"""Bridge subscriber with Tether-local output metadata support."""
 
 from __future__ import annotations
 
@@ -9,10 +9,7 @@ from typing import Any
 import structlog
 from agent_tether.base import ApprovalRequest
 from agent_tether.manager import BridgeManager
-from agent_tether.subscriber import (
-    _OUTPUT_FLUSH_DELAY_S,
-    _OUTPUT_FLUSH_MAX_CHARS,
-)
+from agent_tether.subscriber import _OUTPUT_FLUSH_DELAY_S, _OUTPUT_FLUSH_MAX_CHARS
 
 logger = structlog.get_logger(__name__)
 
@@ -32,7 +29,6 @@ class BridgeSubscriber:
             or remove_subscriber is None
         ):
             from tether.bridges.glue import (
-                bridge_manager as _bridge_manager,
                 _new_subscriber,
                 _remove_subscriber,
                 bridge_manager as _bridge_manager,
@@ -48,6 +44,7 @@ class BridgeSubscriber:
         self._tasks: dict[str, asyncio.Task] = {}
         self._queues: dict[str, asyncio.Queue] = {}
         self._output_buffers: dict[str, list[str]] = {}
+        self._segment_buffers: dict[str, list[dict[str, str]]] = {}
         self._output_flush_tasks: dict[str, asyncio.Task] = {}
 
     def subscribe(self, session_id: str, platform: str) -> None:
@@ -60,8 +57,7 @@ class BridgeSubscriber:
         task = asyncio.create_task(self._consume(session_id, platform, queue))
         self._tasks[session_id] = task
         logger.info(
-            "Bridge subscriber started",
-            extra={"session_id": session_id, "platform": platform},
+            "Bridge subscriber started", session_id=session_id, platform=platform
         )
 
     async def unsubscribe(
@@ -72,7 +68,7 @@ class BridgeSubscriber:
         self._queues.pop(session_id, None)
         if task:
             task.cancel()
-            logger.info("Bridge subscriber stopped", extra={"session_id": session_id})
+            logger.info("Bridge subscriber stopped", session_id=session_id)
 
         if platform:
             bridge = self._bridge_manager.get_bridge(platform)
@@ -80,34 +76,44 @@ class BridgeSubscriber:
                 await self._flush_output(session_id, bridge)
                 await bridge.on_session_removed(session_id)
 
-    def _buffer_output(self, session_id: str, text: str) -> None:
+    def _buffer_output(
+        self,
+        session_id: str,
+        text: str,
+        bridge_segments: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Add text and optional structured bridge segments to the output buffer."""
         self._output_buffers.setdefault(session_id, []).append(text)
+        if bridge_segments:
+            self._segment_buffers.setdefault(session_id, []).extend(bridge_segments)
 
     def _buffer_size(self, session_id: str) -> int:
+        """Return the total character count in the output buffer."""
         return sum(len(text) for text in self._output_buffers.get(session_id, []))
 
     async def _flush_output(self, session_id: str, bridge: object) -> None:
+        """Send all buffered output for a session to the bridge."""
         task = self._output_flush_tasks.pop(session_id, None)
         if task and not task.done():
             task.cancel()
 
         buffered = self._output_buffers.pop(session_id, [])
-        if not buffered:
+        bridge_segments = self._segment_buffers.pop(session_id, [])
+        if not buffered and not bridge_segments:
             return
 
         text = "".join(buffered)
-        if not text.strip():
+        if not text.strip() and not bridge_segments:
             return
 
+        metadata = {"bridge_segments": bridge_segments} if bridge_segments else None
         try:
-            await bridge.on_output(session_id, text)
+            await bridge.on_output(session_id, text, metadata=metadata)
         except Exception:
-            logger.exception(
-                "Failed to flush output to bridge",
-                extra={"session_id": session_id},
-            )
+            logger.exception("Failed to flush output to bridge", session_id=session_id)
 
     async def _schedule_flush(self, session_id: str, bridge: object) -> None:
+        """Schedule a delayed flush of buffered output."""
         existing = self._output_flush_tasks.pop(session_id, None)
         if existing and not existing.done():
             existing.cancel()
@@ -129,12 +135,13 @@ class BridgeSubscriber:
     async def _consume(
         self, session_id: str, platform: str, queue: asyncio.Queue
     ) -> None:
-        """Background task that reads from a store subscriber and routes events."""
+        """Read store subscriber events and route them to the platform bridge."""
         bridge = self._bridge_manager.get_bridge(platform)
         if not bridge:
             logger.warning(
                 "No bridge for platform, subscriber exiting",
-                extra={"session_id": session_id, "platform": platform},
+                session_id=session_id,
+                platform=platform,
             )
             return
 
@@ -150,7 +157,12 @@ class BridgeSubscriber:
                 try:
                     if event_type == "output":
                         text = data.get("text", "")
-                        if not text:
+                        bridge_segments = (
+                            data.get("bridge_segments")
+                            if isinstance(data.get("bridge_segments"), list)
+                            else None
+                        )
+                        if not text and not bridge_segments:
                             continue
                         is_final = bool(data.get("final") or data.get("is_final"))
 
@@ -160,19 +172,19 @@ class BridgeSubscriber:
                                 "final": True,
                                 "kind": str(data.get("kind") or "final"),
                             }
+                            if bridge_segments:
+                                metadata["bridge_segments"] = bridge_segments
                             attachments = data.get("attachments")
                             if attachments:
                                 metadata["attachments"] = attachments
                             warnings = data.get("attachment_warnings")
                             if warnings:
                                 metadata["attachment_warnings"] = warnings
-                            await bridge.on_output(
-                                session_id,
-                                text,
-                                metadata=metadata,
-                            )
+                            await bridge.on_output(session_id, text, metadata=metadata)
                         else:
-                            self._buffer_output(session_id, text)
+                            self._buffer_output(
+                                session_id, text, bridge_segments=bridge_segments
+                            )
                             await self._schedule_flush(session_id, bridge)
 
                     elif event_type == "output_final":
@@ -180,59 +192,7 @@ class BridgeSubscriber:
 
                     elif event_type == "permission_request":
                         await self._flush_output(session_id, bridge)
-
-                        tool_input = data.get("tool_input", {})
-                        tool_name = data.get("tool_name", "Permission request")
-                        if (
-                            isinstance(tool_input, dict)
-                            and str(tool_name).startswith("AskUserQuestion")
-                            and isinstance(tool_input.get("questions"), list)
-                            and tool_input["questions"]
-                            and isinstance(tool_input["questions"][0], dict)
-                        ):
-                            question = tool_input["questions"][0]
-                            header = str(question.get("header") or "Question")
-                            prompt = str(question.get("question") or "")
-                            options = question.get("options") or []
-                            labels: list[str] = []
-                            lines: list[str] = [prompt.strip()] if prompt else []
-                            for index, option in enumerate(options, start=1):
-                                if not isinstance(option, dict):
-                                    continue
-                                label = str(option.get("label") or "").strip()
-                                description = str(
-                                    option.get("description") or ""
-                                ).strip()
-                                if not label:
-                                    continue
-                                labels.append(label)
-                                if description:
-                                    lines.append(f"{index}. {label} - {description}")
-                                else:
-                                    lines.append(f"{index}. {label}")
-
-                            request = ApprovalRequest(
-                                kind="choice",
-                                request_id=data.get("request_id", ""),
-                                title=header,
-                                description="\n".join(
-                                    line for line in lines if line
-                                ).strip(),
-                                options=labels,
-                            )
-                        else:
-                            description = (
-                                json.dumps(tool_input)
-                                if isinstance(tool_input, dict)
-                                else str(tool_input)
-                            )
-                            request = ApprovalRequest(
-                                kind="permission",
-                                request_id=data.get("request_id", ""),
-                                title=tool_name,
-                                description=description,
-                                options=["Allow", "Deny"],
-                            )
+                        request = self._build_approval_request(data)
                         await bridge.on_approval_request(session_id, request)
 
                     elif event_type == "session_state":
@@ -251,25 +211,76 @@ class BridgeSubscriber:
                         await self._flush_output(session_id, bridge)
                         message = data.get("message", "Unknown error")
                         await bridge.on_status_change(
-                            session_id,
-                            "error",
-                            {"message": message},
+                            session_id, "error", {"message": message}
                         )
 
                 except Exception:
                     logger.exception(
                         "Failed to route event to bridge",
-                        extra={"session_id": session_id, "event_type": event_type},
+                        session_id=session_id,
+                        event_type=event_type,
                     )
         except asyncio.CancelledError:
             pass
         finally:
             self._remove_subscriber(session_id, queue)
 
+    def _build_approval_request(self, data: dict) -> ApprovalRequest:
+        """Build a bridge approval request from permission event data."""
+        tool_input = data.get("tool_input", {})
+        tool_name = data.get("tool_name", "Permission request")
+
+        if (
+            isinstance(tool_input, dict)
+            and str(tool_name).startswith("AskUserQuestion")
+            and isinstance(tool_input.get("questions"), list)
+            and tool_input["questions"]
+            and isinstance(tool_input["questions"][0], dict)
+        ):
+            question = tool_input["questions"][0]
+            header = str(question.get("header") or "Question")
+            prompt = str(question.get("question") or "")
+            options = question.get("options") or []
+            labels: list[str] = []
+            lines: list[str] = [prompt.strip()] if prompt else []
+            for index, option in enumerate(options, start=1):
+                if not isinstance(option, dict):
+                    continue
+                label = str(option.get("label") or "").strip()
+                description = str(option.get("description") or "").strip()
+                if not label:
+                    continue
+                labels.append(label)
+                lines.append(
+                    f"{index}. {label} - {description}"
+                    if description
+                    else f"{index}. {label}"
+                )
+
+            return ApprovalRequest(
+                kind="choice",
+                request_id=data.get("request_id", ""),
+                title=header,
+                description="\n".join(line for line in lines if line).strip(),
+                options=labels,
+            )
+
+        description = (
+            json.dumps(tool_input) if isinstance(tool_input, dict) else str(tool_input)
+        )
+        return ApprovalRequest(
+            kind="permission",
+            request_id=data.get("request_id", ""),
+            title=tool_name,
+            description=description,
+            options=["Allow", "Deny"],
+        )
+
 
 def __getattr__(name: str) -> Any:
-    """Lazy accessors for the global bridge singletons."""
-    if name in {"bridge_subscriber", "bridge_manager"}:
+    """Lazy accessors for global bridge singletons."""
+
+    if name in {"bridge_manager", "bridge_subscriber"}:
         from tether.bridges.glue import bridge_manager, bridge_subscriber
 
         return {

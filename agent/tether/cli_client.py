@@ -155,12 +155,6 @@ def _get_running_platforms() -> list[str]:
         return []
 
 
-def _detect_platform() -> str | None:
-    """Return the single active bridge platform, or None."""
-    running = _get_running_platforms()
-    return running[0] if len(running) == 1 else None
-
-
 def _prompt_platform() -> str | None:
     """Auto-select or prompt the user to pick a bridge platform."""
     running = _get_running_platforms()
@@ -313,7 +307,6 @@ def cmd_setup_agents(
         install_cmd = agent.get("install_command")
         install_requires = agent.get("install_requires")
         install_requires_met = agent.get("install_requires_met", True)
-        version = agent.get("version")
 
         has_local_creds = _has_local_credentials(name)
 
@@ -336,7 +329,7 @@ def cmd_setup_agents(
                 print(
                     f"  Cannot install {label}: '{install_requires}' is not installed on the server."
                 )
-                print(f"  Install it first, then re-run setup.")
+                print("  Install it first, then re-run setup.")
                 continue
 
             if not _prompt(f"Install {label}?"):
@@ -359,7 +352,6 @@ def cmd_setup_agents(
 
             # Re-probe: now offer credentials if applicable.
             installed = True
-            version = new_version
 
         # Offer to push credentials if we have them locally.
         creds_files = _read_local_credentials(name)
@@ -791,7 +783,7 @@ def cmd_new(
     if session.get("platform"):
         print(f"  Platform:  {session['platform']}")
     if prompt:
-        print(f"  Started with prompt.")
+        print("  Started with prompt.")
 
 
 def cmd_detach(session_id: str) -> None:
@@ -987,7 +979,6 @@ def cmd_verify() -> None:
     Checks the health endpoint, authenticated API access, and bridge status.
     """
     url = _base_url()
-    headers = _auth_headers()
     all_ok = True
 
     # 1. Health check (no auth required)
