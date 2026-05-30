@@ -15,6 +15,7 @@ from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 from tether.bridges.image_io import (
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_MESSAGE,
+    detect_image_mime_type,
     make_bridge_image,
 )
 from tether.bridges.rich_output import render_telegram_messages
@@ -304,7 +305,10 @@ class TelegramBridge(UpstreamTelegramBridge):
             media_type = mimetypes.guess_type(attachment.filename)[0] or ""
             try:
                 with attachment_path.open("rb") as handle:
-                    if media_type.startswith("image/"):
+                    header = handle.read(64)
+                    handle.seek(0)
+                    sniffed_image_type = detect_image_mime_type(header)
+                    if sniffed_image_type and media_type.startswith("image/"):
                         await with_bridge_send_retry(
                             "telegram.output_photo",
                             lambda handle=handle, attachment=attachment: self._app.bot.send_photo(

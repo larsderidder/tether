@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from agent_tether.base import BridgeCallbacks
 from tether.bridges.telegram.bot import TelegramBridge
+from tether.output_postprocess import PublishedAttachment
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
 
@@ -129,3 +131,34 @@ async def test_media_group_buffers_images_as_one_input() -> None:
             },
         ],
     )
+
+
+@pytest.mark.anyio
+async def test_output_attachment_uses_document_when_image_extension_is_spoofed(
+    tmp_path: Path,
+) -> None:
+    """Telegram output attachments are sniffed before using send_photo."""
+
+    spoofed = tmp_path / "spoofed.png"
+    spoofed.write_bytes(b"not really a png")
+
+    bridge = TelegramBridge("token", 123)
+    bridge._app = AsyncMock()
+    bridge._app.bot.send_document = AsyncMock(return_value={"message_id": 1})
+    bridge._app.bot.send_photo = AsyncMock(return_value={"message_id": 2})
+
+    await bridge._send_output_attachments(
+        "sess1",
+        99,
+        metadata={
+            "attachments": [
+                PublishedAttachment(
+                    path=str(spoofed),
+                    filename="spoofed.png",
+                ).to_metadata()
+            ]
+        },
+    )
+
+    bridge._app.bot.send_document.assert_awaited_once()
+    bridge._app.bot.send_photo.assert_not_awaited()
