@@ -8,9 +8,49 @@ import pytest
 
 from tether.bridges.media_io import (
     append_media_file_references,
+    download_with_media_policy,
     store_bridge_media_file,
     supported_media_type,
+    validate_media_download_url,
 )
+
+
+def test_validate_media_download_url_allows_platform_hosts() -> None:
+    """Bridge downloads are limited to known platform media hosts."""
+
+    validate_media_download_url("discord", "https://cdn.discordapp.com/attachments/a/b")
+    validate_media_download_url("telegram", "https://api.telegram.org/file/bot/x")
+
+    with pytest.raises(ValueError, match="host"):
+        validate_media_download_url("discord", "https://example.com/file.png")
+
+
+@pytest.mark.anyio
+async def test_download_with_media_policy_applies_total_timeout() -> None:
+    """Slow bridge media downloads are cancelled centrally."""
+
+    async def slow_download() -> bytes:
+        import asyncio
+
+        await asyncio.sleep(0.05)
+        return b"late"
+
+    with pytest.raises(TimeoutError):
+        await download_with_media_policy(
+            slow_download,
+            platform="discord",
+            total_timeout_s=0.001,
+        )
+
+
+@pytest.mark.anyio
+async def test_download_with_media_policy_returns_bytes() -> None:
+    """Successful downloads are normalized to bytes."""
+
+    async def download() -> bytearray:
+        return bytearray(b"ok")
+
+    assert await download_with_media_policy(download, platform="discord") == b"ok"
 
 
 def test_supported_media_type_accepts_documents_audio_and_video() -> None:

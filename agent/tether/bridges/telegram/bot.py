@@ -25,6 +25,7 @@ from tether.bridges.media_io import (
     MAX_MEDIA_BYTES,
     BridgeMediaFile,
     append_media_file_references,
+    download_with_media_policy,
     store_bridge_media_file,
     supported_media_type,
 )
@@ -106,7 +107,11 @@ class TelegramBridge(UpstreamTelegramBridge):
                     return [], []
                 try:
                     telegram_file = await image_ref.get_file()
-                    data = bytes(await telegram_file.download_as_bytearray())
+                    data = await download_with_media_policy(
+                        telegram_file.download_as_bytearray,
+                        platform="telegram",
+                        url=getattr(telegram_file, "file_path", None),
+                    )
                     image = make_bridge_image(
                         data,
                         declared_mime_type=declared_mime_type,
@@ -138,7 +143,11 @@ class TelegramBridge(UpstreamTelegramBridge):
             return [], []
         try:
             telegram_file = await media_ref.get_file()
-            data = bytes(await telegram_file.download_as_bytearray())
+            data = await download_with_media_policy(
+                telegram_file.download_as_bytearray,
+                platform="telegram",
+                url=getattr(telegram_file, "file_path", None),
+            )
             media_file = store_bridge_media_file(
                 session_id=session_id,
                 data=data,

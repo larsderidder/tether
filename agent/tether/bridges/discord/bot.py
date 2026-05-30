@@ -40,6 +40,7 @@ from tether.bridges.media_io import (
     MAX_MEDIA_FILES_PER_MESSAGE,
     BridgeMediaFile,
     append_media_file_references,
+    download_with_media_policy,
     store_bridge_media_file,
     supported_media_type,
 )
@@ -655,7 +656,12 @@ class DiscordBridge(UpstreamDiscordBridge):
                     )
                     continue
                 try:
-                    data = await attachment.read()
+                    data = await download_with_media_policy(
+                        attachment.read,
+                        platform="discord",
+                        url=getattr(attachment, "url", None)
+                        or getattr(attachment, "proxy_url", None),
+                    )
                     image = make_bridge_image(
                         data,
                         declared_mime_type=content_type,
@@ -685,7 +691,12 @@ class DiscordBridge(UpstreamDiscordBridge):
                 )
                 continue
             try:
-                data = await attachment.read()
+                data = await download_with_media_policy(
+                    attachment.read,
+                    platform="discord",
+                    url=getattr(attachment, "url", None)
+                    or getattr(attachment, "proxy_url", None),
+                )
                 files.append(
                     store_bridge_media_file(
                         session_id=session_id,

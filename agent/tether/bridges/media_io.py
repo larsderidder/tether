@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from tether.bridges.image_io import sanitize_filename as sanitize_image_filename
@@ -12,7 +15,21 @@ from tether.settings import settings
 
 MAX_MEDIA_BYTES = 25 * 1024 * 1024
 MAX_MEDIA_FILES_PER_MESSAGE = 4
+BRIDGE_MEDIA_IDLE_TIMEOUT_S = 15.0
+BRIDGE_MEDIA_TOTAL_TIMEOUT_S = 60.0
 SUPPORTED_MEDIA_PREFIXES = ("audio/", "video/", "text/")
+ALLOWED_MEDIA_HOSTS = {
+    "discord": {
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "images-ext-1.discordapp.net",
+        "images-ext-2.discordapp.net",
+    },
+    "telegram": {
+        "api.telegram.org",
+        "file.telegram.org",
+    },
+}
 SUPPORTED_MEDIA_TYPES = {
     "application/pdf",
     "application/json",
@@ -37,6 +54,34 @@ class BridgeMediaFile:
     filename: str
     mime_type: str
     size: int
+
+
+def validate_media_download_url(platform: str, url: object) -> None:
+    """Reject media downloads from unexpected platform hosts."""
+
+    if not url or not isinstance(url, str):
+        return
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("attachment URL scheme is not supported")
+    allowed_hosts = ALLOWED_MEDIA_HOSTS.get(platform, set())
+    host = (parsed.hostname or "").lower()
+    if allowed_hosts and host not in allowed_hosts:
+        raise ValueError("attachment URL host is not allowed")
+
+
+async def download_with_media_policy(
+    operation: Callable[[], Awaitable[bytes | bytearray]],
+    *,
+    platform: str,
+    url: object = None,
+    total_timeout_s: float = BRIDGE_MEDIA_TOTAL_TIMEOUT_S,
+) -> bytes:
+    """Run a bridge media download with host checks and a total timeout."""
+
+    validate_media_download_url(platform, url)
+    data = await asyncio.wait_for(operation(), timeout=total_timeout_s)
+    return bytes(data)
 
 
 def supported_media_type(mime_type: str | None) -> bool:
