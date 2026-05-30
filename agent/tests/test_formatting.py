@@ -306,3 +306,28 @@ class TestRichOutputFormatting:
             "• Shipping: **100 credits = ~6 units**\n"
             "• Tax on shipping: **~1 unit**",
         ]
+
+    def test_render_discord_messages_converts_tables_to_code_blocks(self) -> None:
+        messages = render_discord_messages(
+            "Benchmark:\n\n"
+            "| Card | Price | Verdict |\n"
+            "|---|---:|---|\n"
+            "| **Item A** | €10 | **Keep** |\n"
+            "| [Item B](https://example.com) | €12 | Maybe |\n"
+            "\nDone."
+        )
+
+        assert messages == [
+            "Benchmark:\n\n"
+            "```text\n"
+            "Card    Price  Verdict\n"
+            "Item A  €10    Keep\n"
+            "Item B  €12    Maybe\n"
+            "```\n"
+            "\nDone."
+        ]
+
+    def test_render_discord_messages_does_not_convert_tables_inside_code(self) -> None:
+        table = "```markdown\n| A | B |\n|---|---|\n| 1 | 2 |\n```"
+
+        assert render_discord_messages(table) == [table]

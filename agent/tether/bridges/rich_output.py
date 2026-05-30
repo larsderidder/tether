@@ -169,12 +169,13 @@ def _clean_thinking_markers(text: str) -> str:
 
 
 def _normalize_plain_markdown(text: str) -> str:
-    """Stabilize common Markdown list syntax for chat renderers.
+    """Stabilize common Markdown syntax for chat renderers.
 
-    This only rewrites explicit list markers at the start of lines and skips
+    This rewrites explicit list markers and Markdown tables while skipping
     fenced code blocks. It avoids guessing where newlines should go.
     """
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = _markdown_tables_to_code_blocks(normalized)
     lines = normalized.split("\n")
     converted: list[str] = []
     in_code_block = False
@@ -205,6 +206,92 @@ def _normalize_plain_markdown(text: str) -> str:
         converted.append(line)
 
     return "\n".join(converted)
+
+
+def _markdown_tables_to_code_blocks(text: str) -> str:
+    """Convert Markdown tables to aligned code blocks for chat renderers."""
+
+    lines = text.split("\n")
+    converted: list[str] = []
+    index = 0
+    in_code_block = False
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            converted.append(line)
+            index += 1
+            continue
+
+        if not in_code_block and _is_table_start(lines, index):
+            table_lines = [line, lines[index + 1]]
+            index += 2
+            while index < len(lines) and _is_table_row(lines[index]):
+                table_lines.append(lines[index])
+                index += 1
+            rendered = _render_markdown_table(table_lines)
+            if rendered:
+                converted.append(rendered)
+                continue
+            converted.extend(table_lines)
+            continue
+
+        converted.append(line)
+        index += 1
+
+    return "\n".join(converted)
+
+
+def _is_table_start(lines: list[str], index: int) -> bool:
+    return (
+        index + 1 < len(lines)
+        and _is_table_row(lines[index])
+        and _is_table_separator(lines[index + 1])
+    )
+
+
+def _is_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def _is_table_separator(line: str) -> bool:
+    if not _is_table_row(line):
+        return False
+    cells = _split_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def _split_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _render_markdown_table(table_lines: list[str]) -> str | None:
+    if len(table_lines) < 3:
+        return None
+    rows = [_split_table_row(line) for line in table_lines]
+    headers = rows[0]
+    body = rows[2:]
+    if not headers or not body:
+        return None
+    column_count = len(headers)
+    if any(len(row) != column_count for row in body):
+        return None
+    clean_rows = [[_clean_table_cell(cell) for cell in row] for row in [headers, *body]]
+    widths = [max(len(row[column]) for row in clean_rows) for column in range(column_count)]
+    rendered_lines = []
+    for row in clean_rows:
+        rendered_lines.append("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)).rstrip())
+    return "```text\n" + "\n".join(rendered_lines) + "\n```"
+
+
+def _clean_table_cell(text: str) -> str:
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    return text.replace("`", "").strip()
 
 
 def _chunk_plain(text: str, limit: int) -> list[str]:
