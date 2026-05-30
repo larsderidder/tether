@@ -91,6 +91,26 @@ class BridgeSubscriber:
         """Return the total character count in the output buffer."""
         return sum(len(text) for text in self._output_buffers.get(session_id, []))
 
+    @staticmethod
+    def _is_streaming_prose(
+        bridge_segments: list[dict[str, str]] | None,
+    ) -> bool:
+        """Return true for assistant prose tokens that should wait for final text."""
+
+        if not bridge_segments:
+            return False
+        prose_kinds = {"assistant", "thinking"}
+        return all(str(segment.get("kind") or "") in prose_kinds for segment in bridge_segments)
+
+    def _discard_buffered_output(self, session_id: str) -> None:
+        """Drop buffered streaming output for a session."""
+
+        task = self._output_flush_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+        self._output_buffers.pop(session_id, None)
+        self._segment_buffers.pop(session_id, None)
+
     async def _flush_output(self, session_id: str, bridge: object) -> None:
         """Send all buffered output for a session to the bridge."""
         task = self._output_flush_tasks.pop(session_id, None)
@@ -185,10 +205,25 @@ class BridgeSubscriber:
                             self._buffer_output(
                                 session_id, text, bridge_segments=bridge_segments
                             )
-                            await self._schedule_flush(session_id, bridge)
+                            if not self._is_streaming_prose(bridge_segments):
+                                await self._schedule_flush(session_id, bridge)
 
                     elif event_type == "output_final":
-                        pass
+                        self._discard_buffered_output(session_id)
+                        text = data.get("text", "")
+                        if not text:
+                            continue
+                        metadata = {
+                            "final": True,
+                            "kind": str(data.get("kind") or "final"),
+                        }
+                        attachments = data.get("attachments")
+                        if attachments:
+                            metadata["attachments"] = attachments
+                        warnings = data.get("attachment_warnings")
+                        if warnings:
+                            metadata["attachment_warnings"] = warnings
+                        await bridge.on_output(session_id, text, metadata=metadata)
 
                     elif event_type == "permission_request":
                         await self._flush_output(session_id, bridge)

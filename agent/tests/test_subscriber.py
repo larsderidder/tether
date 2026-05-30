@@ -228,7 +228,7 @@ class TestEventRouting:
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
-    async def test_skips_output_final_blob(
+    async def test_routes_output_final_blob(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
         session = fresh_store.create_session("test", "main")
@@ -245,7 +245,45 @@ class TestEventRouting:
             },
         )
         await sub.unsubscribe(session.id)
-        assert len(fake_bridge.output_calls) == 0
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["text"] == "accumulated blob"
+        assert fake_bridge.output_calls[0]["metadata"]["final"] is True
+
+    @pytest.mark.anyio
+    async def test_output_final_replaces_buffered_streaming_prose(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "- broken missing newline next",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "assistant", "text": "- broken missing newline next"}
+                    ],
+                },
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "- fixed\n- list"},
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["text"] == "- fixed\n- list"
 
     @pytest.mark.anyio
     async def test_routes_permission_request(
