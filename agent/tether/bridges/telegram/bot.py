@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
-import mimetypes
-from pathlib import Path
 from typing import Any
 
 import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
+from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
     is_obvious_telegram_bot_loop,
@@ -20,12 +19,10 @@ from tether.bridges.dedupe import (
 from tether.bridges.image_io import (
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_MESSAGE,
-    detect_image_mime_type,
     make_bridge_image,
 )
 from tether.bridges.rich_output import render_telegram_messages
 from tether.bridges.retry import with_bridge_send_retry
-from tether.output_postprocess import PublishedAttachment
 
 logger = structlog.get_logger(__name__)
 _TELEGRAM_MEDIA_GROUP_DEBOUNCE_S = 0.7
@@ -343,33 +340,24 @@ class TelegramBridge(UpstreamTelegramBridge):
     ) -> None:
         """Upload runner-published attachments to Telegram."""
 
-        attachments = [
-            attachment
-            for attachment in (
-                PublishedAttachment.from_metadata(item)
-                for item in (metadata or {}).get("attachments") or []
-            )
-            if attachment is not None
-        ][:MAX_IMAGES_PER_MESSAGE]
+        attachments = attachments_from_metadata(
+            metadata,
+            max_count=MAX_IMAGES_PER_MESSAGE,
+        )
         if not attachments or not self._app:
             return
 
         for attachment in attachments:
-            attachment_path = Path(attachment.path)
-            media_type = mimetypes.guess_type(attachment.filename)[0] or ""
             try:
-                with attachment_path.open("rb") as handle:
-                    header = handle.read(64)
-                    handle.seek(0)
-                    sniffed_image_type = detect_image_mime_type(header)
-                    if sniffed_image_type and media_type.startswith("image/"):
+                with attachment.path.open("rb") as handle:
+                    if attachment.send_as_image:
                         await with_bridge_send_retry(
                             "telegram.output_photo",
                             lambda handle=handle, attachment=attachment: self._app.bot.send_photo(
                                 chat_id=self._forum_group_id,
                                 message_thread_id=topic_id,
                                 photo=handle,
-                                caption=attachment.title or attachment.filename,
+                                caption=attachment.caption,
                             ),
                         )
                     else:
@@ -380,14 +368,14 @@ class TelegramBridge(UpstreamTelegramBridge):
                                 message_thread_id=topic_id,
                                 document=handle,
                                 filename=attachment.filename,
-                                caption=attachment.title or attachment.filename,
+                                caption=attachment.caption,
                             ),
                         )
             except Exception:
                 logger.exception(
                     "Failed to send Telegram output attachment",
                     session_id=session_id,
-                    attachment_path=str(attachment_path),
+                    attachment_path=str(attachment.path),
                 )
                 with contextlib.suppress(Exception):
                     await with_bridge_send_retry(

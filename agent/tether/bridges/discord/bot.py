@@ -23,6 +23,7 @@ from agent_tether.discord.bot import DiscordConfig as UpstreamDiscordConfig
 from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
+from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
@@ -41,7 +42,6 @@ from tether.bridges.reaction_shortcuts import (
     parse_reaction_shortcut_message,
     reaction_matches,
 )
-from tether.output_postprocess import PublishedAttachment
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -739,14 +739,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         if not self._client:
             return
 
-        attachments = [
-            attachment
-            for attachment in (
-                PublishedAttachment.from_metadata(item)
-                for item in (metadata or {}).get("attachments") or []
-            )
-            if attachment is not None
-        ]
+        attachments = attachments_from_metadata(metadata)
         if not attachments:
             return
 
@@ -778,16 +771,16 @@ class DiscordBridge(UpstreamDiscordBridge):
             try:
                 files.append(
                     discord.File(
-                        attachment.path,
+                        str(attachment.path),
                         filename=attachment.filename,
-                        description=attachment.title or attachment.filename,
+                        description=attachment.caption,
                     )
                 )
             except Exception:
                 logger.exception(
                     "Failed to prepare Discord output attachment",
                     session_id=session_id,
-                    attachment_path=attachment.path,
+                    attachment_path=str(attachment.path),
                 )
                 failures.append(attachment.filename)
 
