@@ -45,7 +45,7 @@ from tether.bridges.media_io import (
     store_bridge_media_file,
     supported_media_type,
 )
-from tether.bridges.rich_output import render_discord_messages
+from tether.bridges.rich_output import render_discord_message_objects
 from tether.bridges.retry import with_bridge_send_retry
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
@@ -61,6 +61,8 @@ _DISCORD_STARTER_TEXT_LIMIT = 2000
 _DISCORD_AUTO_ARCHIVE_MINUTES = 1440
 _ERROR_ATTACHMENT_DELAY_S = 0.35
 _STARTER_REFRESH_INTERVAL_S = 15.0
+_TOOL_EXPAND_REACTION = "📄"
+_EXPANSION_CACHE_LIMIT = 100
 
 
 def _hostname_slug() -> str:
@@ -81,6 +83,15 @@ class DiscordConfig:
     reaction_new_session_enabled: bool = True
     reaction_new_session_emoji: str = "✅"
     reaction_new_session_allow_plain_messages: bool = False
+
+
+@dataclass
+class _DiscordExpansion:
+    """Full content for a truncated Discord bridge message."""
+
+    session_id: str
+    content: str
+    filename: str
 
 
 @dataclass
@@ -160,6 +171,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._starter_states: dict[str, _DiscordStarterState] = {}
         self._starter_refresh_tasks: dict[str, asyncio.Task] = {}
         self._message_dedupe = ShortLivedMessageDedupe()
+        self._message_expansions: dict[int, _DiscordExpansion] = {}
         self._apply_auto_pair_users()
 
     @staticmethod
@@ -482,13 +494,24 @@ class DiscordBridge(UpstreamDiscordBridge):
                     )
                     return
             if thread:
-                for message in render_discord_messages(text, metadata=metadata) or [text]:
-                    await with_bridge_send_retry(
+                rendered_messages = render_discord_message_objects(
+                    text,
+                    metadata=metadata,
+                )
+                for message in rendered_messages or []:
+                    sent_message = await with_bridge_send_retry(
                         "discord.output",
                         lambda message=message: thread.send(
-                            message[:_DISCORD_STARTER_TEXT_LIMIT]
+                            message.text[:_DISCORD_STARTER_TEXT_LIMIT]
                         ),
                     )
+                    if message.expansion_text and sent_message is not None:
+                        await self._remember_output_expansion(
+                            sent_message,
+                            session_id=session_id,
+                            content=message.expansion_text,
+                            filename=message.expansion_filename,
+                        )
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
 
@@ -500,6 +523,40 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         await self._sync_starter_message(session_id)
         await self._send_requested_output_attachments(session_id, metadata=metadata)
+
+    async def _remember_output_expansion(
+        self,
+        message: Any,
+        *,
+        session_id: str,
+        content: str,
+        filename: str,
+    ) -> None:
+        """Cache full content for a truncated Discord output message."""
+
+        message_id = self._parse_thread_id(getattr(message, "id", 0))
+        if message_id is None:
+            return
+        self._message_expansions[message_id] = _DiscordExpansion(
+            session_id=session_id,
+            content=content,
+            filename=filename,
+        )
+        while len(self._message_expansions) > _EXPANSION_CACHE_LIMIT:
+            oldest = next(iter(self._message_expansions))
+            self._message_expansions.pop(oldest, None)
+        add_reaction = getattr(message, "add_reaction", None)
+        if add_reaction is None:
+            return
+        try:
+            await add_reaction(_TOOL_EXPAND_REACTION)
+        except Exception:
+            logger.debug(
+                "Failed to add Discord expansion reaction",
+                session_id=session_id,
+                message_id=message_id,
+                exc_info=True,
+            )
 
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
@@ -1354,15 +1411,50 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         return channel
 
+    async def _send_output_expansion(self, channel_id: int, message_id: int) -> None:
+        """Send the full content for a truncated output message."""
+
+        expansion = self._message_expansions.get(message_id)
+        if expansion is None:
+            return
+        channel = self._client.get_channel(channel_id) if self._client else None
+        if channel is None and self._client:
+            fetch_channel = getattr(self._client, "fetch_channel", None)
+            if fetch_channel is not None:
+                with contextlib.suppress(Exception):
+                    channel = await fetch_channel(channel_id)
+        if channel is None:
+            return
+
+        try:
+            import discord
+
+            content = expansion.content.encode("utf-8")
+            file = discord.File(
+                io.BytesIO(content),
+                filename=expansion.filename,
+                description="Full tool output",
+            )
+            await with_bridge_send_retry(
+                "discord.output_expansion",
+                lambda: channel.send(
+                    f"📄 Full output for <#{channel_id}> message `{message_id}`",
+                    file=file,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send Discord output expansion",
+                session_id=expansion.session_id,
+                message_id=message_id,
+            )
+
     async def _handle_raw_reaction_add(self, payload: Any) -> None:
-        """Create and start a new session from a reacted control-channel message."""
-        if not self._reaction_new_session_enabled or not self._client:
+        """Handle Discord reaction shortcuts and output expansion requests."""
+        if not self._client:
             return
 
         channel_id = int(getattr(payload, "channel_id", 0) or 0)
-        if not self._channel_id or channel_id != int(self._channel_id):
-            return
-
         source_message_id = int(getattr(payload, "message_id", 0) or 0)
         if not source_message_id:
             return
@@ -1377,6 +1469,14 @@ class DiscordBridge(UpstreamDiscordBridge):
         emoji_name = getattr(getattr(payload, "emoji", None), "name", None) or str(
             getattr(payload, "emoji", "") or ""
         )
+        if reaction_matches(_TOOL_EXPAND_REACTION, emoji_name):
+            await self._send_output_expansion(channel_id, source_message_id)
+            return
+
+        if not self._reaction_new_session_enabled:
+            return
+        if not self._channel_id or channel_id != int(self._channel_id):
+            return
         if not reaction_matches(self._reaction_new_session_emoji, emoji_name):
             return
         if not self._begin_reaction_shortcut(source_message_id):

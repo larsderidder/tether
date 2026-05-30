@@ -110,6 +110,59 @@ class TestDiscordBridgePoC:
         assert "/tmp/demo" in sent_messages[1]
 
     @pytest.mark.anyio
+    async def test_on_output_truncates_tool_output_and_expands_by_reaction(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Large tool output is cached and can be expanded with a reaction."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        sent_message = AsyncMock()
+        sent_message.id = 222333444
+        mock_thread = AsyncMock()
+        mock_thread.id = 9876543210
+        mock_thread.send.return_value = sent_message
+        mock_client = MagicMock()
+        mock_client.user.id = 999
+        mock_client.get_channel.return_value = mock_thread
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+
+        await bridge.on_output(session.id, "[bash] " + ("x" * 3000))
+
+        sent_text = mock_thread.send.await_args.args[0]
+        assert "React with 📄" in sent_text
+        sent_message.add_reaction.assert_awaited_once_with("📄")
+
+        fake_discord = MagicMock()
+        fake_discord.File.side_effect = lambda fp, filename=None, description=None: {
+            "content": fp.getvalue(),
+            "filename": filename,
+            "description": description,
+        }
+        payload = MagicMock()
+        payload.channel_id = 9876543210
+        payload.message_id = 222333444
+        payload.user_id = 123
+        payload.emoji.name = "📄"
+
+        with patch.dict("sys.modules", {"discord": fake_discord}):
+            await bridge._handle_raw_reaction_add(payload)
+
+        expanded_call = mock_thread.send.await_args
+        assert expanded_call.kwargs["file"]["filename"] == "bash.txt"
+        assert expanded_call.kwargs["file"]["content"] == ("x" * 3000).encode()
+
+    @pytest.mark.anyio
     async def test_on_output_restores_thread_id_from_persisted_session(
         self, fresh_store: SessionStore
     ) -> None:

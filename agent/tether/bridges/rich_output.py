@@ -13,6 +13,17 @@ _RESERVED_MARKERS = {"tool", "thinking", "result", "error", "assistant"}
 _DISCORD_LIMIT = 2000
 _SLACK_LIMIT = 40000
 _TELEGRAM_LIMIT = 4096
+_TOOL_OUTPUT_INLINE_LIMIT = 1200
+_TOOL_EXPAND_REACTION = "📄"
+
+
+@dataclass(slots=True)
+class RenderedBridgeMessage:
+    """Rendered chat message with optional full expansion content."""
+
+    text: str
+    expansion_text: str | None = None
+    expansion_filename: str = "tool-output.txt"
 
 
 @dataclass(slots=True)
@@ -320,49 +331,141 @@ def render_markdown_segments(
     segments: list[OutputSegment] | None = None,
 ) -> list[str]:
     """Render parsed or structured segments to Discord or Slack friendly markdown."""
-    messages: list[str] = []
+    return [
+        message.text
+        for message in render_markdown_messages(
+            text,
+            limit=limit,
+            bold=bold,
+            segments=segments,
+        )
+    ]
+
+
+def render_markdown_messages(
+    text: str,
+    *,
+    limit: int,
+    bold: str = "**",
+    segments: list[OutputSegment] | None = None,
+    truncate_tool_outputs: bool = False,
+) -> list[RenderedBridgeMessage]:
+    """Render output segments, optionally attaching full tool-output expansions."""
+    messages: list[RenderedBridgeMessage] = []
     for segment in segments or parse_output_segments(text):
         if segment.kind == "assistant":
             messages.extend(
-                _chunk_plain(_normalize_plain_markdown(segment.text), limit)
+                RenderedBridgeMessage(chunk)
+                for chunk in _chunk_plain(_normalize_plain_markdown(segment.text), limit)
             )
         elif segment.kind == "thinking":
             body = _clean_thinking_markers(segment.text).strip() or "Thinking"
             quote = "\n".join(f"> {line}" for line in body.splitlines())
-            messages.extend(_chunk_plain(f"💭 {bold}Thinking{bold}\n{quote}", limit))
+            messages.extend(
+                RenderedBridgeMessage(chunk)
+                for chunk in _chunk_plain(f"💭 {bold}Thinking{bold}\n{quote}", limit)
+            )
         elif segment.kind == "tool_call":
             messages.extend(
-                _chunk_plain(
+                RenderedBridgeMessage(chunk)
+                for chunk in _chunk_plain(
                     f"🔧 {bold}Tool call{bold} `{segment.label or 'tool'}`", limit
                 )
             )
         elif segment.kind == "tool_output":
-            header = f"📥 {bold}Tool output{bold} `{segment.label or 'tool'}`\n"
-            body_chunks = _chunk_code_block(segment.text or " ", limit - len(header))
-            messages.extend(header + chunk for chunk in body_chunks)
+            messages.extend(
+                _render_tool_segment(
+                    segment,
+                    title="Tool output",
+                    limit=limit,
+                    bold=bold,
+                    truncate=truncate_tool_outputs,
+                )
+            )
         elif segment.kind in {"result", "tool_result"}:
             label = (
                 f" `{segment.label}`"
                 if segment.label and segment.label != segment.kind
                 else ""
             )
-            header = f"📥 {bold}Tool result{bold}{label}\n"
-            body_chunks = _chunk_code_block(segment.text or " ", limit - len(header))
-            messages.extend(header + chunk for chunk in body_chunks)
+            messages.extend(
+                _render_tool_segment(
+                    segment,
+                    title="Tool result",
+                    label=label,
+                    limit=limit,
+                    bold=bold,
+                    truncate=truncate_tool_outputs,
+                )
+            )
         elif segment.kind in {"error", "tool_error"}:
             label = (
                 f" `{segment.label}`"
                 if segment.label and segment.label != segment.kind
                 else ""
             )
-            header = f"⚠️ {bold}Tool error{bold}{label}\n"
-            body_chunks = _chunk_code_block(segment.text or " ", limit - len(header))
-            messages.extend(header + chunk for chunk in body_chunks)
+            messages.extend(
+                _render_tool_segment(
+                    segment,
+                    title="Tool error",
+                    label=label,
+                    limit=limit,
+                    bold=bold,
+                    truncate=truncate_tool_outputs,
+                    icon="⚠️",
+                )
+            )
         elif segment.kind == "status":
-            messages.extend(_chunk_plain(f"ℹ️ {segment.text}", limit))
+            messages.extend(
+                RenderedBridgeMessage(chunk)
+                for chunk in _chunk_plain(f"ℹ️ {segment.text}", limit)
+            )
         else:
-            messages.extend(_chunk_plain(f"ℹ️ {segment.text}", limit))
-    return [message for message in messages if message.strip()]
+            messages.extend(
+                RenderedBridgeMessage(chunk)
+                for chunk in _chunk_plain(f"ℹ️ {segment.text}", limit)
+            )
+    return [message for message in messages if message.text.strip()]
+
+
+def _render_tool_segment(
+    segment: OutputSegment,
+    *,
+    title: str,
+    limit: int,
+    bold: str,
+    truncate: bool,
+    label: str | None = None,
+    icon: str = "📥",
+) -> list[RenderedBridgeMessage]:
+    label_text = label if label is not None else f" `{segment.label or 'tool'}`"
+    header = f"{icon} {bold}{title}{bold}{label_text}\n"
+    body = segment.text or " "
+    if truncate and len(body) > _TOOL_OUTPUT_INLINE_LIMIT:
+        omitted = len(body) - _TOOL_OUTPUT_INLINE_LIMIT
+        footer = (
+            f"\n… truncated {omitted:,} chars. "
+            f"React with {_TOOL_EXPAND_REACTION} for the full output."
+        )
+        preview = body[:_TOOL_OUTPUT_INLINE_LIMIT].rstrip()
+        available = max(1, limit - len(header) - len(footer))
+        preview = preview[:available].rstrip()
+        chunk = _chunk_code_block(preview or " ", limit - len(header) - len(footer))[0]
+        return [
+            RenderedBridgeMessage(
+                text=header + chunk + footer,
+                expansion_text=body,
+                expansion_filename=f"{_safe_expansion_name(segment.label or title)}.txt",
+            )
+        ]
+
+    body_chunks = _chunk_code_block(body, limit - len(header))
+    return [RenderedBridgeMessage(header + chunk) for chunk in body_chunks]
+
+
+def _safe_expansion_name(value: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value.strip().lower()).strip("-._")
+    return safe[:80] or "tool-output"
 
 
 def _segments_from_metadata(metadata: dict[str, Any] | None) -> list[OutputSegment]:
@@ -371,16 +474,28 @@ def _segments_from_metadata(metadata: dict[str, Any] | None) -> list[OutputSegme
     return coerce_output_segments((metadata or {}).get("bridge_segments"))
 
 
+def render_discord_message_objects(
+    text: str, metadata: dict[str, Any] | None = None
+) -> list[RenderedBridgeMessage]:
+    """Render output segments for Discord with optional expansion payloads."""
+
+    return render_markdown_messages(
+        text,
+        limit=_DISCORD_LIMIT,
+        segments=_segments_from_metadata(metadata),
+        truncate_tool_outputs=True,
+    )
+
+
 def render_discord_messages(
     text: str, metadata: dict[str, Any] | None = None
 ) -> list[str]:
     """Render output segments for Discord."""
 
-    return render_markdown_segments(
-        text,
-        limit=_DISCORD_LIMIT,
-        segments=_segments_from_metadata(metadata),
-    )
+    return [
+        message.text
+        for message in render_discord_message_objects(text, metadata=metadata)
+    ]
 
 
 def render_slack_messages(
@@ -461,9 +576,11 @@ def render_telegram_messages(
 
 
 __all__ = [
+    "RenderedBridgeMessage",
     "OutputSegment",
     "coerce_output_segments",
     "parse_output_segments",
+    "render_discord_message_objects",
     "render_discord_messages",
     "render_slack_messages",
     "render_telegram_messages",

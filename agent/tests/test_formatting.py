@@ -3,6 +3,7 @@
 from tether.bridges.rich_output import (
     parse_output_segments,
     coerce_output_segments,
+    render_discord_message_objects,
     render_discord_messages,
     render_telegram_messages,
 )
@@ -237,6 +238,15 @@ class TestRichOutputFormatting:
         assert messages[0] == "🔧 **Tool call** `bash`"
         assert messages[1].startswith("📥 **Tool output** `bash`\n```text\n")
         assert "/tmp/demo" in messages[1]
+
+    def test_render_discord_message_objects_truncates_large_tool_output(self) -> None:
+        messages = render_discord_message_objects("[bash] " + ("x" * 3000))
+
+        assert len(messages) == 1
+        assert "React with 📄" in messages[0].text
+        assert len(messages[0].text) < 2000
+        assert messages[0].expansion_text == "x" * 3000
+        assert messages[0].expansion_filename == "bash.txt"
 
     def test_render_discord_messages_prefers_structured_segments(self) -> None:
         messages = render_discord_messages(
