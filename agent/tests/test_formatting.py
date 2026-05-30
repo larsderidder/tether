@@ -281,12 +281,28 @@ class TestRichOutputFormatting:
 
     def test_render_discord_messages_splits_explicit_assistant_marker(self) -> None:
         messages = render_discord_messages(
-            "[notify] loki extension: no targets configured\n"
+            "[notify] status extension: no targets configured\n"
             "[assistant] Perfect. 👌 I am ready when you are. Send the first issue and I will jump in"
         )
 
-        assert messages[0].startswith("📥 **Tool output** `notify`\n```text\n")
-        assert "loki extension: no targets configured" in messages[0]
+        assert messages[0] == "ℹ️ status extension: no targets configured"
         assert messages[1] == (
             "Perfect. 👌 I am ready when you are. Send the first issue and I will jump in"
         )
+
+    def test_render_discord_final_text_after_notify_as_prose(self) -> None:
+        messages = render_discord_messages(
+            "[notify] status extension: 2 targets loaded (prod, test)\n"
+            "Right, for the Store A order shipping was only **100 credits**, "
+            "which changes the math a lot.\n\n"
+            "- Shipping: **100 credits = ~6 units**\n"
+            "- Tax on shipping: **~1 unit**"
+        )
+
+        assert messages == [
+            "ℹ️ status extension: 2 targets loaded (prod, test)",
+            "Right, for the Store A order shipping was only **100 credits**, "
+            "which changes the math a lot.\n\n"
+            "• Shipping: **100 credits = ~6 units**\n"
+            "• Tax on shipping: **~1 unit**",
+        ]

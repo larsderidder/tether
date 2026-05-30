@@ -122,7 +122,13 @@ def parse_output_segments(text: str) -> list[OutputSegment]:
         tagged = re.fullmatch(r"\[([^\]]+)\]\s*(.*)", raw_line)
         if tagged:
             marker = tagged.group(1).strip()
-            if marker.lower() not in _RESERVED_MARKERS:
+            marker_lower = marker.lower()
+            if marker_lower == "notify":
+                flush()
+                segments.append(OutputSegment("status", tagged.group(2), marker))
+                current = None
+                continue
+            if marker_lower not in _RESERVED_MARKERS:
                 flush()
                 current = OutputSegment("tool_output", tagged.group(2), marker)
                 continue
