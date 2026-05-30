@@ -21,6 +21,13 @@ from tether.bridges.image_io import (
     MAX_IMAGES_PER_MESSAGE,
     make_bridge_image,
 )
+from tether.bridges.media_io import (
+    MAX_MEDIA_BYTES,
+    BridgeMediaFile,
+    append_media_file_references,
+    store_bridge_media_file,
+    supported_media_type,
+)
 from tether.bridges.rich_output import render_telegram_messages
 from tether.bridges.retry import with_bridge_send_retry
 
@@ -64,49 +71,94 @@ class TelegramBridge(UpstreamTelegramBridge):
 
         self._app.add_handler(
             MessageHandler(
-                (filters.PHOTO | filters.Document.IMAGE) & filters.ChatType.SUPERGROUP,
+                (filters.PHOTO | filters.ATTACHMENT) & filters.ChatType.SUPERGROUP,
                 self._handle_media_message,
             )
         )
 
-    async def _collect_message_images(self, update: object) -> list[dict[str, str]]:
-        """Download and validate supported Telegram image attachments."""
+    async def _collect_message_media(
+        self,
+        update: object,
+        session_id: str,
+        *,
+        collect_files: bool = True,
+    ) -> tuple[list[dict[str, str]], list[BridgeMediaFile]]:
+        """Download and validate supported Telegram attachments."""
 
         message = getattr(update, "message", None)
         if message is None:
-            return []
+            return [], []
 
         photos = list(getattr(message, "photo", []) or [])
         document = getattr(message, "document", None)
+        audio = getattr(message, "audio", None)
+        video = getattr(message, "video", None)
         image_ref = photos[-1] if photos else document
-        if image_ref is None:
-            return []
+        if image_ref is not None:
+            declared_mime_type = getattr(document, "mime_type", None) if document else "image/jpeg"
+            if photos or str(declared_mime_type or "").lower().startswith("image/"):
+                filename = getattr(document, "file_name", None) if document else None
+                size = int(getattr(image_ref, "file_size", 0) or 0)
+                if size > MAX_IMAGE_BYTES:
+                    await message.reply_text(
+                        f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+                    )
+                    return [], []
+                try:
+                    telegram_file = await image_ref.get_file()
+                    data = bytes(await telegram_file.download_as_bytearray())
+                    image = make_bridge_image(
+                        data,
+                        declared_mime_type=declared_mime_type,
+                        filename=filename,
+                    )
+                except ValueError as exc:
+                    await message.reply_text(f"⚠️ Skipped image: {exc}")
+                    return [], []
+                except Exception:
+                    logger.exception("Failed to read Telegram image attachment")
+                    await message.reply_text("⚠️ Failed to read an image attachment.")
+                    return [], []
+                return [image.as_api_payload()], []
 
-        declared_mime_type = getattr(document, "mime_type", None) if document else "image/jpeg"
-        filename = getattr(document, "file_name", None) if document else None
-        size = int(getattr(image_ref, "file_size", 0) or 0)
-        if size > MAX_IMAGE_BYTES:
+        if not collect_files:
+            return [], []
+
+        media_ref = document or audio or video
+        if media_ref is None:
+            return [], []
+        mime_type = getattr(media_ref, "mime_type", None)
+        if not supported_media_type(mime_type):
+            return [], []
+        size = int(getattr(media_ref, "file_size", 0) or 0)
+        if size > MAX_MEDIA_BYTES:
             await message.reply_text(
-                f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+                f"⚠️ Skipped attachment: file is larger than {MAX_MEDIA_BYTES // (1024 * 1024)} MB"
             )
-            return []
-
+            return [], []
         try:
-            telegram_file = await image_ref.get_file()
+            telegram_file = await media_ref.get_file()
             data = bytes(await telegram_file.download_as_bytearray())
-            image = make_bridge_image(
-                data,
-                declared_mime_type=declared_mime_type,
-                filename=filename,
+            media_file = store_bridge_media_file(
+                session_id=session_id,
+                data=data,
+                filename=getattr(media_ref, "file_name", None),
+                mime_type=mime_type,
             )
         except ValueError as exc:
-            await message.reply_text(f"⚠️ Skipped image: {exc}")
-            return []
+            await message.reply_text(f"⚠️ Skipped attachment: {exc}")
+            return [], []
         except Exception:
-            logger.exception("Failed to read Telegram image attachment")
-            await message.reply_text("⚠️ Failed to read an image attachment.")
-            return []
-        return [image.as_api_payload()]
+            logger.exception("Failed to read Telegram media attachment")
+            await message.reply_text("⚠️ Failed to read an attachment.")
+            return [], []
+        return [], [media_file]
+
+    async def _collect_message_images(self, update: object) -> list[dict[str, str]]:
+        """Download and validate supported Telegram image attachments."""
+
+        images, _ = await self._collect_message_media(update, "unknown", collect_files=False)
+        return images
 
     async def _handle_media_message(self, update: object, context: object) -> None:
         """Handle Telegram photos and forward them as native image input."""
@@ -135,12 +187,14 @@ class TelegramBridge(UpstreamTelegramBridge):
             return
 
         text = (getattr(message, "caption", None) or "").strip()
-        images = await self._collect_message_images(update)
-        await self._send_image_input(
+        images, files = await self._collect_message_media(update, session_id)
+        text = append_media_file_references(text, files)
+        await self._send_media_input(
             session_id=session_id,
             topic_id=topic_id,
             text=text,
             images=images,
+            files=files,
             message=message,
         )
 
@@ -159,6 +213,43 @@ class TelegramBridge(UpstreamTelegramBridge):
             return True
         return False
 
+    async def _send_media_input(
+        self,
+        *,
+        session_id: str,
+        topic_id: int,
+        text: str,
+        images: list[dict[str, str]],
+        files: list[BridgeMediaFile],
+        message: Any,
+    ) -> None:
+        """Forward collected media input to a session."""
+
+        if not images and not files:
+            return
+        if not text:
+            text = "Please look at this attachment."
+
+        try:
+            if images:
+                await self._callbacks.send_input(session_id, text, images=images)
+            else:
+                await self._callbacks.send_input(session_id, text)
+            logger.info(
+                "Forwarded media input from Telegram",
+                session_id=session_id,
+                topic_id=topic_id,
+                image_count=len(images),
+                file_count=len(files),
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to forward Telegram media input",
+                session_id=session_id,
+                topic_id=topic_id,
+            )
+            await message.reply_text(f"❌ Failed to send input: {exc}")
+
     async def _send_image_input(
         self,
         *,
@@ -170,26 +261,14 @@ class TelegramBridge(UpstreamTelegramBridge):
     ) -> None:
         """Forward collected image input to a session."""
 
-        if not images:
-            return
-        if not text:
-            text = "Please look at this image."
-
-        try:
-            await self._callbacks.send_input(session_id, text, images=images)
-            logger.info(
-                "Forwarded image input from Telegram",
-                session_id=session_id,
-                topic_id=topic_id,
-                image_count=len(images),
-            )
-        except Exception as exc:
-            logger.exception(
-                "Failed to forward Telegram image input",
-                session_id=session_id,
-                topic_id=topic_id,
-            )
-            await message.reply_text(f"❌ Failed to send input: {exc}")
+        await self._send_media_input(
+            session_id=session_id,
+            topic_id=topic_id,
+            text=text,
+            images=images,
+            files=[],
+            message=message,
+        )
 
     async def _buffer_media_group(
         self,

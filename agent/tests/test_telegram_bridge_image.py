@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,8 +18,11 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
 class FakeTelegramFile:
     """Fake Telegram file download object."""
 
+    def __init__(self, data: bytes = PNG_BYTES) -> None:
+        self._data = data
+
     async def download_as_bytearray(self) -> bytearray:
-        return bytearray(PNG_BYTES)
+        return bytearray(self._data)
 
 
 class FakeDocument:
@@ -31,6 +34,17 @@ class FakeDocument:
 
     async def get_file(self) -> FakeTelegramFile:
         return FakeTelegramFile()
+
+
+class FakeTextDocument:
+    """Fake Telegram text document."""
+
+    mime_type = "text/plain"
+    file_name = "notes.txt"
+    file_size = 5
+
+    async def get_file(self) -> FakeTelegramFile:
+        return FakeTelegramFile(b"hello")
 
 
 class FakeChat:
@@ -50,6 +64,10 @@ class FakeMessage:
     def __init__(self, caption: str | None = None) -> None:
         self.caption = caption
         self.replies = []
+        self.message_thread_id = 99
+        self.media_group_id = None
+        self.from_user = None
+        self.via_bot = None
 
     async def reply_text(self, text: str) -> None:
         self.replies.append(text)
@@ -97,6 +115,33 @@ async def test_collect_message_images_accepts_image_documents() -> None:
         }
     ]
     assert message.replies == []
+
+
+class FakeTextMessage(FakeMessage):
+    """Fake Telegram message with a text document."""
+
+    document = FakeTextDocument()
+    photo: list[object] = []
+
+
+@pytest.mark.anyio
+async def test_handle_media_message_saves_non_image_document(tmp_path, monkeypatch) -> None:
+    """Telegram non-image documents are saved and referenced in input text."""
+
+    monkeypatch.setattr("tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path))
+    callbacks = _mock_callbacks()
+    bridge = TelegramBridge("token", 123, callbacks=callbacks)
+    bridge._state.get_session_for_topic = MagicMock(return_value="sess1")
+    message = FakeTextMessage(caption="summarize")
+
+    await bridge._handle_media_message(FakeUpdate(message), object())
+
+    callbacks.send_input.assert_awaited_once()
+    sent_text = callbacks.send_input.await_args.args[1]
+    assert sent_text.startswith("summarize")
+    assert "Attached files saved locally:" in sent_text
+    assert "notes.txt" in sent_text
+    assert "images" not in callbacks.send_input.await_args.kwargs
 
 
 @pytest.mark.anyio

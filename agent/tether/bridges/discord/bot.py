@@ -35,6 +35,14 @@ from tether.bridges.image_io import (
     MAX_IMAGES_PER_MESSAGE,
     make_bridge_image,
 )
+from tether.bridges.media_io import (
+    MAX_MEDIA_BYTES,
+    MAX_MEDIA_FILES_PER_MESSAGE,
+    BridgeMediaFile,
+    append_media_file_references,
+    store_bridge_media_file,
+    supported_media_type,
+)
 from tether.bridges.rich_output import render_discord_messages
 from tether.bridges.retry import with_bridge_send_retry
 from tether.bridges.reaction_shortcuts import (
@@ -617,43 +625,95 @@ class DiscordBridge(UpstreamDiscordBridge):
                 attachments.extend(snapshot_attachments)
         return attachments
 
-    async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:
-        """Download and validate supported Discord image attachments."""
+    async def _collect_message_media(
+        self,
+        message: Any,
+        session_id: str,
+        *,
+        collect_files: bool = True,
+    ) -> tuple[list[dict[str, str]], list[BridgeMediaFile]]:
+        """Download and validate supported Discord attachments."""
 
         images: list[dict[str, str]] = []
+        files: list[BridgeMediaFile] = []
         for attachment in await self._message_image_attachments(message):
-            if len(images) >= MAX_IMAGES_PER_MESSAGE:
-                break
             content_type = getattr(attachment, "content_type", None)
-            if content_type and not str(content_type).lower().startswith("image/"):
-                continue
+            content_type_text = str(content_type or "").lower()
+            filename = getattr(attachment, "filename", None)
             size = int(getattr(attachment, "size", 0) or 0)
             if size <= 0:
                 continue
-            if size > MAX_IMAGE_BYTES:
+            if content_type_text.startswith("image/") or not content_type_text:
+                if len(images) >= MAX_IMAGES_PER_MESSAGE:
+                    await message.channel.send(
+                        f"⚠️ Skipped image: maximum {MAX_IMAGES_PER_MESSAGE} images per message."
+                    )
+                    continue
+                if size > MAX_IMAGE_BYTES:
+                    await message.channel.send(
+                        f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+                    )
+                    continue
+                try:
+                    data = await attachment.read()
+                    image = make_bridge_image(
+                        data,
+                        declared_mime_type=content_type,
+                        filename=filename,
+                    )
+                except ValueError as exc:
+                    if content_type_text.startswith("image/"):
+                        await message.channel.send(f"⚠️ Skipped image: {exc}")
+                    continue
+                except Exception:
+                    logger.exception("Failed to read Discord image attachment")
+                    await message.channel.send("⚠️ Failed to read an image attachment.")
+                    continue
+                images.append(image.as_api_payload())
+                continue
+
+            if not collect_files or not supported_media_type(content_type_text):
+                continue
+            if len(files) >= MAX_MEDIA_FILES_PER_MESSAGE:
                 await message.channel.send(
-                    f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+                    f"⚠️ Skipped attachment: maximum {MAX_MEDIA_FILES_PER_MESSAGE} files per message."
+                )
+                continue
+            if size > MAX_MEDIA_BYTES:
+                await message.channel.send(
+                    f"⚠️ Skipped attachment: file is larger than {MAX_MEDIA_BYTES // (1024 * 1024)} MB"
                 )
                 continue
             try:
                 data = await attachment.read()
-                image = make_bridge_image(
-                    data,
-                    declared_mime_type=content_type,
-                    filename=getattr(attachment, "filename", None),
+                files.append(
+                    store_bridge_media_file(
+                        session_id=session_id,
+                        data=data,
+                        filename=filename,
+                        mime_type=content_type_text,
+                    )
                 )
             except ValueError as exc:
-                await message.channel.send(f"⚠️ Skipped image: {exc}")
-                continue
+                await message.channel.send(f"⚠️ Skipped attachment: {exc}")
             except Exception:
-                logger.exception("Failed to read Discord image attachment")
-                await message.channel.send("⚠️ Failed to read an image attachment.")
-                continue
-            images.append(image.as_api_payload())
+                logger.exception("Failed to read Discord media attachment")
+                await message.channel.send("⚠️ Failed to read an attachment.")
+        return images, files
+
+    async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:
+        """Download and validate supported Discord image attachments."""
+
+        images, _ = await self._collect_message_media(
+            message,
+            "unknown",
+            collect_files=False,
+        )
         return images
 
     async def _forward_input(self, message: Any, session_id: str, text: str) -> None:
-        images = await self._collect_message_images(message)
+        images, files = await self._collect_message_media(message, session_id)
+        text = append_media_file_references(text, files)
         await self._forward_input_with_images(message, session_id, text, images)
 
     async def _forward_input_with_images(
