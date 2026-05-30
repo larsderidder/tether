@@ -1053,6 +1053,45 @@ class TestDiscordBridgePoC:
         assert bridge._message_has_media(message) is True
 
     @pytest.mark.anyio
+    async def test_forward_input_accepts_octet_stream_image_by_filename(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Discord images with generic content type are sniffed and forwarded."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = _mock_callbacks()
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
+        attachment = AsyncMock()
+        attachment.content_type = "application/octet-stream"
+        attachment.filename = "photo.png"
+        attachment.size = len(png_bytes)
+        attachment.read.return_value = png_bytes
+
+        mock_channel = AsyncMock()
+        mock_channel.id = 9876543210
+        mock_message = MagicMock()
+        mock_message.id = 44
+        mock_message.attachments = [attachment]
+        mock_message.messageSnapshots = []
+        mock_message.reference = None
+        mock_message.channel = mock_channel
+        mock_message.author.id = 7
+        mock_message.author.name = "testuser"
+
+        await bridge._forward_input(mock_message, session.id, "what is this?")
+
+        callbacks.send_input.assert_awaited_once()
+        sent_images = callbacks.send_input.await_args.kwargs["images"]
+        assert sent_images[0]["mimeType"] == "image/png"
+
+    @pytest.mark.anyio
     async def test_forward_input_saves_attachment_without_content_type(
         self, fresh_store: SessionStore, tmp_path, monkeypatch
     ) -> None:

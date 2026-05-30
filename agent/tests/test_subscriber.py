@@ -228,6 +228,43 @@ class TestEventRouting:
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
+    async def test_skips_structured_prose_final_before_output_final(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Pi structured final prose should not duplicate output_final."""
+
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "same answer",
+                    "kind": "final",
+                    "final": True,
+                    "bridge_segments": [{"kind": "assistant", "text": "same answer"}],
+                },
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "same answer"},
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["text"] == "same answer"
+
+    @pytest.mark.anyio
     async def test_routes_output_final_blob(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:

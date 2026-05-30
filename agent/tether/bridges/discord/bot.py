@@ -641,13 +641,15 @@ class DiscordBridge(UpstreamDiscordBridge):
         for attachment in await self._message_image_attachments(message):
             filename = getattr(attachment, "filename", None)
             content_type = getattr(attachment, "content_type", None)
-            content_type_text = str(
-                content_type or mimetypes.guess_type(str(filename or ""))[0] or ""
-            ).lower()
+            guessed_type = mimetypes.guess_type(str(filename or ""))[0] or ""
+            content_type_text = str(content_type or guessed_type or "").lower()
+            effective_type = content_type_text
+            if content_type_text in {"application/octet-stream", "binary/octet-stream"} and guessed_type:
+                effective_type = guessed_type.lower()
             size = int(getattr(attachment, "size", 0) or 0)
             if size <= 0:
                 continue
-            if content_type_text.startswith("image/") or not content_type_text:
+            if effective_type.startswith("image/") or not effective_type:
                 if len(images) >= MAX_IMAGES_PER_MESSAGE:
                     await message.channel.send(
                         f"⚠️ Skipped image: maximum {MAX_IMAGES_PER_MESSAGE} images per message."
@@ -667,11 +669,11 @@ class DiscordBridge(UpstreamDiscordBridge):
                     )
                     image = make_bridge_image(
                         data,
-                        declared_mime_type=content_type,
+                        declared_mime_type=effective_type,
                         filename=filename,
                     )
                 except ValueError as exc:
-                    if content_type_text.startswith("image/"):
+                    if effective_type.startswith("image/"):
                         await message.channel.send(f"⚠️ Skipped image: {exc}")
                     continue
                 except Exception:
@@ -681,7 +683,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                 images.append(image.as_api_payload())
                 continue
 
-            if not collect_files or not supported_media_type(content_type_text):
+            if not collect_files or not supported_media_type(effective_type):
                 continue
             if len(files) >= MAX_MEDIA_FILES_PER_MESSAGE:
                 await message.channel.send(
@@ -705,7 +707,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                         session_id=session_id,
                         data=data,
                         filename=filename,
-                        mime_type=content_type_text,
+                        mime_type=effective_type,
                     )
                 )
             except ValueError as exc:

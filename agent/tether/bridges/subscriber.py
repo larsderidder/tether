@@ -187,6 +187,12 @@ class BridgeSubscriber:
                         is_final = bool(data.get("final") or data.get("is_final"))
 
                         if is_final:
+                            if self._is_streaming_prose(bridge_segments):
+                                # Pi emits clean accumulated assistant text as a
+                                # final output event. finalize_output follows
+                                # with output_final, so routing both duplicates
+                                # the same chat message.
+                                continue
                             await self._flush_output(session_id, bridge)
                             metadata = {
                                 "final": True,
