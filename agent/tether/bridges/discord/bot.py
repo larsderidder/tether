@@ -555,11 +555,22 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._hydrate_thread_binding(session_id)
         await super().send_auto_approve_batch(session_id, items)
 
+    @staticmethod
+    def _message_image_attachments(message: Any) -> list[Any]:
+        """Return direct and replied-to Discord attachments for image intake."""
+
+        attachments = list(getattr(message, "attachments", []) or [])
+        reference = getattr(message, "reference", None)
+        resolved = getattr(reference, "resolved", None)
+        if resolved is not None:
+            attachments.extend(list(getattr(resolved, "attachments", []) or []))
+        return attachments
+
     async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:
         """Download and validate supported Discord image attachments."""
 
         images: list[dict[str, str]] = []
-        for attachment in list(getattr(message, "attachments", []) or []):
+        for attachment in self._message_image_attachments(message):
             if len(images) >= MAX_IMAGES_PER_MESSAGE:
                 break
             content_type = getattr(attachment, "content_type", None)

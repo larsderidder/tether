@@ -38,7 +38,7 @@ class TelegramBridge(UpstreamTelegramBridge):
 
         self._app.add_handler(
             MessageHandler(
-                filters.PHOTO & filters.ChatType.SUPERGROUP,
+                (filters.PHOTO | filters.Document.IMAGE) & filters.ChatType.SUPERGROUP,
                 self._handle_media_message,
             )
         )
@@ -51,11 +51,14 @@ class TelegramBridge(UpstreamTelegramBridge):
             return []
 
         photos = list(getattr(message, "photo", []) or [])
-        if not photos:
+        document = getattr(message, "document", None)
+        image_ref = photos[-1] if photos else document
+        if image_ref is None:
             return []
 
-        largest = photos[-1]
-        size = int(getattr(largest, "file_size", 0) or 0)
+        declared_mime_type = getattr(document, "mime_type", None) if document else "image/jpeg"
+        filename = getattr(document, "file_name", None) if document else None
+        size = int(getattr(image_ref, "file_size", 0) or 0)
         if size > MAX_IMAGE_BYTES:
             await message.reply_text(
                 f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
@@ -63,9 +66,13 @@ class TelegramBridge(UpstreamTelegramBridge):
             return []
 
         try:
-            telegram_file = await largest.get_file()
+            telegram_file = await image_ref.get_file()
             data = bytes(await telegram_file.download_as_bytearray())
-            image = make_bridge_image(data, declared_mime_type="image/jpeg")
+            image = make_bridge_image(
+                data,
+                declared_mime_type=declared_mime_type,
+                filename=filename,
+            )
         except ValueError as exc:
             await message.reply_text(f"⚠️ Skipped image: {exc}")
             return []

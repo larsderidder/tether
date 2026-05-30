@@ -1,5 +1,6 @@
 """Tests for Discord bridge (Phase 5 PoC)."""
 
+import base64
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -982,6 +983,56 @@ class TestDiscordBridgePoC:
         # Should have called send_input, not respond_to_permission
         callbacks.send_input.assert_called_once_with(session.id, "fix the bug please")
         callbacks.respond_to_permission.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_forward_input_includes_referenced_image_attachment(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Discord replies can forward images from the referenced message."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = _mock_callbacks()
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
+        attachment = AsyncMock()
+        attachment.content_type = "image/png"
+        attachment.filename = "reference.png"
+        attachment.size = len(png_bytes)
+        attachment.read.return_value = png_bytes
+
+        referenced = MagicMock()
+        referenced.attachments = [attachment]
+        reference = MagicMock()
+        reference.resolved = referenced
+
+        mock_channel = AsyncMock()
+        mock_channel.id = 9876543210
+        mock_message = MagicMock()
+        mock_message.attachments = []
+        mock_message.reference = reference
+        mock_message.channel = mock_channel
+        mock_message.author.name = "testuser"
+
+        await bridge._forward_input(mock_message, session.id, "what is this?")
+
+        callbacks.send_input.assert_awaited_once_with(
+            session.id,
+            "what is this?",
+            images=[
+                {
+                    "type": "image",
+                    "data": base64.b64encode(png_bytes).decode("ascii"),
+                    "mimeType": "image/png",
+                    "filename": "reference.png",
+                }
+            ],
+        )
 
     @pytest.mark.anyio
     async def test_forward_input_updates_starter_message_with_user_mention(
