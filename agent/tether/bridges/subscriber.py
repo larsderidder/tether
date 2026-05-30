@@ -187,26 +187,11 @@ class BridgeSubscriber:
                         is_final = bool(data.get("final") or data.get("is_final"))
 
                         if is_final:
-                            if self._is_streaming_prose(bridge_segments):
-                                # Pi emits clean accumulated assistant text as a
-                                # final output event. finalize_output follows
-                                # with output_final, so routing both duplicates
-                                # the same chat message.
-                                continue
-                            await self._flush_output(session_id, bridge)
-                            metadata = {
-                                "final": True,
-                                "kind": str(data.get("kind") or "final"),
-                            }
-                            if bridge_segments:
-                                metadata["bridge_segments"] = bridge_segments
-                            attachments = data.get("attachments")
-                            if attachments:
-                                metadata["attachments"] = attachments
-                            warnings = data.get("attachment_warnings")
-                            if warnings:
-                                metadata["attachment_warnings"] = warnings
-                            await bridge.on_output(session_id, text, metadata=metadata)
+                            # finalize_output emits an output_final aggregate
+                            # immediately after final output events. Route only
+                            # that aggregate to chat bridges, otherwise users
+                            # see the same answer multiple times.
+                            continue
                         else:
                             self._buffer_output(
                                 session_id, text, bridge_segments=bridge_segments

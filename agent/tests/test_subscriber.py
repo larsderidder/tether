@@ -152,7 +152,7 @@ class TestEventRouting:
         await asyncio.sleep(0.05)
 
     @pytest.mark.anyio
-    async def test_routes_final_output(
+    async def test_final_output_event_waits_for_output_final(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
         session = fresh_store.create_session("test", "main")
@@ -169,12 +169,10 @@ class TestEventRouting:
             },
         )
         await sub.unsubscribe(session.id)
-        assert len(fake_bridge.output_calls) == 1
-        assert fake_bridge.output_calls[0]["text"] == "Hello world"
-        assert fake_bridge.output_calls[0]["metadata"]["final"] is True
+        assert fake_bridge.output_calls == []
 
     @pytest.mark.anyio
-    async def test_routes_final_output_attachments_metadata(
+    async def test_routes_output_final_attachments_metadata(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
         session = fresh_store.create_session("test", "main")
@@ -186,7 +184,7 @@ class TestEventRouting:
             session.id,
             {
                 "session_id": session.id,
-                "type": "output",
+                "type": "output_final",
                 "data": {
                     "text": "Final report",
                     "final": True,
@@ -497,7 +495,7 @@ class TestEventRouting:
             session.id,
             {
                 "session_id": session.id,
-                "type": "output",
+                "type": "output_final",
                 "data": {"text": "failing message", "final": True},
             },
         )
@@ -506,7 +504,7 @@ class TestEventRouting:
             session.id,
             {
                 "session_id": session.id,
-                "type": "output",
+                "type": "output_final",
                 "data": {"text": "recovery message", "final": True},
             },
         )

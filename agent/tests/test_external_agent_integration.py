@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tether.bridges.base import ApprovalRequest, BridgeInterface
-from tether.bridges.manager import BridgeManager, bridge_manager
-from tether.bridges.subscriber import BridgeSubscriber
+from tether.bridges.manager import BridgeManager
 from tether.models import SessionState
 from tether.store import SessionStore
 
@@ -382,7 +381,7 @@ class TestBridgeSubscriberResilience:
                     "session_id": session.id,
                     "ts": "2026-01-01T00:00:00Z",
                     "seq": fresh_store.next_seq(session.id),
-                    "type": "output",
+                    "type": "output_final",
                     "data": {"text": "this will fail", "final": True},
                 },
             )
@@ -504,7 +503,7 @@ class TestBridgeSubscriberResilience:
                     "session_id": session.id,
                     "ts": "2026-01-01T00:00:01Z",
                     "seq": fresh_store.next_seq(session.id),
-                    "type": "output",
+                    "type": "output_final",
                     "data": {"text": "new output", "final": True},
                 },
             )
