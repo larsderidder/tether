@@ -556,9 +556,10 @@ class DiscordBridge(UpstreamDiscordBridge):
         await super().send_auto_approve_batch(session_id, items)
 
     async def _message_image_attachments(self, message: Any) -> list[Any]:
-        """Return direct and replied-to Discord attachments for image intake."""
+        """Return direct, replied-to, and forwarded Discord attachments."""
 
         attachments = list(getattr(message, "attachments", []) or [])
+        attachments.extend(self._forwarded_message_attachments(message))
         reference = getattr(message, "reference", None)
         resolved = getattr(reference, "resolved", None)
         if resolved is not None:
@@ -578,6 +579,36 @@ class DiscordBridge(UpstreamDiscordBridge):
                 )
             else:
                 attachments.extend(list(getattr(fetched, "attachments", []) or []))
+        return attachments
+
+    @staticmethod
+    def _forwarded_message_attachments(message: Any) -> list[Any]:
+        """Return attachments from Discord forwarded message snapshots."""
+
+        raw_data = getattr(message, "rawData", None)
+        candidates = [
+            getattr(raw_data, "message_snapshots", None),
+            getattr(message, "message_snapshots", None),
+            getattr(message, "messageSnapshots", None),
+        ]
+        snapshots = next(
+            (candidate for candidate in candidates if isinstance(candidate, list)),
+            [],
+        )
+
+        attachments: list[Any] = []
+        for snapshot in snapshots:
+            snapshot_message = None
+            if isinstance(snapshot, dict):
+                snapshot_message = snapshot.get("message")
+            else:
+                snapshot_message = getattr(snapshot, "message", None)
+            if isinstance(snapshot_message, dict):
+                snapshot_attachments = snapshot_message.get("attachments") or []
+            else:
+                snapshot_attachments = getattr(snapshot_message, "attachments", []) or []
+            if isinstance(snapshot_attachments, list):
+                attachments.extend(snapshot_attachments)
         return attachments
 
     async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:

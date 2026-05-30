@@ -1035,6 +1035,45 @@ class TestDiscordBridgePoC:
         )
 
     @pytest.mark.anyio
+    async def test_forward_input_includes_forwarded_snapshot_image(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Discord forwarded message snapshots can provide image input."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = _mock_callbacks()
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
+        attachment = AsyncMock()
+        attachment.content_type = "image/png"
+        attachment.filename = "forwarded.png"
+        attachment.size = len(png_bytes)
+        attachment.read.return_value = png_bytes
+
+        mock_channel = AsyncMock()
+        mock_channel.id = 9876543210
+        mock_message = MagicMock()
+        mock_message.attachments = []
+        mock_message.messageSnapshots = [
+            {"message": {"attachments": [attachment]}}
+        ]
+        mock_message.reference = None
+        mock_message.channel = mock_channel
+        mock_message.author.name = "testuser"
+
+        await bridge._forward_input(mock_message, session.id, "what is forwarded?")
+
+        callbacks.send_input.assert_awaited_once()
+        sent_images = callbacks.send_input.await_args.kwargs["images"]
+        assert sent_images[0]["filename"] == "forwarded.png"
+
+    @pytest.mark.anyio
     async def test_forward_input_fetches_uncached_referenced_image(
         self, fresh_store: SessionStore
     ) -> None:
