@@ -134,6 +134,24 @@ async def test_media_group_buffers_images_as_one_input() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.anyio
+async def test_media_group_warns_when_images_are_skipped() -> None:
+    """Telegram media groups warn when the image cap drops entries."""
+
+    callbacks = _mock_callbacks()
+    bridge = TelegramBridge("token", 123, callbacks=callbacks)
+    messages = [FakeMessage(caption=f"image {index}") for index in range(5)]
+
+    for message in messages:
+        await bridge._buffer_media_group(FakeUpdate(message), "sess1", 99, "album2")
+    await bridge._flush_media_group("456:99:album2")
+
+    assert messages[0].replies == ["⚠️ Received 4 of 5 images; 1 was skipped."]
+    callbacks.send_input.assert_awaited_once()
+    assert len(callbacks.send_input.await_args.kwargs["images"]) == 4
+
+
+@pytest.mark.anyio
 async def test_output_attachment_uses_document_when_image_extension_is_spoofed(
     tmp_path: Path,
 ) -> None:

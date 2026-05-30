@@ -35,6 +35,8 @@ class _TelegramMediaGroupBuffer:
     message: Any
     texts: list[str] = field(default_factory=list)
     images: list[dict[str, str]] = field(default_factory=list)
+    skipped_count: int = 0
+    total_count: int = 0
 
 
 class TelegramBridge(UpstreamTelegramBridge):
@@ -196,10 +198,16 @@ class TelegramBridge(UpstreamTelegramBridge):
         if text:
             buffer.texts.append(text)
 
-        if len(buffer.images) < MAX_IMAGES_PER_MESSAGE:
+        buffer.total_count += 1
+        if len(buffer.images) >= MAX_IMAGES_PER_MESSAGE:
+            buffer.skipped_count += 1
+        else:
             images = await self._collect_message_images(update)
             remaining = MAX_IMAGES_PER_MESSAGE - len(buffer.images)
-            buffer.images.extend(images[:remaining])
+            accepted = images[:remaining]
+            buffer.images.extend(accepted)
+            if len(accepted) < len(images) or not images:
+                buffer.skipped_count += 1
 
         existing = self._media_group_tasks.pop(key, None)
         if existing and not existing.done():
@@ -225,6 +233,9 @@ class TelegramBridge(UpstreamTelegramBridge):
         buffer = self._media_group_buffers.pop(key, None)
         if buffer is None:
             return
+        if buffer.skipped_count > 0:
+            await self._send_media_group_skip_warning(buffer)
+
         text = "\n".join(buffer.texts).strip()
         await self._send_image_input(
             session_id=buffer.session_id,
@@ -233,6 +244,26 @@ class TelegramBridge(UpstreamTelegramBridge):
             images=buffer.images,
             message=buffer.message,
         )
+
+    async def _send_media_group_skip_warning(
+        self,
+        buffer: _TelegramMediaGroupBuffer,
+    ) -> None:
+        """Notify Telegram users when an album was only partially accepted."""
+
+        total = max(buffer.total_count, len(buffer.images) + buffer.skipped_count)
+        skipped = buffer.skipped_count
+        was_or_were = "was" if skipped == 1 else "were"
+        try:
+            await buffer.message.reply_text(
+                f"⚠️ Received {len(buffer.images)} of {total} images; {skipped} {was_or_were} skipped."
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send Telegram media group warning",
+                session_id=buffer.session_id,
+                topic_id=buffer.topic_id,
+            )
 
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
