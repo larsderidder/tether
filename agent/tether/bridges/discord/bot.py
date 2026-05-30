@@ -24,6 +24,11 @@ from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.dedupe import (
+    ShortLivedMessageDedupe,
+    discord_message_key,
+    is_obvious_discord_bot_loop,
+)
 from tether.bridges.image_io import (
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_MESSAGE,
@@ -144,6 +149,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
         self._starter_states: dict[str, _DiscordStarterState] = {}
         self._starter_refresh_tasks: dict[str, asyncio.Task] = {}
+        self._message_dedupe = ShortLivedMessageDedupe()
         self._apply_auto_pair_users()
 
     @staticmethod
@@ -979,7 +985,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         except ImportError:
             return
 
-        if message.author.bot:
+        if self._should_ignore_inbound_message(message):
             return
 
         text = message.content.strip()
@@ -1018,6 +1024,20 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         if not self._channel_id and text.lower().startswith("!setup"):
             await self._dispatch_command(message, text)
+
+    def _should_ignore_inbound_message(self, message: Any) -> bool:
+        """Suppress duplicate Discord deliveries and obvious bot loops."""
+
+        if is_obvious_discord_bot_loop(message):
+            return True
+        if self._message_dedupe.seen_recently(discord_message_key(message)):
+            logger.debug(
+                "Dropped duplicate Discord inbound message",
+                message_id=getattr(message, "id", None),
+                channel_id=getattr(getattr(message, "channel", None), "id", None),
+            )
+            return True
+        return False
 
     def _session_for_thread(self, thread_id: int) -> str | None:
         session_id = super()._session_for_thread(thread_id)

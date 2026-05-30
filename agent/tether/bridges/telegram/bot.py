@@ -12,6 +12,11 @@ from typing import Any
 import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
+from tether.bridges.dedupe import (
+    ShortLivedMessageDedupe,
+    is_obvious_telegram_bot_loop,
+    telegram_update_key,
+)
 from tether.bridges.image_io import (
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_MESSAGE,
@@ -46,6 +51,7 @@ class TelegramBridge(UpstreamTelegramBridge):
         super().__init__(*args, **kwargs)
         self._media_group_buffers: dict[str, _TelegramMediaGroupBuffer] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
+        self._message_dedupe = ShortLivedMessageDedupe()
 
     async def start(self) -> None:
         """Start Telegram and register a media handler for session topics."""
@@ -111,6 +117,8 @@ class TelegramBridge(UpstreamTelegramBridge):
         message = getattr(update, "message", None)
         if message is None:
             return
+        if self._should_ignore_inbound_media(update):
+            return
 
         topic_id = getattr(message, "message_thread_id", None)
         if not topic_id:
@@ -138,6 +146,21 @@ class TelegramBridge(UpstreamTelegramBridge):
             images=images,
             message=message,
         )
+
+    def _should_ignore_inbound_media(self, update: object) -> bool:
+        """Suppress duplicate Telegram media deliveries and obvious bot loops."""
+
+        if is_obvious_telegram_bot_loop(update):
+            return True
+        if self._message_dedupe.seen_recently(telegram_update_key(update)):
+            message = getattr(update, "message", None)
+            logger.debug(
+                "Dropped duplicate Telegram inbound media",
+                message_id=getattr(message, "message_id", None),
+                chat_id=getattr(getattr(message, "chat", None), "id", None),
+            )
+            return True
+        return False
 
     async def _send_image_input(
         self,
