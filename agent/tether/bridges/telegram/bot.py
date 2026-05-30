@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+from dataclasses import dataclass, field
 import mimetypes
 from pathlib import Path
+from typing import Any
 
 import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
@@ -19,10 +22,27 @@ from tether.bridges.retry import with_bridge_send_retry
 from tether.output_postprocess import PublishedAttachment
 
 logger = structlog.get_logger(__name__)
+_TELEGRAM_MEDIA_GROUP_DEBOUNCE_S = 0.7
+
+
+@dataclass
+class _TelegramMediaGroupBuffer:
+    """Pending Telegram album media before dispatching as one turn."""
+
+    session_id: str
+    topic_id: int
+    message: Any
+    texts: list[str] = field(default_factory=list)
+    images: list[dict[str, str]] = field(default_factory=list)
 
 
 class TelegramBridge(UpstreamTelegramBridge):
     """Render tool calls and pass Telegram images through to sessions."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._media_group_buffers: dict[str, _TelegramMediaGroupBuffer] = {}
+        self._media_group_tasks: dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         """Start Telegram and register a media handler for session topics."""
@@ -101,18 +121,39 @@ class TelegramBridge(UpstreamTelegramBridge):
             await message.reply_text("⚠️ No active session is linked to this topic.")
             return
 
+        group_id = str(getattr(message, "media_group_id", "") or "").strip()
+        if group_id:
+            await self._buffer_media_group(update, session_id, topic_id, group_id)
+            return
+
         text = (getattr(message, "caption", None) or "").strip()
         images = await self._collect_message_images(update)
+        await self._send_image_input(
+            session_id=session_id,
+            topic_id=topic_id,
+            text=text,
+            images=images,
+            message=message,
+        )
+
+    async def _send_image_input(
+        self,
+        *,
+        session_id: str,
+        topic_id: int,
+        text: str,
+        images: list[dict[str, str]],
+        message: Any,
+    ) -> None:
+        """Forward collected image input to a session."""
+
         if not images:
             return
         if not text:
             text = "Please look at this image."
 
         try:
-            if images:
-                await self._callbacks.send_input(session_id, text, images=images)
-            else:
-                await self._callbacks.send_input(session_id, text)
+            await self._callbacks.send_input(session_id, text, images=images)
             logger.info(
                 "Forwarded image input from Telegram",
                 session_id=session_id,
@@ -126,6 +167,71 @@ class TelegramBridge(UpstreamTelegramBridge):
                 topic_id=topic_id,
             )
             await message.reply_text(f"❌ Failed to send input: {exc}")
+
+    async def _buffer_media_group(
+        self,
+        update: object,
+        session_id: str,
+        topic_id: int,
+        group_id: str,
+    ) -> None:
+        """Buffer Telegram album entries and dispatch them as one turn."""
+
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+
+        chat_id = getattr(getattr(message, "chat", None), "id", "")
+        key = f"{chat_id}:{topic_id}:{group_id}"
+        buffer = self._media_group_buffers.setdefault(
+            key,
+            _TelegramMediaGroupBuffer(
+                session_id=session_id,
+                topic_id=topic_id,
+                message=message,
+            ),
+        )
+        text = (getattr(message, "caption", None) or "").strip()
+        if text:
+            buffer.texts.append(text)
+
+        if len(buffer.images) < MAX_IMAGES_PER_MESSAGE:
+            images = await self._collect_message_images(update)
+            remaining = MAX_IMAGES_PER_MESSAGE - len(buffer.images)
+            buffer.images.extend(images[:remaining])
+
+        existing = self._media_group_tasks.pop(key, None)
+        if existing and not existing.done():
+            existing.cancel()
+
+        async def _delayed_flush() -> None:
+            try:
+                await asyncio.sleep(_TELEGRAM_MEDIA_GROUP_DEBOUNCE_S)
+            except asyncio.CancelledError:
+                return
+            self._media_group_tasks.pop(key, None)
+            await self._flush_media_group(key)
+
+        self._media_group_tasks[key] = asyncio.create_task(_delayed_flush())
+
+    async def _flush_media_group(self, key: str) -> None:
+        """Send a buffered Telegram album to the session."""
+
+        pending_task = self._media_group_tasks.pop(key, None)
+        if pending_task and pending_task is not asyncio.current_task():
+            pending_task.cancel()
+
+        buffer = self._media_group_buffers.pop(key, None)
+        if buffer is None:
+            return
+        text = "\n".join(buffer.texts).strip()
+        await self._send_image_input(
+            session_id=buffer.session_id,
+            topic_id=buffer.topic_id,
+            text=text,
+            images=buffer.images,
+            message=buffer.message,
+        )
 
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
