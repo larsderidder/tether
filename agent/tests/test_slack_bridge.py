@@ -139,40 +139,6 @@ class TestSlackBridgePoC:
         assert "/tmp/demo" in second_text
 
     @pytest.mark.anyio
-    async def test_sync_force_passes_force_flag_to_callback(
-        self, fresh_store: SessionStore
-    ) -> None:
-        """!sync force should request a force sync from the backend."""
-        from tether.bridges.slack.bot import SlackBridge
-
-        session = fresh_store.create_session("repo_test", "main")
-        session.platform = "slack"
-        session.platform_thread_id = "1234567890.123456"
-        fresh_store.update_session(session)
-
-        sync_session = AsyncMock(return_value={"synced": 9, "total": 9})
-        bridge = SlackBridge(
-            bot_token="xoxb-test-token",
-            channel_id="C01234567",
-            callbacks=_mock_callbacks(sync_session=sync_session),
-        )
-        bridge._thread_ts[session.id] = "1234567890.123456"
-        bridge._reply = AsyncMock()
-
-        event = {
-            "thread_ts": "1234567890.123456",
-            "text": "!sync force",
-        }
-
-        await bridge._cmd_sync(event)
-
-        sync_session.assert_awaited_once_with(session.id, force=True)
-        bridge._reply.assert_awaited_once_with(
-            event,
-            "🔄 Force-synced 9 message(s) (9 total).",
-        )
-
-    @pytest.mark.anyio
     async def test_on_output_uploads_requested_attachments(
         self, fresh_store: SessionStore, tmp_path
     ) -> None:

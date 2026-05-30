@@ -83,15 +83,7 @@ def _write_sqlite_thread(
             INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, first_user_message)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                session_id,
-                rollout_path,
-                created_at,
-                updated_at,
-                cwd,
-                title,
-                first_user_message,
-            ),
+            (session_id, rollout_path, created_at, updated_at, cwd, title, first_user_message),
         )
         conn.commit()
 
@@ -166,9 +158,7 @@ def test_list_codex_sessions_from_sqlite_threads(monkeypatch, tmp_path: Path) ->
     assert summary.message_count == 1
 
 
-def test_get_codex_session_detail_from_sqlite_threads(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_get_codex_session_detail_from_sqlite_threads(monkeypatch, tmp_path: Path) -> None:
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 

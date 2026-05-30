@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 import httpx
 
+from tether.bridges.manager import bridge_manager
 from tether.models import SessionState
 from tether.store import SessionStore
 
@@ -50,6 +52,104 @@ def _write_rollout(path: Path, session_id: str) -> None:
     with path.open("w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record) + "\n")
+
+
+def _write_sqlite_thread(
+    path: Path,
+    session_id: str,
+    *,
+    cwd: str = "/home/lars/xithing/tether",
+    first_user_message: str = "Hello Codex",
+    title: str = "Hello Codex",
+    rollout_path: str = "",
+    created_at: int = 1770408000,
+    updated_at: int = 1770408060,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT NOT NULL,
+                first_user_message TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, first_user_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                rollout_path,
+                created_at,
+                updated_at,
+                cwd,
+                title,
+                first_user_message,
+            ),
+        )
+        conn.commit()
+
+
+class MockBridge:
+    """Minimal bridge that records thread creation and imported history posts."""
+
+    def __init__(self) -> None:
+        self.output_calls: list[dict] = []
+        self.thread_calls: list[dict] = []
+        self.typing_stopped_calls: list[str] = []
+
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        self.output_calls.append(
+            {"session_id": session_id, "text": text, "metadata": metadata}
+        )
+
+    async def on_approval_request(self, session_id: str, request) -> None:
+        return None
+
+    async def on_status_change(
+        self,
+        session_id: str,
+        status: str,
+        metadata: dict | None = None,
+    ) -> None:
+        return None
+
+    async def on_typing(self, session_id: str) -> None:
+        return None
+
+    async def on_typing_stopped(self, session_id: str) -> None:
+        self.typing_stopped_calls.append(session_id)
+
+    async def on_session_removed(self, session_id: str) -> None:
+        return None
+
+    async def create_thread(
+        self,
+        session_id: str,
+        session_name: str,
+        existing_thread_id: str | None = None,
+    ) -> dict:
+        self.thread_calls.append(
+            {
+                "session_id": session_id,
+                "session_name": session_name,
+                "existing_thread_id": existing_thread_id,
+            }
+        )
+        return {
+            "thread_id": existing_thread_id or f"mock_{session_id}",
+            "platform": "mock",
+        }
 
 
 @pytest.mark.anyio
@@ -109,6 +209,55 @@ async def test_attach_codex_session(
 
 
 @pytest.mark.anyio
+async def test_attach_codex_session_replays_history_to_platform_thread(
+    api_client: httpx.AsyncClient,
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Attaching with a platform should mirror imported history into the thread."""
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
+
+    session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
+    _write_rollout(rollout_path, session_id)
+
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+
+    mock_bridge = MockBridge()
+    bridge_manager.register_bridge("mock", mock_bridge)
+
+    response = await api_client.post(
+        "/api/sessions/attach",
+        json={
+            "external_id": session_id,
+            "runner_type": "codex",
+            "directory": str(workdir),
+            "platform": "mock",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["platform"] == "mock"
+    assert payload["platform_thread_id"] == f"mock_{payload['id']}"
+    assert [call["text"] for call in mock_bridge.output_calls] == [
+        "👤 User: Hello Codex",
+        "Hi there",
+    ]
+
+
+@pytest.mark.anyio
 async def test_attach_codex_without_sidecar_url_still_succeeds(
     api_client: httpx.AsyncClient,
     fresh_store: SessionStore,
@@ -154,6 +303,96 @@ async def test_attach_codex_without_sidecar_url_still_succeeds(
     assert body["runner_type"] == "codex"
     assert body["adapter"] == "codex_sdk_sidecar"
     assert body["runner_session_id"] == session_id
+
+
+@pytest.mark.anyio
+async def test_attach_existing_codex_session_replays_history_when_binding_platform(
+    api_client: httpx.AsyncClient,
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Binding a platform after attach should backfill the existing thread."""
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
+
+    session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
+    _write_rollout(rollout_path, session_id)
+
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+
+    first = await api_client.post(
+        "/api/sessions/attach",
+        json={
+            "external_id": session_id,
+            "runner_type": "codex",
+            "directory": str(workdir),
+        },
+    )
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    mock_bridge = MockBridge()
+    bridge_manager.register_bridge("mock", mock_bridge)
+
+    second = await api_client.post(
+        "/api/sessions/attach",
+        json={
+            "external_id": session_id,
+            "runner_type": "codex",
+            "directory": str(workdir),
+            "platform": "mock",
+        },
+    )
+
+    assert second.status_code == 201
+    payload = second.json()
+    assert payload["id"] == first_id
+    assert payload["platform"] == "mock"
+    assert [call["text"] for call in mock_bridge.output_calls] == [
+        "👤 User: Hello Codex",
+        "Hi there",
+    ]
+
+
+@pytest.mark.anyio
+async def test_list_external_codex_sessions_without_sidecar_url(
+    api_client: httpx.AsyncClient,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Codex sessions should stay discoverable without explicit sidecar env."""
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
+
+    session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
+    _write_sqlite_thread(
+        codex_home / "state_1.sqlite",
+        session_id,
+        cwd="/tmp/sqlite-only",
+        first_user_message="Prompt from sqlite",
+        title="Prompt from sqlite",
+    )
+
+    response = await api_client.get("/api/external-sessions?runner_type=codex")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["id"] == session_id
+    assert payload[0]["runner_type"] == "codex"
+    assert payload[0]["directory"] == "/tmp/sqlite-only"
 
 
 @pytest.mark.anyio
@@ -217,4 +456,137 @@ async def test_sync_after_restart_does_not_duplicate(
     assert sync_data["synced"] == 2  # Recovery replay window for this fixture
 
     events_after_sync = fresh_store.read_event_log(tether_session_id, since_seq=0)
-    assert len(events_after_sync) > count_after_attach
+    assert len(events_after_sync) == count_after_attach  # No duplicates added
+
+
+@pytest.mark.anyio
+async def test_sync_codex_replays_delta_to_platform_thread(
+    api_client: httpx.AsyncClient,
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Syncing new external messages should post only the new delta to the bridge."""
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
+
+    session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
+    _write_sqlite_thread(
+        codex_home / "state_1.sqlite",
+        session_id,
+        cwd="/tmp/sqlite-bootstrap",
+        first_user_message="Hello Codex",
+        title="Hello Codex",
+    )
+
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+
+    mock_bridge = MockBridge()
+    bridge_manager.register_bridge("mock", mock_bridge)
+
+    attach_resp = await api_client.post(
+        "/api/sessions/attach",
+        json={
+            "external_id": session_id,
+            "runner_type": "codex",
+            "directory": str(workdir),
+            "platform": "mock",
+        },
+    )
+    assert attach_resp.status_code == 201
+    tether_session_id = attach_resp.json()["id"]
+    assert [call["text"] for call in mock_bridge.output_calls] == [
+        "👤 User: Hello Codex",
+    ]
+
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
+    _write_rollout(rollout_path, session_id)
+
+    sync_resp = await api_client.post(f"/api/sessions/{tether_session_id}/sync")
+    assert sync_resp.status_code == 200
+    assert sync_resp.json()["synced"] == 1
+    assert [call["text"] for call in mock_bridge.output_calls] == [
+        "👤 User: Hello Codex",
+        "Hi there",
+    ]
+
+
+@pytest.mark.anyio
+async def test_attach_codex_from_sqlite_then_sync_rollout_delta(
+    api_client: httpx.AsyncClient,
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A sqlite-only Codex session should attach early and sync rollout deltas later."""
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("TETHER_CODEX_SIDECAR_URL", raising=False)
+
+    session_id = "019b2182-8e89-77a1-a675-72857fca4fb1"
+    _write_sqlite_thread(
+        codex_home / "state_1.sqlite",
+        session_id,
+        cwd="/tmp/sqlite-bootstrap",
+        first_user_message="Hello Codex",
+        title="Hello Codex",
+    )
+
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+
+    import tether.api.external_sessions as external_sessions
+
+    monkeypatch.setattr(external_sessions, "store", fresh_store)
+
+    attach_resp = await api_client.post(
+        "/api/sessions/attach",
+        json={
+            "external_id": session_id,
+            "runner_type": "codex",
+            "directory": str(workdir),
+        },
+    )
+    assert attach_resp.status_code == 201
+    tether_session_id = attach_resp.json()["id"]
+
+    events_after_attach = fresh_store.read_event_log(tether_session_id, since_seq=0)
+    user_events_after_attach = [
+        event for event in events_after_attach if event["type"] == "user_input"
+    ]
+    assert len(user_events_after_attach) == 1
+    assert user_events_after_attach[0]["data"]["text"] == "Hello Codex"
+    assert user_events_after_attach[0]["data"]["is_history"] is True
+
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "02"
+        / "06"
+        / f"rollout-2026-02-06T20-00-00-{session_id}.jsonl"
+    )
+    _write_rollout(rollout_path, session_id)
+
+    sync_resp = await api_client.post(f"/api/sessions/{tether_session_id}/sync")
+    assert sync_resp.status_code == 200
+    sync_data = sync_resp.json()
+    assert sync_data["synced"] == 1
+    assert sync_data["total"] == 2
+
+    events_after_sync = fresh_store.read_event_log(tether_session_id, since_seq=0)
+    output_events_after_sync = [
+        event for event in events_after_sync if event["type"] == "output"
+    ]
+    assert len(output_events_after_sync) == 1
+    assert output_events_after_sync[0]["data"]["text"] == "Hi there"
+    assert output_events_after_sync[0]["data"]["is_history"] is True

@@ -71,14 +71,24 @@ class MockBridge(BridgeInterface):
         self.status_calls = []
         self.thread_creation_calls = []
 
-    async def on_output(self, session_id: str, text: str, metadata: dict | None = None) -> None:
-        self.output_calls.append({"session_id": session_id, "text": text, "metadata": metadata})
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        self.output_calls.append(
+            {"session_id": session_id, "text": text, "metadata": metadata}
+        )
 
-    async def on_approval_request(self, session_id: str, request: ApprovalRequest) -> None:
+    async def on_approval_request(
+        self, session_id: str, request: ApprovalRequest
+    ) -> None:
         self.approval_calls.append({"session_id": session_id, "request": request})
 
-    async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
-        self.status_calls.append({"session_id": session_id, "status": status, "metadata": metadata})
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
+        self.status_calls.append(
+            {"session_id": session_id, "status": status, "metadata": metadata}
+        )
 
     async def create_thread(
         self,
@@ -86,8 +96,17 @@ class MockBridge(BridgeInterface):
         session_name: str,
         existing_thread_id: str | None = None,
     ) -> dict:
-        self.thread_creation_calls.append({"session_id": session_id, "session_name": session_name})
-        return {"thread_id": f"thread_{session_id}", "platform": "mock"}
+        self.thread_creation_calls.append(
+            {
+                "session_id": session_id,
+                "session_name": session_name,
+                "existing_thread_id": existing_thread_id,
+            }
+        )
+        return {
+            "thread_id": existing_thread_id or f"thread_{session_id}",
+            "platform": "mock",
+        }
 
 
 class TestBridgeManager:
@@ -141,7 +160,9 @@ class TestBridgeManager:
         bridge = MockBridge()
         manager.register_bridge("mock", bridge)
 
-        result = await manager.create_thread("sess_123", "Test Session", platform="mock")
+        result = await manager.create_thread(
+            "sess_123", "Test Session", platform="mock"
+        )
 
         assert len(bridge.thread_creation_calls) == 1
         assert result["thread_id"] == "thread_sess_123"
@@ -151,7 +172,9 @@ class TestApprovalFlow:
     """Test approval request and response flow."""
 
     @pytest.mark.anyio
-    async def test_approval_request_creates_pending_approval(self, fresh_store: SessionStore) -> None:
+    async def test_approval_request_creates_pending_approval(
+        self, fresh_store: SessionStore
+    ) -> None:
         """Creating an approval request stores it as pending."""
         session = fresh_store.create_session("repo_test", "main")
         future = asyncio.Future()
@@ -170,7 +193,9 @@ class TestApprovalFlow:
         assert not pending.future.done()
 
     @pytest.mark.anyio
-    async def test_approval_response_resolves_future(self, fresh_store: SessionStore) -> None:
+    async def test_approval_response_resolves_future(
+        self, fresh_store: SessionStore
+    ) -> None:
         """Responding to an approval resolves the future."""
         session = fresh_store.create_session("repo_test", "main")
         future = asyncio.Future()
@@ -192,7 +217,9 @@ class TestApprovalFlow:
         assert await future == result
 
     @pytest.mark.anyio
-    async def test_approval_first_response_wins(self, fresh_store: SessionStore) -> None:
+    async def test_approval_first_response_wins(
+        self, fresh_store: SessionStore
+    ) -> None:
         """Only the first response to an approval is accepted."""
         session = fresh_store.create_session("repo_test", "main")
         future = asyncio.Future()
@@ -247,27 +274,36 @@ class TestEventReplay:
         session = fresh_store.create_session("repo_test", "main")
 
         # Emit some events
-        await fresh_store.emit(session.id, {
-            "session_id": session.id,
-            "ts": "2026-02-03T12:00:00Z",
-            "seq": fresh_store.next_seq(session.id),
-            "type": "output",
-            "data": {"text": "Event 1"},
-        })
-        await fresh_store.emit(session.id, {
-            "session_id": session.id,
-            "ts": "2026-02-03T12:00:01Z",
-            "seq": fresh_store.next_seq(session.id),
-            "type": "output",
-            "data": {"text": "Event 2"},
-        })
-        await fresh_store.emit(session.id, {
-            "session_id": session.id,
-            "ts": "2026-02-03T12:00:02Z",
-            "seq": fresh_store.next_seq(session.id),
-            "type": "output",
-            "data": {"text": "Event 3"},
-        })
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": "2026-02-03T12:00:00Z",
+                "seq": fresh_store.next_seq(session.id),
+                "type": "output",
+                "data": {"text": "Event 1"},
+            },
+        )
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": "2026-02-03T12:00:01Z",
+                "seq": fresh_store.next_seq(session.id),
+                "type": "output",
+                "data": {"text": "Event 2"},
+            },
+        )
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": "2026-02-03T12:00:02Z",
+                "seq": fresh_store.next_seq(session.id),
+                "type": "output",
+                "data": {"text": "Event 3"},
+            },
+        )
 
         # Read events after seq 1
         events = fresh_store.read_event_log(session.id, since_seq=1)
@@ -292,7 +328,9 @@ class TestExternalAgentSession:
         assert hasattr(retrieved, "platform")
         assert retrieved.platform == "telegram"
 
-    def test_external_agent_metadata_on_session(self, fresh_store: SessionStore) -> None:
+    def test_external_agent_metadata_on_session(
+        self, fresh_store: SessionStore
+    ) -> None:
         """External agent metadata is stored on session."""
         session = fresh_store.create_session("repo_test", "main")
 
@@ -317,7 +355,9 @@ class TestRESTEndpoints:
         assert data["ok"] is True
 
     @pytest.mark.anyio
-    async def test_create_session_with_agent_name(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_create_session_with_agent_name(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Can create a session with external agent fields via POST /api/sessions."""
         from tether.bridges.manager import bridge_manager
 
@@ -349,7 +389,9 @@ class TestRESTEndpoints:
         assert session.repo_id == "external"
 
     @pytest.mark.anyio
-    async def test_push_output_event(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_push_output_event(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Can push output events via POST /api/sessions/{id}/events."""
         session = fresh_store.create_session("external", None)
 
@@ -369,7 +411,9 @@ class TestRESTEndpoints:
         assert updated.state == SessionState.RUNNING
 
     @pytest.mark.anyio
-    async def test_push_status_event(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_push_status_event(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Can push status events to transition session state."""
         session = fresh_store.create_session("external", None)
 
@@ -390,7 +434,9 @@ class TestRESTEndpoints:
         assert updated.state == SessionState.AWAITING_INPUT
 
     @pytest.mark.anyio
-    async def test_push_permission_request(self, api_client, fresh_store: SessionStore) -> None:
+    async def test_push_permission_request(
+        self, api_client, fresh_store: SessionStore
+    ) -> None:
         """Can push permission_request events and poll for resolution."""
         session = fresh_store.create_session("external", None)
 
@@ -419,13 +465,16 @@ class TestRESTEndpoints:
         session = fresh_store.create_session("external", None)
 
         # Emit a user_input event
-        await fresh_store.emit(session.id, {
-            "session_id": session.id,
-            "ts": fresh_store._now(),
-            "seq": fresh_store.next_seq(session.id),
-            "type": "user_input",
-            "data": {"text": "hello"},
-        })
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "ts": fresh_store._now(),
+                "seq": fresh_store.next_seq(session.id),
+                "type": "user_input",
+                "data": {"text": "hello"},
+            },
+        )
 
         response = await api_client.get(
             f"/api/sessions/{session.id}/events/poll",

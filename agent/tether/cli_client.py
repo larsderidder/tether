@@ -15,6 +15,14 @@ from typing import Callable
 
 import httpx
 
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
+_DEFAULT_MUTATION_READ_TIMEOUT_SECONDS = 60.0
+_CLIENT_ERROR_TYPES = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+)
+
 
 def _base_url() -> str:
     """Return the base URL for the Tether server."""
@@ -34,11 +42,42 @@ def _auth_headers() -> dict[str, str]:
     return {}
 
 
-def _client() -> httpx.Client:
+def _parse_positive_timeout_env(name: str, default: float) -> float:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+
+def _build_timeout(*, read_timeout: float = _DEFAULT_HTTP_TIMEOUT_SECONDS) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=_DEFAULT_HTTP_TIMEOUT_SECONDS,
+        read=read_timeout,
+        write=_DEFAULT_HTTP_TIMEOUT_SECONDS,
+        pool=_DEFAULT_HTTP_TIMEOUT_SECONDS,
+    )
+
+
+def _mutation_timeout() -> httpx.Timeout:
+    return _build_timeout(
+        read_timeout=_parse_positive_timeout_env(
+            "TETHER_AGENT_MUTATION_READ_TIMEOUT_SECONDS",
+            _DEFAULT_MUTATION_READ_TIMEOUT_SECONDS,
+        )
+    )
+
+
+def _client(*, timeout: httpx.Timeout | float | None = None) -> httpx.Client:
     return httpx.Client(
         base_url=_base_url(),
         headers=_auth_headers(),
-        timeout=30.0,
+        timeout=timeout or _build_timeout(),
     )
 
 
@@ -56,7 +95,7 @@ def _normalize_runner_type(value: str) -> str:
 
 def _handle_connection_error() -> None:
     """Print a friendly message when the server is unreachable."""
-    print("Error: Cannot connect to the Tether server.", file=sys.stderr)
+    print("Error: Cannot connect to the Tether server or the request timed out.", file=sys.stderr)
     print("Is it running? Start it with: tether start", file=sys.stderr)
     sys.exit(1)
 
@@ -97,82 +136,45 @@ def _get_json(path: str, *, params: dict[str, str] | None = None) -> list | dict
         return resp.json()
 
 
-def _get_running_platforms() -> list[str]:
-    """Return running bridge platform names, sorted alphabetically."""
-    try:
-        with _client() as c:
-            resp = c.get("/api/status/bridges")
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
+def _fetch_external_sessions(
+    *,
+    directory: str | None = None,
+    runner_type: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    params: dict[str, str] = {"limit": str(limit)}
+    if directory:
+        params["directory"] = directory
+    if runner_type:
+        params["runner_type"] = _normalize_runner_type(runner_type)
+    items = _get_json("/api/external-sessions", params=params)
+    assert isinstance(items, list)
+    return items
 
-        running = {
-            b.get("platform")
-            for b in data.get("bridges", [])
-            if b.get("status") == "running" and b.get("platform")
-        }
-        return sorted(running, key=str.casefold)
+
+def _post_attach(body: dict) -> httpx.Response:
+    with _client(timeout=_mutation_timeout()) as c:
+        return c.post("/api/sessions/attach", json=body)
+
+
+def _is_external_not_found_response(resp: httpx.Response) -> bool:
+    if resp.status_code != 404:
+        return False
+    try:
+        body = resp.json()
     except Exception:
-        return []
-
-
-def _detect_platform() -> str | None:
-    """Return the single active bridge platform, or None.
-
-    If exactly one bridge is running, return its name so callers can
-    auto-bind sessions without requiring an explicit --bridge flag.
-    Returns None when zero or multiple bridges are active.
-    """
-    running = _get_running_platforms()
-    return running[0] if len(running) == 1 else None
-
-
-def _prompt_platform() -> str | None:
-    """Auto-select or prompt the user to pick a bridge platform.
-
-    - Zero bridges running: return None (no binding).
-    - One bridge running: return it automatically.
-    - Multiple bridges running: prompt the user to pick one.
-    """
-    running = _get_running_platforms()
-    if not running:
-        return None
-    if len(running) == 1:
-        return running[0]
-    # Multiple bridges — ask.
-    print("Multiple bridges are running. Pick one to bind this session to:")
-    for i, name in enumerate(running, 1):
-        print(f"  {i}) {name}")
-    print(f"  {len(running) + 1}) none (skip)")
-    try:
-        choice = input("Bridge [1]: ").strip() or "1"
-        idx = int(choice) - 1
-    except (ValueError, EOFError, KeyboardInterrupt):
-        return None
-    if 0 <= idx < len(running):
-        return running[idx]
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Context banner
-# ---------------------------------------------------------------------------
-
-
-def _print_context_banner() -> None:
-    """Print the active context as a one-liner when using a remote server."""
-    from tether.servers import get_active_context, get_server
-
-    active = get_active_context()
-    if active is None:
-        return
-    profile = get_server(active)
-    if profile:
-        host = profile.get("host", "?")
-        port = profile.get("port", "8787")
-        print(f"\u27f6 {active} ({host}:{port})")
+        return True
+    detail = body.get("detail")
+    if isinstance(detail, dict):
+        message = str(detail.get("message") or detail.get("msg") or "")
+    elif isinstance(detail, str):
+        message = detail
     else:
-        print(f"\u27f6 {active}")
+        error = body.get("error", {})
+        message = str(error.get("message") or "") if isinstance(error, dict) else ""
+    if not message:
+        return True
+    return "external session not found" in message.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +433,7 @@ def cmd_status() -> None:
     try:
         h = _get_json("/api/health")
         items = _get_json("/api/sessions")
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -478,7 +480,7 @@ def cmd_list(
     _print_context_banner()
     try:
         items = _get_json("/api/sessions")
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -498,15 +500,9 @@ def cmd_list_external(
     limit: int = 50,
 ) -> None:
     """List discoverable external sessions."""
-    params: dict[str, str] = {"limit": str(limit)}
-    if directory:
-        params["directory"] = directory
-    if runner_type:
-        params["runner_type"] = _normalize_runner_type(runner_type)
-
     try:
-        items = _get_json("/api/external-sessions", params=params)
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+        items = _fetch_external_sessions(directory=directory, runner_type=runner_type)
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -533,12 +529,10 @@ def cmd_attach(
     directory and prompts for a selection.
     """
     try:
-        # Fetch external sessions for prefix resolution or interactive pick
-        ext_sessions = _get_json("/api/external-sessions", params={"limit": "200"})
-
         # Interactive mode: no ID given, pick from current directory
         if not external_id:
             cwd = os.getcwd()
+            ext_sessions = _fetch_external_sessions(directory=cwd, runner_type=runner_type)
             local = [
                 s
                 for s in ext_sessions
@@ -576,11 +570,31 @@ def cmd_attach(
             resolved_runner_type = match.get("runner_type", runner_type)
             resolved_directory = match.get("directory", directory)
         else:
-            # Prefix resolution
             resolved_id = external_id
             resolved_runner_type = _normalize_runner_type(runner_type)
             resolved_directory = directory
 
+            body: dict = {
+                "external_id": resolved_id,
+                "runner_type": resolved_runner_type,
+                "directory": resolved_directory,
+            }
+            if platform:
+                body["platform"] = platform
+
+            resp = _post_attach(body)
+            if not _is_external_not_found_response(resp):
+                _check_response(resp)
+                session = resp.json()
+                print(f"Attached session {session['id']}")
+                print(f"  Name:      {session.get('name') or '(unnamed)'}")
+                print(f"  State:     {_format_state(session['state'])}")
+                print(f"  Directory: {session.get('directory') or '?'}")
+                if session.get("platform"):
+                    print(f"  Platform:  {session['platform']}")
+                return
+
+            ext_sessions = _fetch_external_sessions()
             match = _resolve_prefix(
                 external_id,
                 ext_sessions,
@@ -605,14 +619,10 @@ def cmd_attach(
         if platform:
             body["platform"] = platform
 
-        with _client() as c:
-            resp = c.post(
-                "/api/sessions/attach",
-                json=body,
-            )
-            _check_response(resp)
-            session = resp.json()
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+        resp = _post_attach(body)
+        _check_response(resp)
+        session = resp.json()
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -697,7 +707,7 @@ def cmd_new(
                 )
                 _check_response(resp)
                 session = resp.json()
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -742,7 +752,7 @@ def cmd_delete(session_id: str) -> None:
         with _client() as c:
             resp = c.delete(f"/api/sessions/{session_id}")
             _check_response(resp)
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -763,7 +773,7 @@ def cmd_input(session_id: str, text: str) -> None:
             )
             _check_response(resp)
             session = resp.json()
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -779,14 +789,11 @@ def cmd_sync(session_id: str, force: bool = False) -> None:
         return
 
     try:
-        with _client() as c:
-            resp = c.post(
-                f"/api/sessions/{session_id}/sync",
-                params={"force": "true"} if force else None,
-            )
+        with _client(timeout=_mutation_timeout()) as c:
+            resp = c.post(f"/api/sessions/{session_id}/sync")
             _check_response(resp)
             result = resp.json()
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -810,7 +817,7 @@ def cmd_interrupt(session_id: str) -> None:
             resp = c.post(f"/api/sessions/{session_id}/interrupt")
             _check_response(resp)
             session = resp.json()
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return
 
@@ -896,7 +903,7 @@ def cmd_watch(session_id: str) -> None:
 
     except KeyboardInterrupt:
         print("\nStopped watching.")
-    except (httpx.ConnectError, ConnectionRefusedError, OSError):
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, ConnectionRefusedError, OSError):
         _handle_connection_error()
     finally:
         try:
@@ -1014,7 +1021,7 @@ def _resolve_session_id(prefix: str) -> str | None:
     """
     try:
         items = _get_json("/api/sessions")
-    except (httpx.ConnectError, httpx.ConnectTimeout):
+    except _CLIENT_ERROR_TYPES:
         _handle_connection_error()
         return None
 

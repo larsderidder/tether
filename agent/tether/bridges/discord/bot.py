@@ -460,7 +460,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                     )
                     return
             if thread:
-                for message in render_discord_messages(text, metadata=metadata) or [text]:
+                for message in render_discord_messages(text) or [text]:
                     await thread.send(message[:_DISCORD_STARTER_TEXT_LIMIT])
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
@@ -553,61 +553,6 @@ class DiscordBridge(UpstreamDiscordBridge):
             user_id=getattr(getattr(message, "author", None), "id", None),
         )
         await self._sync_starter_message(session_id)
-
-    async def _cmd_sync(self, message: Any) -> None:
-        """Handle !sync and !sync force for attached external sessions."""
-        try:
-            import discord
-        except ImportError:
-            return
-
-        if not isinstance(message.channel, discord.Thread):
-            await message.channel.send("Use this command inside a session thread.")
-            return
-        if not self._is_authorized_user_id(getattr(message.author, "id", None)):
-            await self._send_not_paired(message)
-            return
-
-        session_id = self._session_for_thread(message.channel.id)
-        if not session_id:
-            await message.channel.send("No session linked to this thread.")
-            return
-
-        if not self._callbacks.sync_session:
-            await message.channel.send("Sync is not supported by this Tether version.")
-            return
-
-        text = str(getattr(message, "content", "") or "").strip()
-        force = text.lower().split()[:2] == ["!sync", "force"]
-
-        try:
-            result = await self._callbacks.sync_session(session_id, force=force)
-            synced = result.get("synced", 0)
-            total = result.get("total", 0)
-            if synced:
-                prefix = "🔄 Force-synced" if force else "🔄 Synced"
-                await message.channel.send(
-                    f"{prefix} {synced} message(s) ({total} total)."
-                )
-            else:
-                await message.channel.send(
-                    f"✅ Already up to date ({total} message(s) total)."
-                )
-        except TypeError:
-            result = await self._callbacks.sync_session(session_id)
-            synced = result.get("synced", 0)
-            total = result.get("total", 0)
-            if synced:
-                await message.channel.send(
-                    f"🔄 Synced {synced} new message(s) ({total} total)."
-                )
-            else:
-                await message.channel.send(
-                    f"✅ Already up to date ({total} message(s) total)."
-                )
-        except Exception as exc:
-            logger.exception("Failed to sync session")
-            await message.channel.send(f"Failed to sync: {exc}")
 
     async def _cancel_pending_error_attachment_task(self, session_id: str) -> None:
         task = self._pending_error_attachment_tasks.pop(session_id, None)

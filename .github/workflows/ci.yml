@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install agent-sessions dependency from GitHub release tag
+        run: pip install "agent-sessions @ git+https://github.com/Adminrealagi/agent-sessions.git@v0.2.1"
+
       - name: Install dependencies
         working-directory: agent
         run: pip install -e ".[dev]"

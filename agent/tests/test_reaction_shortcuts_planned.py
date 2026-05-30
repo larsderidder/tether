@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,9 +15,7 @@ def _mock_callbacks(**overrides) -> BridgeCallbacks:
         respond_to_permission=AsyncMock(return_value=True),
         list_sessions=AsyncMock(return_value=[]),
         get_usage=AsyncMock(return_value={}),
-        check_directory=AsyncMock(
-            side_effect=lambda path: {"exists": True, "path": path}
-        ),
+        check_directory=AsyncMock(side_effect=lambda path: {"exists": True, "path": path}),
         list_external_sessions=AsyncMock(return_value=[]),
         get_external_history=AsyncMock(return_value=None),
         attach_external=AsyncMock(return_value={}),
@@ -29,9 +25,7 @@ def _mock_callbacks(**overrides) -> BridgeCallbacks:
 
 
 @pytest.mark.anyio
-async def test_discord_checkmark_reaction_creates_and_starts_session_from_control_channel_message() -> (
-    None
-):
+async def test_discord_checkmark_reaction_creates_and_starts_session_from_control_channel_message() -> None:
     from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
 
     callbacks = _mock_callbacks(
@@ -83,15 +77,17 @@ async def test_discord_checkmark_reaction_creates_and_starts_session_from_contro
 
 
 @pytest.mark.anyio
-async def test_discord_checkmark_reaction_can_use_plain_control_channel_messages_when_enabled(
+async def test_discord_checkmark_reaction_creates_and_starts_session_from_plain_control_channel_message(
+    tmp_path,
     monkeypatch,
 ) -> None:
     from agent_tether.base import BridgeConfig
     from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
 
+    monkeypatch.chdir(tmp_path)
     callbacks = _mock_callbacks(
         create_session=AsyncMock(
-            return_value={"id": "sess_discord", "platform_thread_id": "333"}
+            return_value={"id": "sess_discord_plain", "platform_thread_id": "333"}
         ),
     )
     bridge = DiscordBridge(
@@ -106,12 +102,10 @@ async def test_discord_checkmark_reaction_can_use_plain_control_channel_messages
         config=BridgeConfig(default_adapter="codex_sdk_sidecar"),
     )
 
-    monkeypatch.setattr(os, "getcwd", lambda: "/worktrees/plain-discord")
-
     control_channel = AsyncMock()
     control_channel.id = 1234567890
     source_message = MagicMock()
-    source_message.content = "Fix the Discord reaction flow."
+    source_message.content = "LATEST THINKPAD CHECKMARK TEST 1"
     source_message.author.bot = False
     control_channel.fetch_message = AsyncMock(return_value=source_message)
 
@@ -130,13 +124,15 @@ async def test_discord_checkmark_reaction_can_use_plain_control_channel_messages
     await bridge._handle_raw_reaction_add(payload)
 
     create_kwargs = callbacks.create_session.await_args.kwargs
-    assert create_kwargs["directory"] == "/worktrees/plain-discord"
+    assert create_kwargs["directory"] == str(tmp_path)
     assert create_kwargs["platform"] == "discord"
     assert create_kwargs["adapter"] == "codex_sdk_sidecar"
     assert callbacks.send_input.await_args.args == (
-        "sess_discord",
-        "Fix the Discord reaction flow.",
+        "sess_discord_plain",
+        "LATEST THINKPAD CHECKMARK TEST 1",
     )
+    control_channel.send.assert_awaited()
+    assert "<#333>" in control_channel.send.await_args.args[0]
 
 
 @pytest.mark.anyio
@@ -220,9 +216,7 @@ async def test_discord_checkmark_reaction_ignores_threads_unauthorized_users_and
 
 
 @pytest.mark.anyio
-async def test_discord_multiline_new_message_waits_for_reaction_instead_of_running_command() -> (
-    None
-):
+async def test_discord_multiline_new_message_waits_for_reaction_instead_of_running_command() -> None:
     from tether.bridges.discord.bot import DiscordBridge, DiscordConfig
 
     bridge = DiscordBridge(
@@ -245,9 +239,7 @@ async def test_discord_multiline_new_message_waits_for_reaction_instead_of_runni
 
 
 @pytest.mark.anyio
-async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_channel_message() -> (
-    None
-):
+async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_channel_message() -> None:
     from tether.bridges.slack.bot import SlackBridge
 
     callbacks = _mock_callbacks(
@@ -292,22 +284,21 @@ async def test_slack_checkmark_reaction_creates_and_starts_session_from_control_
         "Fix the Slack reaction flow.",
     )
     assert mock_client.chat_postMessage.await_count == 1
-    assert (
-        "New Codex session created in repo"
-        in mock_client.chat_postMessage.await_args.kwargs["text"]
-    )
+    assert "New Codex session created in repo" in mock_client.chat_postMessage.await_args.kwargs["text"]
 
 
 @pytest.mark.anyio
-async def test_slack_checkmark_reaction_can_use_plain_control_channel_messages_when_enabled(
+async def test_slack_checkmark_reaction_creates_and_starts_session_from_plain_control_channel_message(
+    tmp_path,
     monkeypatch,
 ) -> None:
     from agent_tether.base import BridgeConfig
     from tether.bridges.slack.bot import SlackBridge
 
+    monkeypatch.chdir(tmp_path)
     callbacks = _mock_callbacks(
         create_session=AsyncMock(
-            return_value={"id": "sess_slack", "platform_thread_id": "555.666"}
+            return_value={"id": "sess_slack_plain", "platform_thread_id": "555.666"}
         ),
     )
     bridge = SlackBridge(
@@ -320,14 +311,12 @@ async def test_slack_checkmark_reaction_can_use_plain_control_channel_messages_w
         config=BridgeConfig(default_adapter="codex_sdk_sidecar"),
     )
 
-    monkeypatch.setattr(os, "getcwd", lambda: "/worktrees/plain-slack")
-
     mock_client = AsyncMock()
     mock_client.conversations_history.return_value = {
         "ok": True,
         "messages": [
             {
-                "text": "Fix the Slack reaction flow.",
+                "text": "LATEST THINKPAD CHECKMARK TEST 1",
                 "ts": "111.222",
             }
         ],
@@ -343,19 +332,22 @@ async def test_slack_checkmark_reaction_can_use_plain_control_channel_messages_w
     )
 
     create_kwargs = callbacks.create_session.await_args.kwargs
-    assert create_kwargs["directory"] == "/worktrees/plain-slack"
+    assert create_kwargs["directory"] == str(tmp_path)
     assert create_kwargs["platform"] == "slack"
     assert create_kwargs["adapter"] == "codex_sdk_sidecar"
     assert callbacks.send_input.await_args.args == (
-        "sess_slack",
-        "Fix the Slack reaction flow.",
+        "sess_slack_plain",
+        "LATEST THINKPAD CHECKMARK TEST 1",
+    )
+    assert mock_client.chat_postMessage.await_count == 1
+    assert (
+        "New Codex session created in"
+        in mock_client.chat_postMessage.await_args.kwargs["text"]
     )
 
 
 @pytest.mark.anyio
-async def test_slack_checkmark_reaction_ignores_non_checkmark_reactions_and_thread_messages() -> (
-    None
-):
+async def test_slack_checkmark_reaction_ignores_non_checkmark_reactions_and_thread_messages() -> None:
     from tether.bridges.slack.bot import SlackBridge
 
     callbacks = _mock_callbacks(
@@ -407,9 +399,7 @@ async def test_slack_checkmark_reaction_ignores_non_checkmark_reactions_and_thre
 
 
 @pytest.mark.anyio
-async def test_slack_multiline_new_message_waits_for_reaction_instead_of_running_command() -> (
-    None
-):
+async def test_slack_multiline_new_message_waits_for_reaction_instead_of_running_command() -> None:
     from tether.bridges.slack.bot import SlackBridge
 
     bridge = SlackBridge(

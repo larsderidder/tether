@@ -12,6 +12,7 @@ from tether.api.deps import require_token
 from tether.api.diff import build_git_diff
 from tether.api.emit import (
     emit_error,
+    finalize_output,
     emit_output,
     emit_permission_request,
     emit_state,
@@ -39,7 +40,12 @@ from tether.api.state import (
     session_lock,
     transition,
 )
-from tether.bridges.glue import create_or_reuse_thread, make_thread_name
+from tether.bridges.glue import (
+    bridge_manager,
+    make_thread_name,
+    preferred_thread_name_for_platform,
+    sync_bound_thread_name,
+)
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
@@ -199,9 +205,10 @@ async def create_session(
         session.platform = payload.platform
         store.update_session(session)
         try:
-            thread_label = make_thread_name(
-                directory=normalized_directory,
-                adapter=payload.adapter,
+            thread_label = preferred_thread_name_for_platform(
+                session, payload.platform
+            ) or make_thread_name(
+                directory=normalized_directory, adapter=payload.adapter
             )
             thread_info = await create_or_reuse_thread(
                 session.id,
@@ -403,6 +410,7 @@ async def start_session(
 ) -> SessionResponse:
     """Start a session and launch the configured runner."""
     with _session_logging_context(session_id):
+        renamed_session_name: str | None = None
         # Phase 1: validate and transition to RUNNING under lock
         async with session_lock(session_id):
             session = store.get_session(session_id)
@@ -439,6 +447,7 @@ async def start_session(
                 store.clear_process(session_id)
                 store.clear_pending_inputs(session_id)
                 store.clear_last_output(session_id)
+                store.clear_turn_state(session_id)
 
             logger.info("Session start requested")
 
@@ -464,7 +473,7 @@ async def start_session(
 
             if not store.get_workdir(session_id):
                 store.set_workdir(session_id, session.directory, managed=False)
-            maybe_set_session_name(session, prompt)
+            renamed_session_name = maybe_set_session_name(session, prompt)
 
             # Transition to RUNNING and attempt to start the runner
             transition(session, SessionState.RUNNING, started_at=True)
@@ -479,6 +488,11 @@ async def start_session(
         start_error: tuple[str, Exception] | None = None
         try:
             await runner.start(session_id, prompt, approval_choice)
+            if renamed_session_name:
+                await sync_bound_thread_name(
+                    session_id,
+                    preferred_name=renamed_session_name,
+                )
             logger.info(
                 "Session started",
                 adapter=adapter or "default",
@@ -547,6 +561,7 @@ async def rename_session(
         cleaned = " ".join(payload.name.split())
         session.name = cleaned
         store.update_session(session)
+        await sync_bound_thread_name(session_id, preferred_name=cleaned)
         logger.info("Session renamed", name=session.name)
         return SessionResponse.from_session(session, store)
 
@@ -559,6 +574,7 @@ async def send_input(
 ) -> SessionResponse:
     """Send input to a running or awaiting session."""
     with _session_logging_context(session_id):
+        renamed_session_name: str | None = None
         # Phase 1: validate and transition under lock
         async with session_lock(session_id):
             text = payload.text
@@ -602,12 +618,13 @@ async def send_input(
                 store.clear_process(session_id)
                 store.clear_pending_inputs(session_id)
                 store.clear_last_output(session_id)
+                store.clear_turn_state(session_id)
 
             # Transition to RUNNING when user provides input
             if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
                 transition(session, SessionState.RUNNING)
                 await emit_state(session)
-            maybe_set_session_name(session, text)
+            renamed_session_name = maybe_set_session_name(session, text)
             await emit_user_input(session, text)
             adapter = session.adapter
 
@@ -618,6 +635,11 @@ async def send_input(
         send_error: tuple[str, Exception] | None = None
         try:
             await runner.send_input(session_id, text)
+            if renamed_session_name:
+                await sync_bound_thread_name(
+                    session_id,
+                    preferred_name=renamed_session_name,
+                )
         except RunnerUnavailableError as exc:
             send_error = ("unavailable", exc)
         except Exception as exc:
@@ -720,6 +742,7 @@ async def interrupt_session(
                 kind, exc = stop_error
                 # Only transition if a callback hasn't already moved to ERROR
                 if session.state != SessionState.ERROR:
+                    await finalize_output(session, status="error")
                     transition(session, SessionState.ERROR, ended_at=True)
                     await emit_state(session)
                 if kind == "unavailable":
@@ -755,6 +778,7 @@ async def interrupt_session(
 
             # Transition to AWAITING_INPUT after interrupt completes
             if session.state == SessionState.INTERRUPTING:
+                await finalize_output(session, status="stopped")
                 transition(session, SessionState.AWAITING_INPUT)
                 await emit_state(session)
             logger.info("Session interrupted")
@@ -891,12 +915,17 @@ async def push_agent_event(
                 target_state = status_map.get(status)
                 if target_state and target_state != session.state:
                     ended = target_state in (SessionState.ERROR,)
+                    if target_state == SessionState.AWAITING_INPUT:
+                        await finalize_output(session, status="success")
+                    elif target_state == SessionState.ERROR:
+                        await finalize_output(session, status="error")
                     transition(session, target_state, allow_same=True, ended_at=ended)
                     await emit_state(session)
 
             elif payload.type == "error":
                 code = payload.data.get("code", "AGENT_ERROR")
                 message = payload.data.get("message", "Unknown error")
+                await finalize_output(session, status="error")
                 if session.state != SessionState.ERROR:
                     transition(session, SessionState.ERROR, ended_at=True)
                     await emit_state(session)

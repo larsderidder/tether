@@ -308,6 +308,54 @@ class TestPiRpcEventHandling:
         assert len(events.outputs[0]["text"]) < len(text)
 
     @pytest.mark.anyio
+    async def test_handle_tool_execution_update_truncates_large_output(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        text = "A" * (_TOOL_OUTPUT_MAX_CHARS + 250)
+
+        event = {
+            "type": "tool_execution_update",
+            "toolCallId": "call_789",
+            "toolName": "read",
+            "partialResult": {
+                "content": [{"type": "text", "text": text}],
+            },
+        }
+        await runner._handle_event("sess1", proc, event)
+
+        assert len(events.outputs) == 1
+        assert "[read]" in events.outputs[0]["text"]
+        assert "[truncated, 250 more characters omitted]" in events.outputs[0]["text"]
+        assert len(events.outputs[0]["text"]) < len(text)
+
+    @pytest.mark.anyio
+    async def test_handle_tool_execution_end_truncates_large_output(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        text = "B" * (_TOOL_OUTPUT_MAX_CHARS + 125)
+
+        event = {
+            "type": "tool_execution_end",
+            "toolCallId": "call_999",
+            "toolName": "bash",
+            "result": {
+                "content": [{"type": "text", "text": text}],
+                "details": {},
+            },
+            "isError": False,
+        }
+        await runner._handle_event("sess1", proc, event)
+
+        assert len(events.outputs) == 1
+        assert "[result]" in events.outputs[0]["text"]
+        assert "[truncated, 125 more characters omitted]" in events.outputs[0]["text"]
+        assert len(events.outputs[0]["text"]) < len(text)
+
+    @pytest.mark.anyio
     async def test_handle_agent_start_end(self, runner_and_events):
         runner, events = runner_and_events
         proc = MagicMock()

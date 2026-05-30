@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import structlog
 
 from tether.api.state import now
 from tether.models import Session
+from tether.output_postprocess import compose_final_output, extract_publish_attachments
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
@@ -86,6 +89,17 @@ async def emit_output(
         kind: Output kind ("step", "final", or "header").
         is_final: Optional explicit finality flag.
     """
+    final_flag = is_final if is_final is not None else kind == "final"
+    if final_flag:
+        processed = extract_publish_attachments(session, text)
+        store.set_pending_final_output(
+            session.id,
+            text=processed.text,
+            attachments=[item.to_metadata() for item in processed.attachments],
+            warnings=list(processed.warnings),
+        )
+        return
+
     store.append_output(session.id, text)
     if not store.should_emit_output(session.id, text):
         return
@@ -106,26 +120,6 @@ async def emit_output(
             },
         },
     )
-
-    final_flag = is_final if is_final is not None else kind == "final"
-    if final_flag:
-        full_text = store.consume_output(session.id).strip()
-        if full_text:
-            await store.emit(
-                session.id,
-                {
-                    "session_id": session.id,
-                    "ts": now(),
-                    "seq": store.next_seq(session.id),
-                    "type": "output_final",
-                    "data": {
-                        "stream": "combined",
-                        "text": full_text,
-                        "kind": "final",
-                        "final": True,
-                    },
-                },
-            )
 
 
 async def emit_error(session: Session, code: str, message: str) -> None:
@@ -177,6 +171,11 @@ async def emit_metadata(session: Session, key: str, value: object, raw: str) -> 
         value: Parsed metadata value.
         raw: Raw metadata string.
     """
+    if key == "duration_ms":
+        try:
+            store.set_duration_ms(session.id, int(value))
+        except (TypeError, ValueError):
+            pass
     await store.emit(
         session.id,
         {
@@ -197,6 +196,7 @@ async def emit_heartbeat(session: Session, elapsed_s: float, done: bool) -> None
         elapsed_s: Seconds elapsed since start.
         done: Whether the session has finished.
     """
+    store.set_last_heartbeat_elapsed_ms(session.id, int(max(0.0, elapsed_s) * 1000))
     await store.emit(
         session.id,
         {
@@ -254,6 +254,72 @@ async def emit_input_required(session: Session, last_output: str | None = None) 
             },
         },
     )
+
+
+async def finalize_output(
+    session: Session,
+    *,
+    status: Literal["success", "error", "stopped"],
+) -> None:
+    """Emit the final visible output exactly once."""
+
+    if store.is_turn_finalized(session.id):
+        return
+
+    pending_text, attachments, warnings = store.get_pending_final_output(session.id)
+    visible_text = compose_final_output(
+        pending_text or "",
+        status=status,
+        duration_ms=None,
+        warnings=warnings,
+    )
+
+    store.append_output(session.id, visible_text)
+    if store.should_emit_output(session.id, visible_text):
+        logger.debug(
+            "Emitting finalized output",
+            session_id=session.id,
+            status=status,
+            text=visible_text[:200],
+        )
+        output_payload = {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "output",
+            "data": {
+                "stream": "combined",
+                "text": visible_text,
+                "kind": "final",
+                "final": True,
+                "attachments": attachments,
+            },
+        }
+        if warnings:
+            output_payload["data"]["attachment_warnings"] = warnings
+        await store.emit(session.id, output_payload)
+
+    full_text = store.consume_output(session.id).strip()
+    if full_text:
+        final_payload = {
+            "session_id": session.id,
+            "ts": now(),
+            "seq": store.next_seq(session.id),
+            "type": "output_final",
+            "data": {
+                "stream": "combined",
+                "text": full_text,
+                "kind": "final",
+                "final": True,
+                "attachments": attachments,
+            },
+        }
+        if warnings:
+            final_payload["data"]["attachment_warnings"] = warnings
+        await store.emit(session.id, final_payload)
+
+    store.mark_turn_finalized(session.id)
+    store.clear_pending_final_output(session.id)
 
 
 async def emit_permission_request(

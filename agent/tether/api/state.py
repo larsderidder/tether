@@ -6,6 +6,7 @@ import asyncio
 
 from tether.api.errors import raise_http_error
 from tether.models import Session, SessionState
+from tether.session_titles import build_auto_session_name, is_auto_session_name
 from tether.store import store
 
 # Per-session asyncio locks to serialize state-mutating operations
@@ -30,9 +31,14 @@ def remove_session_lock(session_id: str) -> None:
     """Clean up the lock when a session is deleted."""
     _session_locks.pop(session_id, None)
 
+
 _VALID_TRANSITIONS = {
     SessionState.CREATED: {SessionState.RUNNING},
-    SessionState.RUNNING: {SessionState.AWAITING_INPUT, SessionState.INTERRUPTING, SessionState.ERROR},
+    SessionState.RUNNING: {
+        SessionState.AWAITING_INPUT,
+        SessionState.INTERRUPTING,
+        SessionState.ERROR,
+    },
     SessionState.AWAITING_INPUT: {SessionState.RUNNING, SessionState.ERROR},
     SessionState.INTERRUPTING: {SessionState.AWAITING_INPUT, SessionState.ERROR},
     SessionState.ERROR: {SessionState.RUNNING},
@@ -84,18 +90,21 @@ def transition(
     store.update_session(session)
 
 
-def maybe_set_session_name(session: Session, prompt: str) -> None:
-    """Set the session name from the first non-empty prompt or input.
+def maybe_set_session_name(session: Session, prompt: str) -> str | None:
+    """Set the session name from the first meaningful prompt or input.
 
     Args:
         session: Session to update.
         prompt: Candidate text used to derive a name.
+
+    Returns:
+        The updated session name when it changed, otherwise ``None``.
     """
-    if session.name:
-        return
-    title = (prompt or "").strip()
-    if not title:
-        return
-    title = " ".join(title.split())
-    session.name = title[:80]
+    if session.name and not is_auto_session_name(session):
+        return None
+    title = build_auto_session_name(session, prompt)
+    if not title or title == session.name:
+        return None
+    session.name = title
     store.update_session(session)
+    return title

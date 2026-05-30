@@ -76,7 +76,7 @@ class SlackBridge(UpstreamSlackBridge):
             return
 
         try:
-            for message in render_slack_messages(text, metadata=metadata) or [text]:
+            for message in render_slack_messages(text) or [text]:
                 await self._client.chat_postMessage(
                     channel=self._channel_id,
                     thread_ts=thread_ts,
@@ -225,46 +225,6 @@ class SlackBridge(UpstreamSlackBridge):
             ):
                 return
             await self._dispatch_command(event, text)
-
-    async def _cmd_sync(self, event: dict) -> None:
-        """Handle !sync and !sync force for attached external sessions."""
-        thread_ts = event.get("thread_ts")
-        if not thread_ts:
-            await self._reply(event, "Use this command inside a session thread.")
-            return
-
-        session_id = self._session_for_thread(thread_ts)
-        if not session_id:
-            await self._reply(event, "No session linked to this thread.")
-            return
-
-        if not self._callbacks.sync_session:
-            await self._reply(event, "Sync is not supported by this Tether version.")
-            return
-
-        text = str(event.get("text") or "").strip()
-        force = text.lower().split()[:2] == ["!sync", "force"]
-
-        try:
-            result = await self._callbacks.sync_session(session_id, force=force)
-            synced = result.get("synced", 0)
-            total = result.get("total", 0)
-            if synced:
-                prefix = "🔄 Force-synced" if force else "🔄 Synced"
-                await self._reply(event, f"{prefix} {synced} message(s) ({total} total).")
-            else:
-                await self._reply(event, f"✅ Already up to date ({total} message(s) total).")
-        except TypeError:
-            result = await self._callbacks.sync_session(session_id)
-            synced = result.get("synced", 0)
-            total = result.get("total", 0)
-            if synced:
-                await self._reply(event, f"🔄 Synced {synced} new message(s) ({total} total).")
-            else:
-                await self._reply(event, f"✅ Already up to date ({total} message(s) total).")
-        except Exception as exc:
-            logger.exception("Failed to sync session")
-            await self._reply(event, f"Failed to sync: {exc}")
 
     async def _cancel_pending_error_attachment_task(self, session_id: str) -> None:
         task = self._pending_error_attachment_tasks.pop(session_id, None)

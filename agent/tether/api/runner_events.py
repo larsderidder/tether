@@ -7,6 +7,7 @@ import structlog
 from tether.api.emit import (
     emit_checkpoint,
     emit_error,
+    finalize_output,
     emit_header,
     emit_heartbeat,
     emit_input_required,
@@ -111,6 +112,7 @@ class ApiRunnerEvents:
             session = store.get_session(session_id)
             if not session:
                 return
+            await finalize_output(session, status="error")
             if session.state != SessionState.ERROR:
                 transition(session, SessionState.ERROR, ended_at=True)
                 await emit_state(session)
@@ -135,10 +137,16 @@ class ApiRunnerEvents:
                 return
             # Non-zero exit code indicates an error
             if exit_code not in (0, None):
+                await finalize_output(session, status="error")
                 transition(
                     session, SessionState.ERROR, ended_at=True, exit_code=exit_code
                 )
                 await emit_state(session)
+                await emit_error(
+                    session,
+                    "RUNNER_EXIT",
+                    f"Runner exited with code {exit_code}",
+                )
 
     async def on_awaiting_input(self, session_id: str) -> None:
         """Handle runner signaling it's waiting for user input."""
@@ -148,6 +156,10 @@ class ApiRunnerEvents:
                 return
             if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
                 return
+            await finalize_output(
+                session,
+                status="stopped" if store.is_stop_requested(session_id) else "success",
+            )
             transition(session, SessionState.AWAITING_INPUT)
             await emit_state(session)
 

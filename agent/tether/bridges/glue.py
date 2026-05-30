@@ -12,8 +12,9 @@ import httpx
 import structlog
 
 from agent_tether import BridgeCallbacks, BridgeConfig, BridgeManager
-from agent_tether.subscriber import BridgeSubscriber
 from agent_tether.thread_naming import format_thread_name
+from tether.bridges.subscriber import BridgeSubscriber
+from tether.session_titles import is_auto_session_name
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -56,7 +57,9 @@ def get_session_info(session_id: str) -> dict | None:
     }
 
 
-async def on_session_bound(session_id: str, platform: str, thread_id: str | None) -> None:
+async def on_session_bound(
+    session_id: str, platform: str, thread_id: str | None
+) -> None:
     """Callback: bind session to platform and start subscriber."""
     from tether.store import store
 
@@ -67,6 +70,7 @@ async def on_session_bound(session_id: str, platform: str, thread_id: str | None
         store.update_session(db_session)
 
     bridge_subscriber.subscribe(session_id, platform)
+
 
 def make_thread_name(
     *,
@@ -87,39 +91,67 @@ def make_thread_name(
     )
 
 
-async def create_or_reuse_thread(
-    session_id: str,
-    session_name: str,
-    *,
-    platform: str,
-    existing_thread_id: str | None = None,
-) -> dict:
-    """Create or reuse a bridge thread with compatibility fallback.
+def preferred_thread_name(session) -> str | None:
+    """Return the user-facing session title when it should drive thread naming."""
+    if not getattr(session, "name", None):
+        return None
+    if is_auto_session_name(session):
+        return None
+    return str(session.name)
 
-    Newer bridge implementations accept ``existing_thread_id``.
-    Older implementations do not. This wrapper keeps API requests stable
-    across bridge package upgrades by retrying without the extra argument.
-    """
-    try:
-        return await bridge_manager.create_thread(
-            session_id,
-            session_name,
-            platform=platform,
-            existing_thread_id=existing_thread_id,
-        )
-    except TypeError as exc:
-        message = str(exc)
-        if "existing_thread_id" not in message:
-            raise
-        logger.warning(
-            "Bridge does not support existing_thread_id, retrying without reuse",
+
+def preferred_thread_name_for_platform(session, platform: str | None) -> str | None:
+    """Only Slack and Discord reuse the session title as the thread title."""
+    if platform not in {"slack", "discord"}:
+        return None
+    return preferred_thread_name(session)
+
+
+async def sync_bound_thread_name(
+    session_id: str,
+    *,
+    preferred_name: str | None = None,
+) -> str | None:
+    """Best-effort rename of a bound Slack/Discord thread to the session title."""
+    from tether.store import store
+
+    session = store.get_session(session_id)
+    if not session or not session.platform or not session.platform_thread_id:
+        return None
+
+    desired_name = " ".join((preferred_name or session.name or "").split())
+    if not desired_name:
+        return None
+
+    bridge = bridge_manager.get_bridge(session.platform)
+    if bridge is None:
+        logger.debug(
+            "Skipping thread rename because bridge is unavailable",
             session_id=session_id,
-            platform=platform,
+            platform=session.platform,
         )
-        bridge = bridge_manager.get_bridge(platform)
-        if bridge is None:
-            raise RuntimeError(f"No bridge registered for platform: {platform}")
-        return await bridge.create_thread(session_id, session_name)
+        return None
+
+    rename_thread = getattr(bridge, "rename_thread", None)
+    if rename_thread is None:
+        logger.debug(
+            "Skipping thread rename because platform does not support it",
+            session_id=session_id,
+            platform=session.platform,
+        )
+        return None
+
+    try:
+        await rename_thread(session_id, desired_name)
+    except Exception:
+        logger.exception(
+            "Failed to rename bound thread",
+            session_id=session_id,
+            platform=session.platform,
+            desired_name=desired_name,
+        )
+        return None
+    return desired_name
 
 
 def get_sessions_for_restore() -> list[dict]:
@@ -128,11 +160,13 @@ def get_sessions_for_restore() -> list[dict]:
 
     result = []
     for session in store.list_sessions():
-        result.append({
-            "id": session.id,
-            "platform": session.platform,
-            "platform_thread_id": session.platform_thread_id,
-        })
+        result.append(
+            {
+                "id": session.id,
+                "platform": session.platform,
+                "platform_thread_id": session.platform_thread_id,
+            }
+        )
     return result
 
 
@@ -226,9 +260,7 @@ async def _send_input(session_id: str, text: str) -> None:
         else:
             # Surface the server's error message as a plain RuntimeError so
             # bridge handlers can relay it to the user instead of crashing.
-            raise RuntimeError(
-                message or f"Agent request failed ({status})"
-            ) from e
+            raise RuntimeError(message or f"Agent request failed ({status})") from e
 
     async with httpx.AsyncClient() as client:
         r = await client.post(
@@ -273,7 +305,8 @@ async def _respond_to_permission(
             json={
                 "request_id": request_id,
                 "allow": allow,
-                "message": message or ("Approved" if allow else "User denied permission"),
+                "message": message
+                or ("Approved" if allow else "User denied permission"),
             },
             headers=_api_headers(),
             timeout=10.0,
@@ -468,7 +501,9 @@ async def _attach_external(**kwargs) -> dict:
                 msg = body.get("detail", {}).get("error", {}).get("message", "")
             except Exception:
                 msg = ""
-            raise RuntimeError(msg or f"Attach failed with status {response.status_code}")
+            raise RuntimeError(
+                msg or f"Attach failed with status {response.status_code}"
+            )
     return response.json()
 
 

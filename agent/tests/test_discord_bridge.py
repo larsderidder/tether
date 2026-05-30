@@ -136,46 +136,6 @@ class TestDiscordBridgePoC:
         assert mock_thread.send.called
 
     @pytest.mark.anyio
-    async def test_sync_force_passes_force_flag_to_callback(
-        self, fresh_store: SessionStore
-    ) -> None:
-        """!sync force should request a force sync from the backend."""
-        from tether.bridges.discord.bot import DiscordBridge
-
-        session = fresh_store.create_session("repo_test", "main")
-        session.platform = "discord"
-        session.platform_thread_id = "9876543210"
-        fresh_store.update_session(session)
-
-        sync_session = AsyncMock(return_value={"synced": 9, "total": 9})
-        bridge = DiscordBridge(
-            bot_token="discord_bot_token",
-            channel_id=1234567890,
-            callbacks=_mock_callbacks(sync_session=sync_session),
-        )
-        bridge._thread_ids[session.id] = 9876543210
-
-        class FakeThread:
-            def __init__(self) -> None:
-                self.id = 9876543210
-                self.send = AsyncMock()
-
-        class FakeDiscord:
-            Thread = FakeThread
-
-        thread = FakeThread()
-        message = MagicMock()
-        message.channel = thread
-        message.author.id = 1
-        message.content = "!sync force"
-
-        with patch.dict("sys.modules", {"discord": FakeDiscord}):
-            await bridge._cmd_sync(message)
-
-        sync_session.assert_awaited_once_with(session.id, force=True)
-        thread.send.assert_awaited_once_with("🔄 Force-synced 9 message(s) (9 total).")
-
-    @pytest.mark.anyio
     async def test_on_output_uploads_requested_attachments(
         self, fresh_store: SessionStore, tmp_path
     ) -> None:

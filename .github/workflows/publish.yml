@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Normalize package version from release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python scripts/set_release_version.py --release-tag "$RELEASE_TAG"
+
       - name: Install Python dependencies
         working-directory: agent
         run: pip install build

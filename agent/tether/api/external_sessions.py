@@ -20,6 +20,7 @@ from tether.discovery import (
     get_external_session_detail,
 )
 from tether.git import has_git_repository, normalize_directory_path
+from tether.session_titles import build_auto_session_name
 from tether.models import (
     ExternalRunnerType,
     SessionState,
@@ -121,6 +122,136 @@ def _format_replay(messages: list, metadata: dict | None = None) -> str | None:
     if len(text) > _REPLAY_TOTAL_LIMIT:
         text = text[: _REPLAY_TOTAL_LIMIT - 3] + "..."
     return text or None
+
+
+def _format_history_user_text(text: str) -> str:
+    """Render imported user prompts clearly inside bridge threads."""
+    if "\n" in text:
+        return f"👤 User\n{text}"
+    return f"👤 User: {text}"
+
+
+def _get_bound_bridge(session) -> object | None:
+    """Return the active bridge for a platform-bound session, if available."""
+    platform = session.platform
+    if not platform:
+        return None
+
+    from tether.bridges.glue import bridge_manager
+
+    bridge = bridge_manager.get_bridge(platform)
+    if bridge is None:
+        logger.warning(
+            "Skipping history relay because bridge is unavailable",
+            session_id=session.id,
+            platform=platform,
+        )
+    return bridge
+
+
+async def _send_history_to_bridge(
+    *,
+    session,
+    bridge: object | None,
+    text: str,
+    metadata: dict,
+) -> None:
+    """Send one imported history chunk to the bound bridge thread."""
+    if bridge is None or not text.strip():
+        return
+
+    try:
+        await bridge.on_output(session.id, text, metadata=metadata)
+    except Exception:
+        logger.exception(
+            "Failed to relay external session history to bridge",
+            session_id=session.id,
+            platform=session.platform,
+            metadata=metadata,
+        )
+
+
+async def _relay_history_message_to_bridge(
+    *,
+    session,
+    bridge: object | None,
+    role: str,
+    content: str,
+    thinking: str | None = None,
+    is_final: bool = False,
+) -> None:
+    """Mirror one imported external-session message into the bridge thread."""
+    if role == "user":
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=_format_history_user_text(content),
+            metadata={"is_history": True, "role": "user"},
+        )
+        return
+
+    if thinking:
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=thinking,
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": "step",
+                "final": False,
+            },
+        )
+
+    if content:
+        kind = "final" if is_final else "step"
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=content,
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": kind,
+                "final": is_final,
+            },
+        )
+
+
+async def _replay_stored_history_to_bridge(*, session, bridge: object | None) -> None:
+    """Replay already-emitted imported history into a newly created bridge thread."""
+    if bridge is None:
+        return
+
+    history_events = [
+        event
+        for event in store.read_event_log(session.id, since_seq=0)
+        if (event.get("data") or {}).get("is_history")
+        and event.get("type") in {"user_input", "output"}
+    ]
+
+    for event in history_events:
+        data = event.get("data") or {}
+        if event.get("type") == "user_input":
+            await _send_history_to_bridge(
+                session=session,
+                bridge=bridge,
+                text=_format_history_user_text(str(data.get("text") or "")),
+                metadata={"is_history": True, "role": "user"},
+            )
+            continue
+
+        await _send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=str(data.get("text") or ""),
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": data.get("kind"),
+                "final": bool(data.get("final")),
+            },
+        )
 
 
 @router.get("/external-sessions", response_model=list[ExternalSessionSummaryResponse])
@@ -316,11 +447,14 @@ async def attach_to_external_session(
                 try:
                     from tether.bridges.glue import (
                         bridge_manager,
-                        create_or_reuse_thread,
                         make_thread_name,
+                        preferred_thread_name_for_platform,
                     )
 
-                    thread_label = make_thread_name(
+                    thread_label = preferred_thread_name_for_platform(
+                        existing_session,
+                        payload.platform,
+                    ) or make_thread_name(
                         directory=existing_session.directory or "",
                         runner_type=existing_session.runner_type or "",
                     )
@@ -334,34 +468,10 @@ async def attach_to_external_session(
                     is_new_thread = new_thread_id != existing_session.platform_thread_id
                     existing_session.platform_thread_id = new_thread_id
                     store.update_session(existing_session)
-
-                    # Only replay history into genuinely new threads.
-                    if is_new_thread:
-                        existing_external_id = store.get_runner_session_id(
-                            existing_session.id
-                        )
-                        if existing_external_id:
-                            existing_runner_type = _external_runner_type_for_session(
-                                existing_session
-                            )
-                            hist = get_external_session_detail(
-                                session_id=existing_external_id,
-                                runner_type=existing_runner_type,
-                                limit=_REPLAY_MESSAGES,
-                            )
-                            if hist:
-                                pi_meta = (
-                                    _get_pi_metadata(existing_external_id)
-                                    if existing_runner_type == ExternalRunnerType.PI
-                                    else None
-                                )
-                                replay = _format_replay(hist.messages, metadata=pi_meta)
-                                if replay:
-                                    await bridge_manager.send_replay(
-                                        existing_session.id,
-                                        replay,
-                                        platform=payload.platform,
-                                    )
+                    await _replay_stored_history_to_bridge(
+                        session=existing_session,
+                        bridge=_get_bound_bridge(existing_session),
+                    )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
             # Subscribe bridge if platform is bound
@@ -409,7 +519,7 @@ async def attach_to_external_session(
 
     # Set session name from first prompt if available
     if detail.first_prompt:
-        session.name = detail.first_prompt[:80]
+        session.name = build_auto_session_name(session, detail.first_prompt)
 
     # Pre-register the external session ID for the runner to use
     store.set_runner_session_id(session.id, external_id)
@@ -422,13 +532,15 @@ async def attach_to_external_session(
         try:
             from tether.bridges.glue import (
                 bridge_manager,
-                create_or_reuse_thread,
                 make_thread_name,
+                preferred_thread_name_for_platform,
             )
 
-            thread_label = make_thread_name(
-                directory=normalized_directory,
-                runner_type=session.runner_type,
+            thread_label = preferred_thread_name_for_platform(
+                session,
+                payload.platform,
+            ) or make_thread_name(
+                directory=normalized_directory, runner_type=session.runner_type
             )
             thread_info = await create_or_reuse_thread(
                 session.id,
@@ -465,6 +577,7 @@ async def attach_to_external_session(
         from tether.bridges.glue import bridge_subscriber
 
         bridge_subscriber.subscribe(session.id, session.platform)
+    history_bridge = _get_bound_bridge(session)
 
     await emit_state(session)
 
@@ -488,6 +601,14 @@ async def attach_to_external_session(
             timestamp=msg.timestamp,
             is_final=is_final,
             is_history=False,
+        )
+        await _relay_history_message_to_bridge(
+            session=session,
+            bridge=history_bridge,
+            role=msg.role,
+            content=msg.content,
+            thinking=msg.thinking,
+            is_final=is_final,
         )
 
     # Track how many messages have been synced (turn_count = user messages only)
@@ -584,6 +705,7 @@ async def sync_external_session(
         return SyncResult(synced=0, total=len(messages))
 
     # Emit new messages
+    history_bridge = _get_bound_bridge(session)
     for i, msg in enumerate(new_messages):
         is_final = False
         if msg.role == "assistant":
@@ -600,6 +722,14 @@ async def sync_external_session(
             timestamp=msg.timestamp,
             is_final=is_final,
             is_history=False,
+        )
+        await _relay_history_message_to_bridge(
+            session=session,
+            bridge=history_bridge,
+            role=msg.role,
+            content=msg.content,
+            thinking=msg.thinking,
+            is_final=is_final,
         )
 
     # Update synced count

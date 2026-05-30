@@ -10,7 +10,11 @@ from tether.settings import Settings
 def clean_env(monkeypatch):
     """Remove all TETHER_ env vars for clean tests."""
     for key in list(os.environ.keys()):
-        if key.startswith("TETHER_") or key == "ANTHROPIC_API_KEY":
+        if (
+            key.startswith("TETHER_")
+            or key.startswith("DISCORD_")
+            or key == "ANTHROPIC_API_KEY"
+        ):
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
 
@@ -150,6 +154,23 @@ class TestStringSettings:
         clean_env.setenv("TETHER_CODEX_SIDECAR_TOKEN", "token123")
         assert Settings.codex_sidecar_token() == "token123"
 
+    def test_codex_sidecar_cli_fallback_settings(self, clean_env) -> None:
+        """Codex CLI fallback settings reuse the sidecar env namespace."""
+        assert Settings.codex_sidecar_codex_bin() == ""
+        assert Settings.codex_sidecar_model() == ""
+        assert Settings.codex_sidecar_sandbox_mode() == ""
+        assert Settings.codex_sidecar_approval_policy() == ""
+
+        clean_env.setenv("TETHER_CODEX_SIDECAR_CODEX_BIN", "/usr/local/bin/codex")
+        clean_env.setenv("TETHER_CODEX_SIDECAR_MODEL", "gpt-5.4")
+        clean_env.setenv("TETHER_CODEX_SIDECAR_SANDBOX_MODE", "workspace-write")
+        clean_env.setenv("TETHER_CODEX_SIDECAR_APPROVAL_POLICY", "never")
+
+        assert Settings.codex_sidecar_codex_bin() == "/usr/local/bin/codex"
+        assert Settings.codex_sidecar_model() == "gpt-5.4"
+        assert Settings.codex_sidecar_sandbox_mode() == "workspace-write"
+        assert Settings.codex_sidecar_approval_policy() == "never"
+
     def test_opencode_sidecar_settings(self, clean_env) -> None:
         """OpenCode sidecar settings have expected defaults and overrides."""
         assert Settings.opencode_sidecar_url() == "http://localhost:8790"
@@ -169,6 +190,23 @@ class TestStringSettings:
         assert Settings.opencode_sidecar_managed() is False
         assert Settings.opencode_sidecar_cmd() == "my-opencode-sidecar --x"
         assert Settings.opencode_sidecar_startup_timeout_seconds() == 30
+
+    def test_bridge_reaction_shortcut_settings(self, clean_env) -> None:
+        """Reaction shortcut settings have safe defaults and overrides."""
+        assert Settings.bridge_reaction_new_session_enabled() is True
+        assert Settings.bridge_reaction_new_session_emoji() == "✅"
+        assert Settings.bridge_reaction_new_session_allow_plain_messages() is False
+        assert Settings.debug_attach_logs() is True
+
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED", "0")
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI", "white_check_mark")
+        clean_env.setenv("TETHER_BRIDGE_REACTION_NEW_SESSION_ALLOW_PLAIN_MESSAGES", "1")
+        clean_env.setenv("TETHER_DEBUG_ATTACH_LOGS", "0")
+
+        assert Settings.bridge_reaction_new_session_enabled() is False
+        assert Settings.bridge_reaction_new_session_emoji() == "white_check_mark"
+        assert Settings.bridge_reaction_new_session_allow_plain_messages() is True
+        assert Settings.debug_attach_logs() is False
 
 
 class TestDataDir:
@@ -206,3 +244,11 @@ class TestDataDir:
 
         result = Settings.data_dir()
         assert result == str(tmp_path / "data" / "tether")
+
+
+class TestDiscordSettings:
+    """Test Discord-specific settings."""
+
+    def test_discord_auto_pair_user_ids(self, clean_env) -> None:
+        clean_env.setenv("DISCORD_AUTO_PAIR_USER_IDS", "123, nope, 456")
+        assert Settings.discord_auto_pair_user_ids() == {123, 456}

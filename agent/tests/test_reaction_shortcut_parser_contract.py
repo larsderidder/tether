@@ -19,9 +19,7 @@ def _mock_callbacks(**overrides) -> BridgeCallbacks:
         respond_to_permission=AsyncMock(return_value=True),
         list_sessions=AsyncMock(return_value=[]),
         get_usage=AsyncMock(return_value={}),
-        check_directory=AsyncMock(
-            side_effect=lambda path: {"exists": True, "path": path}
-        ),
+        check_directory=AsyncMock(side_effect=lambda path: {"exists": True, "path": path}),
         list_external_sessions=AsyncMock(return_value=[]),
         get_external_history=AsyncMock(return_value=None),
         attach_external=AsyncMock(return_value={}),
@@ -94,27 +92,30 @@ def test_parse_reaction_shortcut_message_extracts_args_and_prompt() -> None:
     assert shortcut.prompt == "Fix the failing Discord tests."
 
 
-def test_parse_reaction_shortcut_message_can_accept_plain_prompts_when_enabled() -> (
-    None
-):
+def test_parse_reaction_shortcut_message_accepts_plain_messages_when_enabled() -> None:
     shortcut = parse_reaction_shortcut_message(
-        "Fix the failing Discord tests.",
+        "LATEST THINKPAD CHECKMARK TEST 1",
         allow_plain_message=True,
     )
 
     assert shortcut is not None
     assert shortcut.args is None
-    assert shortcut.prompt == "Fix the failing Discord tests."
+    assert shortcut.prompt == "LATEST THINKPAD CHECKMARK TEST 1"
 
 
-def test_parse_reaction_shortcut_message_ignores_other_commands_in_plain_mode() -> None:
-    assert (
-        parse_reaction_shortcut_message(
-            "!usage",
-            allow_plain_message=True,
-        )
-        is None
+def test_parse_reaction_shortcut_message_ignores_plain_messages_when_disabled() -> None:
+    shortcut = parse_reaction_shortcut_message("LATEST THINKPAD CHECKMARK TEST 1")
+
+    assert shortcut is None
+
+
+def test_parse_reaction_shortcut_message_does_not_treat_other_commands_as_plain() -> None:
+    shortcut = parse_reaction_shortcut_message(
+        "!help",
+        allow_plain_message=True,
     )
+
+    assert shortcut is None
 
 
 def test_reaction_matches_accepts_slack_and_discord_checkmark_forms() -> None:
