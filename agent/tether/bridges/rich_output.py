@@ -171,6 +171,12 @@ def _normalize_plain_markdown(text: str) -> str:
     return "\n".join(converted)
 
 
+def _clean_thinking_markers(text: str) -> str:
+    """Remove legacy inline thinking markers from token-streamed output."""
+
+    return re.sub(r"\[thinking\]\s*", "", text)
+
+
 def _chunk_plain(text: str, limit: int) -> list[str]:
     if len(text) <= limit:
         return [text]
@@ -204,7 +210,7 @@ def render_markdown_segments(
                 _chunk_plain(_normalize_plain_markdown(segment.text), limit)
             )
         elif segment.kind == "thinking":
-            body = segment.text.strip() or "Thinking"
+            body = _clean_thinking_markers(segment.text).strip() or "Thinking"
             quote = "\n".join(f"> {line}" for line in body.splitlines())
             messages.extend(_chunk_plain(f"💭 {bold}Thinking{bold}\n{quote}", limit))
         elif segment.kind == "tool_call":
@@ -285,7 +291,7 @@ def render_telegram_messages(
             )
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "thinking":
-            body = html.escape(segment.text.strip() or "Thinking")
+            body = html.escape(_clean_thinking_markers(segment.text).strip() or "Thinking")
             rendered = f"💭 <b>Thinking</b>\n<i>{body}</i>"
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "tool_call":

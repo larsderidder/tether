@@ -98,6 +98,11 @@ class PiRpcRunner:
             {}
         )  # tool_call_ids with streamed output
         self._assistant_marker_needed: dict[str, bool] = {}
+        # thinking_delta streams can arrive token-by-token; we only want to emit a
+        # single [thinking] marker at the start so bridges can render it cleanly.
+        self._thinking_marker_needed: dict[str, bool] = {}
+        # Track whether the next output chunk is at the start of a new line.
+        self._at_line_start: dict[str, bool] = {}
         self._pi_binary: str | None = None
 
     # ------------------------------------------------------------------
@@ -340,7 +345,29 @@ class PiRpcRunner:
         self._streamed_text.pop(session_id, False)
         self._tool_had_updates.pop(session_id, None)
         self._assistant_marker_needed.pop(session_id, None)
+        self._thinking_marker_needed.pop(session_id, None)
+        self._at_line_start.pop(session_id, None)
         store.clear_process(session_id)
+
+    async def _emit_output(
+        self,
+        session_id: str,
+        stream: str,
+        text: str,
+        *,
+        kind: str,
+        is_final: bool,
+        bridge_segments: list[dict[str, str]] | None = None,
+    ) -> None:
+        await self._events.on_output(
+            session_id,
+            stream,
+            text,
+            kind=kind,
+            is_final=is_final,
+            bridge_segments=bridge_segments,
+        )
+        self._at_line_start[session_id] = text.endswith("\n")
 
     # ------------------------------------------------------------------
     # Internal: heartbeat
@@ -466,6 +493,8 @@ class PiRpcRunner:
             self._is_streaming[session_id] = True
             self._streamed_text[session_id] = False
             self._assistant_marker_needed[session_id] = False
+            self._thinking_marker_needed[session_id] = True
+            self._at_line_start[session_id] = True
 
         elif etype == "agent_end":
             self._is_streaming.pop(session_id, False)
@@ -481,12 +510,15 @@ class PiRpcRunner:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 text = block.get("text", "")
                                 if text:
-                                    prefix = (
-                                        "[assistant] "
-                                        if self._assistant_marker_needed.get(session_id)
-                                        else ""
-                                    )
-                                    await self._events.on_output(
+                                    prefix = ""
+                                    if self._assistant_marker_needed.get(session_id):
+                                        lead = (
+                                            ""
+                                            if self._at_line_start.get(session_id, True)
+                                            else "\n"
+                                        )
+                                        prefix = f"{lead}[assistant] "
+                                    await self._emit_output(
                                         session_id,
                                         "combined",
                                         f"{prefix}{text}",
@@ -497,6 +529,7 @@ class PiRpcRunner:
                                         ),
                                     )
                                     self._assistant_marker_needed[session_id] = False
+                                    self._thinking_marker_needed[session_id] = True
             # Agent finished its turn; signal waiting for input.
             # The pi process stays alive between turns, so the finally
             # block in _read_events won't fire until the process exits.
@@ -511,12 +544,13 @@ class PiRpcRunner:
                 delta = delta_event.get("delta", "")
                 if delta:
                     self._streamed_text[session_id] = True
-                    prefix = (
-                        "[assistant] "
-                        if self._assistant_marker_needed.get(session_id)
-                        else ""
-                    )
-                    await self._events.on_output(
+                    prefix = ""
+                    if self._assistant_marker_needed.get(session_id):
+                        lead = (
+                            "" if self._at_line_start.get(session_id, True) else "\n"
+                        )
+                        prefix = f"{lead}[assistant] "
+                    await self._emit_output(
                         session_id,
                         "combined",
                         f"{prefix}{delta}",
@@ -525,19 +559,27 @@ class PiRpcRunner:
                         bridge_segments=_bridge_segment("assistant", delta),
                     )
                     self._assistant_marker_needed[session_id] = False
+                    self._thinking_marker_needed[session_id] = True
 
             elif delta_type == "thinking_delta":
                 delta = delta_event.get("delta", "")
                 if delta:
-                    await self._events.on_output(
+                    prefix = ""
+                    if self._thinking_marker_needed.get(session_id, True):
+                        lead = (
+                            "" if self._at_line_start.get(session_id, True) else "\n"
+                        )
+                        prefix = f"{lead}[thinking] "
+                    await self._emit_output(
                         session_id,
                         "combined",
-                        f"[thinking] {delta}",
+                        f"{prefix}{delta}",
                         kind="step",
                         is_final=False,
                         bridge_segments=_bridge_segment("thinking", delta),
                     )
                     self._assistant_marker_needed[session_id] = True
+                    self._thinking_marker_needed[session_id] = False
 
             elif delta_type == "done":
                 # Message complete — the agent_end event will carry the final text
@@ -554,7 +596,7 @@ class PiRpcRunner:
             tool_name = event.get("toolName", "unknown")
             args = event.get("args", {})
 
-            await self._events.on_output(
+            await self._emit_output(
                 session_id,
                 "combined",
                 f"[tool: {tool_name}]\n",
@@ -567,6 +609,7 @@ class PiRpcRunner:
                 ),
             )
             self._assistant_marker_needed[session_id] = True
+            self._thinking_marker_needed[session_id] = True
 
             # For write/edit/bash, emit permission request
             if tool_name in _PERMISSION_TOOLS:
@@ -609,7 +652,7 @@ class PiRpcRunner:
                             event.get("toolCallId", "")
                         )
                         truncated = _truncate_tool_output(text)
-                        await self._events.on_output(
+                        await self._emit_output(
                             session_id,
                             "combined",
                             f"[{tool_name}] {truncated}\n",
@@ -622,6 +665,7 @@ class PiRpcRunner:
                             ),
                         )
                         self._assistant_marker_needed[session_id] = True
+                        self._thinking_marker_needed[session_id] = True
 
         elif etype == "tool_execution_end":
             tool_call_id = event.get("toolCallId", "")
@@ -645,7 +689,7 @@ class PiRpcRunner:
             if text and (is_error or not already_streamed):
                 truncated = _truncate_tool_output(text)
                 prefix = "[error] " if is_error else "[result] "
-                await self._events.on_output(
+                await self._emit_output(
                     session_id,
                     "combined",
                     f"{prefix}{truncated}\n",
@@ -658,10 +702,11 @@ class PiRpcRunner:
                     ),
                 )
                 self._assistant_marker_needed[session_id] = True
+                self._thinking_marker_needed[session_id] = True
 
         # -- Compaction --
         elif etype == "auto_compaction_start":
-            await self._events.on_output(
+            await self._emit_output(
                 session_id,
                 "combined",
                 "[compacting context...]\n",
@@ -674,7 +719,7 @@ class PiRpcRunner:
             result = event.get("result")
             if result:
                 tokens_before = result.get("tokensBefore", 0)
-                await self._events.on_output(
+                await self._emit_output(
                     session_id,
                     "combined",
                     f"[compaction done — was {tokens_before} tokens]\n",
@@ -691,7 +736,7 @@ class PiRpcRunner:
             attempt = event.get("attempt", 0)
             max_attempts = event.get("maxAttempts", 0)
             delay_ms = event.get("delayMs", 0)
-            await self._events.on_output(
+            await self._emit_output(
                 session_id,
                 "combined",
                 f"[retry {attempt}/{max_attempts}, waiting {delay_ms}ms...]\n",
@@ -717,7 +762,7 @@ class PiRpcRunner:
             if method == "notify":
                 msg = event.get("message", "")
                 if msg:
-                    await self._events.on_output(
+                    await self._emit_output(
                         session_id,
                         "combined",
                         f"[notify] {msg}\n",
@@ -726,6 +771,7 @@ class PiRpcRunner:
                         bridge_segments=_bridge_segment("status", msg),
                     )
                     self._assistant_marker_needed[session_id] = True
+                    self._thinking_marker_needed[session_id] = True
 
     async def _handle_response(self, session_id: str, event: dict) -> None:
         """Handle a command response from pi."""
