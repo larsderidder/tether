@@ -1035,6 +1035,51 @@ class TestDiscordBridgePoC:
         )
 
     @pytest.mark.anyio
+    async def test_forward_input_fetches_uncached_referenced_image(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Discord replies fetch uncached referenced messages for image input."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = _mock_callbacks()
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
+        attachment = AsyncMock()
+        attachment.content_type = "image/png"
+        attachment.filename = "uncached.png"
+        attachment.size = len(png_bytes)
+        attachment.read.return_value = png_bytes
+
+        fetched = MagicMock()
+        fetched.attachments = [attachment]
+        mock_channel = AsyncMock()
+        mock_channel.id = 9876543210
+        mock_channel.fetch_message.return_value = fetched
+
+        reference = MagicMock()
+        reference.resolved = None
+        reference.message_id = 112233
+
+        mock_message = MagicMock()
+        mock_message.attachments = []
+        mock_message.reference = reference
+        mock_message.channel = mock_channel
+        mock_message.author.name = "testuser"
+
+        await bridge._forward_input(mock_message, session.id, "what is this?")
+
+        mock_channel.fetch_message.assert_awaited_once_with(112233)
+        callbacks.send_input.assert_awaited_once()
+        sent_images = callbacks.send_input.await_args.kwargs["images"]
+        assert sent_images[0]["filename"] == "uncached.png"
+
+    @pytest.mark.anyio
     async def test_forward_input_updates_starter_message_with_user_mention(
         self, fresh_store: SessionStore
     ) -> None:

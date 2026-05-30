@@ -555,8 +555,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._hydrate_thread_binding(session_id)
         await super().send_auto_approve_batch(session_id, items)
 
-    @staticmethod
-    def _message_image_attachments(message: Any) -> list[Any]:
+    async def _message_image_attachments(self, message: Any) -> list[Any]:
         """Return direct and replied-to Discord attachments for image intake."""
 
         attachments = list(getattr(message, "attachments", []) or [])
@@ -564,13 +563,28 @@ class DiscordBridge(UpstreamDiscordBridge):
         resolved = getattr(reference, "resolved", None)
         if resolved is not None:
             attachments.extend(list(getattr(resolved, "attachments", []) or []))
+            return attachments
+
+        message_id = getattr(reference, "message_id", None)
+        fetch_message = getattr(getattr(message, "channel", None), "fetch_message", None)
+        if message_id and fetch_message is not None:
+            try:
+                fetched = await fetch_message(message_id)
+            except Exception:
+                logger.debug(
+                    "Failed to hydrate Discord referenced message for images",
+                    message_id=message_id,
+                    exc_info=True,
+                )
+            else:
+                attachments.extend(list(getattr(fetched, "attachments", []) or []))
         return attachments
 
     async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:
         """Download and validate supported Discord image attachments."""
 
         images: list[dict[str, str]] = []
-        for attachment in self._message_image_attachments(message):
+        for attachment in await self._message_image_attachments(message):
             if len(images) >= MAX_IMAGES_PER_MESSAGE:
                 break
             content_type = getattr(attachment, "content_type", None)
