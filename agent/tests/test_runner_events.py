@@ -360,6 +360,41 @@ class TestOnAwaitingInput:
         assert updated.state == SessionState.ERROR
 
     @pytest.mark.anyio
+    async def test_pending_final_output_replaces_streamed_chunks(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Clean final output replaces prior streamed prose in output_final."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "broken token stream ",
+            kind="step",
+            is_final=False,
+        )
+        await events.on_output(
+            session.id,
+            "combined",
+            "Clean final answer",
+            kind="final",
+            is_final=True,
+        )
+        await events.on_awaiting_input(session.id)
+
+        output_final_events = [
+            event
+            for event in fresh_store.read_event_log(session.id)
+            if event.get("type") == "output_final"
+        ]
+        assert output_final_events[-1]["data"]["text"] == "Clean final answer"
+
+    @pytest.mark.anyio
     async def test_finalizes_pending_output_without_stop_footer(
         self, fresh_store: SessionStore, tmp_path
     ) -> None:

@@ -274,6 +274,11 @@ async def finalize_output(
         warnings=warnings,
     )
 
+    if pending_text is not None:
+        # A runner supplied clean final text. Drop streamed/tokenized chunks so
+        # output_final contains exactly one copy of the final answer.
+        store.consume_output(session.id)
+
     store.append_output(session.id, visible_text)
     if store.should_emit_output(session.id, visible_text):
         logger.debug(
