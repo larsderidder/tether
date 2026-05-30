@@ -53,7 +53,13 @@ class ClaudeSubprocessRunner:
     # Runner protocol
     # ------------------------------------------------------------------
 
-    async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
+    async def start(
+        self,
+        session_id: str,
+        prompt: str,
+        approval_choice: int,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         permission_mode = self._map_permission_mode(approval_choice)
         self._permission_modes[session_id] = permission_mode
 
@@ -78,7 +84,12 @@ class ClaudeSubprocessRunner:
         resume = self._maybe_drop_busy_resume(session_id, resume)
         await self._spawn(session_id, prompt, cwd, permission_mode, resume)
 
-    async def send_input(self, session_id: str, text: str) -> None:
+    async def send_input(
+        self,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         if not text.strip():
             return
 

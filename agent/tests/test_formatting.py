@@ -2,6 +2,7 @@
 
 from tether.bridges.rich_output import (
     parse_output_segments,
+    coerce_output_segments,
     render_discord_messages,
     render_telegram_messages,
 )
@@ -248,6 +249,28 @@ class TestRichOutputFormatting:
         )
 
         assert messages == ["💭 **Thinking**\n> The noisy marker"]
+
+    def test_structured_token_segments_are_coalesced(self) -> None:
+        segments = coerce_output_segments(
+            [
+                {"kind": "assistant", "text": "The"},
+                {"kind": "assistant", "text": " Price"},
+                {"kind": "assistant", "text": " Chart"},
+            ]
+        )
+
+        assert len(segments) == 1
+        assert segments[0].text == "The Price Chart"
+        assert render_discord_messages(
+            "The Price Chart",
+            metadata={
+                "bridge_segments": [
+                    {"kind": "assistant", "text": "The"},
+                    {"kind": "assistant", "text": " Price"},
+                    {"kind": "assistant", "text": " Chart"},
+                ]
+            },
+        ) == ["The Price Chart"]
 
     def test_render_telegram_messages_formats_tool_output_as_pre(self) -> None:
         messages = render_telegram_messages("[error] invalid_grant")

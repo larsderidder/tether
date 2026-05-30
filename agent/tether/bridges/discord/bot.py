@@ -24,7 +24,13 @@ from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.image_io import (
+    MAX_IMAGE_BYTES,
+    MAX_IMAGES_PER_MESSAGE,
+    make_bridge_image,
+)
 from tether.bridges.rich_output import render_discord_messages
+from tether.bridges.retry import with_bridge_send_retry
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
     parse_reaction_shortcut_message,
@@ -461,7 +467,12 @@ class DiscordBridge(UpstreamDiscordBridge):
                     return
             if thread:
                 for message in render_discord_messages(text, metadata=metadata) or [text]:
-                    await thread.send(message[:_DISCORD_STARTER_TEXT_LIMIT])
+                    await with_bridge_send_retry(
+                        "discord.output",
+                        lambda message=message: thread.send(
+                            message[:_DISCORD_STARTER_TEXT_LIMIT]
+                        ),
+                    )
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
 
@@ -544,8 +555,104 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._hydrate_thread_binding(session_id)
         await super().send_auto_approve_batch(session_id, items)
 
+    async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:
+        """Download and validate supported Discord image attachments."""
+
+        images: list[dict[str, str]] = []
+        for attachment in list(getattr(message, "attachments", []) or []):
+            if len(images) >= MAX_IMAGES_PER_MESSAGE:
+                break
+            content_type = getattr(attachment, "content_type", None)
+            if content_type and not str(content_type).lower().startswith("image/"):
+                continue
+            size = int(getattr(attachment, "size", 0) or 0)
+            if size <= 0:
+                continue
+            if size > MAX_IMAGE_BYTES:
+                await message.channel.send(
+                    f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+                )
+                continue
+            try:
+                data = await attachment.read()
+                image = make_bridge_image(
+                    data,
+                    declared_mime_type=content_type,
+                    filename=getattr(attachment, "filename", None),
+                )
+            except ValueError as exc:
+                await message.channel.send(f"⚠️ Skipped image: {exc}")
+                continue
+            except Exception:
+                logger.exception("Failed to read Discord image attachment")
+                await message.channel.send("⚠️ Failed to read an image attachment.")
+                continue
+            images.append(image.as_api_payload())
+        return images
+
     async def _forward_input(self, message: Any, session_id: str, text: str) -> None:
-        await super()._forward_input(message, session_id, text)
+        images = await self._collect_message_images(message)
+        await self._forward_input_with_images(message, session_id, text, images)
+
+    async def _forward_input_with_images(
+        self,
+        message: Any,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]],
+    ) -> None:
+        """Forward a Discord message and optional images as session input."""
+
+        if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+            await self._send_not_paired(message)
+            return
+
+        pending = self.get_pending_permission(session_id)
+        if pending:
+            if pending.kind == "choice":
+                selected = self.parse_choice_text(session_id, text)
+                if selected:
+                    await self._send_input_or_start_via_api(
+                        session_id=session_id,
+                        text=selected,
+                    )
+                    self.clear_pending_permission(session_id)
+                    await message.channel.send(f"✅ Selected: {selected}")
+                    return
+
+            parsed = self.parse_approval_text(text)
+            if parsed is not None:
+                ok, msg = await self._handle_approval_text_response(
+                    session_id,
+                    pending,
+                    parsed,
+                )
+                if ok:
+                    emoji = "✅" if parsed["allow"] else "❌"
+                    await message.channel.send(f"{emoji} {msg}")
+                else:
+                    await message.channel.send("❌ Failed. Request may have expired.")
+                return
+
+        if not text.strip() and images:
+            text = "Please look at this image."
+
+        try:
+            if images:
+                await self._callbacks.send_input(session_id, text, images=images)
+            else:
+                await self._callbacks.send_input(session_id, text)
+            logger.info(
+                "Forwarded human input from Discord",
+                session_id=session_id,
+                thread_id=message.channel.id,
+                username=message.author.name,
+                image_count=len(images),
+            )
+        except Exception as exc:
+            logger.exception("Failed to forward human input", session_id=session_id)
+            await message.channel.send(f"❌ Failed to send input: {exc}")
+
         self._update_starter_state(
             session_id,
             status="queued",
@@ -624,7 +731,10 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         if files:
             try:
-                await thread.send(files=files)
+                await with_bridge_send_retry(
+                    "discord.output_attachments",
+                    lambda: thread.send(files=files),
+                )
             except Exception:
                 logger.exception(
                     "Failed to upload Discord output attachments",
@@ -638,8 +748,11 @@ class DiscordBridge(UpstreamDiscordBridge):
 
         if failures:
             try:
-                await thread.send(
-                    "Attachment upload failed: " + ", ".join(sorted(set(failures)))
+                await with_bridge_send_retry(
+                    "discord.attachment_failure_notice",
+                    lambda: thread.send(
+                        "Attachment upload failed: " + ", ".join(sorted(set(failures)))
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -686,14 +799,20 @@ class DiscordBridge(UpstreamDiscordBridge):
                 )
                 for attachment in bundle.attachments
             ]
-            await thread.send(bundle.message, files=files)
+            await with_bridge_send_retry(
+                "discord.error_bundle",
+                lambda: thread.send(bundle.message, files=files),
+            )
         except Exception:
             logger.exception(
                 "Failed to send Discord error attachment bundle",
                 session_id=session_id,
             )
             try:
-                await thread.send("❌ Status: error")
+                await with_bridge_send_retry(
+                    "discord.error_fallback",
+                    lambda: thread.send("❌ Status: error"),
+                )
             except Exception:
                 logger.exception(
                     "Failed to send Discord fallback error status",
@@ -808,7 +927,8 @@ class DiscordBridge(UpstreamDiscordBridge):
             return
 
         text = message.content.strip()
-        if not text:
+        has_attachments = bool(getattr(message, "attachments", None))
+        if not text and not has_attachments:
             return
 
         if text.lower().startswith(("!pair", "!setup")):

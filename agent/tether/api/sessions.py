@@ -46,6 +46,7 @@ from tether.bridges.glue import (
     preferred_thread_name_for_platform,
     sync_bound_thread_name,
 )
+from tether.bridges.image_io import images_from_payload
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
 from tether.git import has_git_repository, normalize_directory_path
@@ -429,6 +430,9 @@ async def start_session(
                     "VALIDATION_ERROR", "Session has no directory assigned", 422
                 )
             prompt = payload.prompt
+            images = images_from_payload(
+                [image.model_dump() for image in payload.images]
+            )
             approval_choice = payload.approval_choice
 
             # Persist approval mode so the runner can recover it after restart
@@ -449,7 +453,7 @@ async def start_session(
                 store.clear_last_output(session_id)
                 store.clear_turn_state(session_id)
 
-            logger.info("Session start requested")
+            logger.info("Session start requested", image_count=len(images))
 
             # Warn if the attached external session is currently busy in another CLI
             external_session_id = store.get_runner_session_id(session_id)
@@ -487,7 +491,10 @@ async def start_session(
         # the session lock, so we must not hold it here.
         start_error: tuple[str, Exception] | None = None
         try:
-            await runner.start(session_id, prompt, approval_choice)
+            if images:
+                await runner.start(session_id, prompt, approval_choice, images=images)
+            else:
+                await runner.start(session_id, prompt, approval_choice)
             if renamed_session_name:
                 await sync_bound_thread_name(
                     session_id,
@@ -578,6 +585,9 @@ async def send_input(
         # Phase 1: validate and transition under lock
         async with session_lock(session_id):
             text = payload.text
+            images = images_from_payload(
+                [image.model_dump() for image in payload.images]
+            )
             session = store.get_session(session_id)
             if not session:
                 raise_http_error("NOT_FOUND", "Session not found", 404)
@@ -591,7 +601,11 @@ async def send_input(
                     "Session not running, awaiting input, or recoverable error",
                     409,
                 )
-            logger.info("Session input received", text_length=len(text))
+            logger.info(
+                "Session input received",
+                text_length=len(text),
+                image_count=len(images),
+            )
 
             # Warn if the attached external session is currently busy in another CLI
             external_session_id = store.get_runner_session_id(session_id)
@@ -634,7 +648,10 @@ async def send_input(
         runner = get_api_runner(adapter)
         send_error: tuple[str, Exception] | None = None
         try:
-            await runner.send_input(session_id, text)
+            if images:
+                await runner.send_input(session_id, text, images=images)
+            else:
+                await runner.send_input(session_id, text)
             if renamed_session_name:
                 await sync_bound_thread_name(
                     session_id,

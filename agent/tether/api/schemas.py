@@ -43,6 +43,15 @@ class CreateSessionRequest(BaseModel):
     approval_mode: int | None = None  # 0=interactive, 1=edits only, 2=full auto
 
 
+class ImageInput(BaseModel):
+    """Inline image payload for a session turn."""
+
+    type: Literal["image"] = "image"
+    data: str = Field(..., min_length=1)
+    mimeType: str = Field(..., min_length=1)
+    filename: str | None = None
+
+
 class StartSessionRequest(BaseModel):
     """Request body for starting a session.
 
@@ -54,6 +63,7 @@ class StartSessionRequest(BaseModel):
 
     prompt: str = ""
     approval_choice: Literal[0, 1, 2] = 2
+    images: list[ImageInput] = Field(default_factory=list)
 
 
 class RenameSessionRequest(BaseModel):
@@ -66,6 +76,7 @@ class InputRequest(BaseModel):
     """Request body for sending input to a session."""
 
     text: str = Field(..., min_length=1)
+    images: list[ImageInput] = Field(default_factory=list)
 
 
 class PermissionResponseRequest(BaseModel):

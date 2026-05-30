@@ -14,6 +14,27 @@ from tether.runner.pi_rpc import (
 )
 
 
+class FakeStdin:
+    """Fake async subprocess stdin that records JSON lines."""
+
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    async def drain(self) -> None:
+        pass
+
+
+class FakeProcess:
+    """Fake subprocess with writable stdin."""
+
+    def __init__(self) -> None:
+        self.stdin = FakeStdin()
+        self.returncode = None
+
+
 class FakeRunnerEvents:
     """Fake RunnerEvents that records all calls."""
 
@@ -109,6 +130,25 @@ def test_find_pi_binary() -> None:
     result = _find_pi_binary()
     # On this machine pi should be installed
     assert result is None or "pi" in result
+
+
+@pytest.mark.anyio
+async def test_send_prompt_includes_images() -> None:
+    """Pi RPC prompts include validated image payloads."""
+
+    runner = PiRpcRunner(FakeRunnerEvents())
+    proc = FakeProcess()
+    runner._processes["sess1"] = proc
+    images = [{"type": "image", "data": "abc", "mimeType": "image/png"}]
+
+    await runner._send_prompt("sess1", "describe this", images=images)
+
+    payload = json.loads(proc.stdin.writes[0].decode())
+    assert payload == {
+        "type": "prompt",
+        "message": "describe this",
+        "images": images,
+    }
 
 
 class TestPiRpcEventHandling:

@@ -36,7 +36,13 @@ class ApiRunnerBase(ABC):
     # Runner protocol
     # ------------------------------------------------------------------
 
-    async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
+    async def start(
+        self,
+        session_id: str,
+        prompt: str,
+        approval_choice: int,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         store.clear_stop_requested(session_id)
         self._tasks.pop(session_id, None)
 
@@ -46,7 +52,12 @@ class ApiRunnerBase(ABC):
         task = asyncio.create_task(self._conversation_loop(session_id))
         self._tasks[session_id] = task
 
-    async def send_input(self, session_id: str, text: str) -> None:
+    async def send_input(
+        self,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         if not text.strip():
             return
         self._add_user_message(session_id, text)

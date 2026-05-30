@@ -43,14 +43,37 @@ def coerce_output_segments(value: object) -> list[OutputSegment]:
         kind = str(item.get("kind") or "").strip()
         if not kind:
             continue
-        segments.append(
-            OutputSegment(
-                kind=kind,
-                text=str(item.get("text") or ""),
-                label=str(item["label"]) if item.get("label") else None,
-            )
+        segment = OutputSegment(
+            kind=kind,
+            text=str(item.get("text") or ""),
+            label=str(item["label"]) if item.get("label") else None,
         )
+        if _can_merge_segments(segments[-1] if segments else None, segment):
+            segments[-1].text += segment.text
+        else:
+            segments.append(segment)
     return segments
+
+
+def _can_merge_segments(
+    previous: OutputSegment | None,
+    current: OutputSegment,
+) -> bool:
+    """Return true when adjacent streamed segments are one logical block."""
+
+    if previous is None:
+        return False
+    if previous.kind != current.kind or previous.label != current.label:
+        return False
+    return current.kind in {
+        "assistant",
+        "thinking",
+        "tool_output",
+        "result",
+        "tool_result",
+        "error",
+        "tool_error",
+    }
 
 
 def parse_output_segments(text: str) -> list[OutputSegment]:

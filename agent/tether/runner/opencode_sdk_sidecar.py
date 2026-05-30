@@ -48,7 +48,13 @@ class OpenCodeSidecarRunner:
     # Runner protocol
     # ------------------------------------------------------------------
 
-    async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
+    async def start(
+        self,
+        session_id: str,
+        prompt: str,
+        approval_choice: int,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         if settings.opencode_sidecar_managed():
@@ -65,7 +71,7 @@ class OpenCodeSidecarRunner:
                 thread_id=thread_id,
             )
 
-        payload: dict[str, str | int | None] = {
+        payload: dict[str, Any] = {
             "session_id": session_id,
             "prompt": prompt,
             "approval_choice": approval_choice,
@@ -73,14 +79,23 @@ class OpenCodeSidecarRunner:
         }
         if thread_id:
             payload["thread_id"] = thread_id
+        if images:
+            payload["images"] = images
 
         await self._post_json("/sessions/start", payload)
         self._ensure_stream(session_id)
 
-    async def send_input(self, session_id: str, text: str) -> None:
+    async def send_input(
+        self,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         payload = {"session_id": session_id, "text": text}
+        if images:
+            payload["images"] = images
         await self._post_json("/sessions/input", payload)
         self._ensure_stream(session_id)
 

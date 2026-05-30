@@ -261,14 +261,22 @@ async def _create_session(**kwargs) -> dict:
     return response.json()
 
 
-async def _send_input(session_id: str, text: str) -> None:
+async def _send_input(
+    session_id: str,
+    text: str,
+    images: list[dict[str, str]] | None = None,
+) -> None:
     """Send input to a session; start it if in CREATED state."""
+
+    payload = {"text": text}
+    if images:
+        payload["images"] = images
 
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"http://localhost:{settings.port()}/api/sessions/{session_id}/input",
-                json={"text": text},
+                json=payload,
                 headers=_api_headers(),
                 timeout=30.0,
             )
@@ -294,7 +302,7 @@ async def _send_input(session_id: str, text: str) -> None:
     async with httpx.AsyncClient() as client:
         r = await client.post(
             f"http://localhost:{settings.port()}/api/sessions/{session_id}/start",
-            json={"prompt": text},
+            json={"prompt": text, "images": images or []},
             headers=_api_headers(),
             timeout=30.0,
         )

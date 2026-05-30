@@ -102,11 +102,18 @@ class PiRpcRunner:
     # Runner protocol
     # ------------------------------------------------------------------
 
-    async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
+    async def start(
+        self,
+        session_id: str,
+        prompt: str,
+        approval_choice: int,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         logger.info(
             "Starting pi_rpc session",
             session_id=session_id,
             approval_choice=approval_choice,
+            image_count=len(images or []),
         )
         store.clear_stop_requested(session_id)
 
@@ -125,10 +132,15 @@ class PiRpcRunner:
                     self._session_files[session_id] = session_file
 
         await self._spawn(session_id, cwd, session_file)
-        await self._send_prompt(session_id, prompt)
+        await self._send_prompt(session_id, prompt, images=images)
 
-    async def send_input(self, session_id: str, text: str) -> None:
-        if not text.strip():
+    async def send_input(
+        self,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
+        if not text.strip() and not images:
             return
 
         proc = self._processes.get(session_id)
@@ -149,20 +161,21 @@ class PiRpcRunner:
 
             store.clear_stop_requested(session_id)
             await self._spawn(session_id, cwd, session_file)
-            await self._send_prompt(session_id, text)
+            await self._send_prompt(session_id, text, images=images)
             return
 
         if self._is_streaming.get(session_id):
-            # Agent is busy — queue as follow-up
+            # Agent is busy; queue as follow-up.
             await self._write_cmd_async(
                 proc,
                 {
                     "type": "follow_up",
                     "message": text,
+                    "images": images or [],
                 },
             )
         else:
-            await self._send_prompt(session_id, text)
+            await self._send_prompt(session_id, text, images=images)
 
     async def stop(self, session_id: str) -> int | None:
         store.request_stop(session_id)
@@ -269,7 +282,12 @@ class PiRpcRunner:
         # Fetch initial state for model info
         await self._write_cmd_async(proc, {"type": "get_state"})
 
-    async def _send_prompt(self, session_id: str, text: str) -> None:
+    async def _send_prompt(
+        self,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         """Send a prompt to the pi process."""
         proc = self._processes.get(session_id)
         if not proc or proc.returncode is not None:
@@ -277,13 +295,17 @@ class PiRpcRunner:
             return
 
         logger.info(
-            "Sending prompt to pi", session_id=session_id, text_length=len(text)
+            "Sending prompt to pi",
+            session_id=session_id,
+            text_length=len(text),
+            image_count=len(images or []),
         )
         await self._write_cmd_async(
             proc,
             {
                 "type": "prompt",
                 "message": text,
+                "images": images or [],
             },
         )
 

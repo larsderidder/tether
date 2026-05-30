@@ -39,7 +39,13 @@ class SidecarRunner:
         self._cli_heartbeats: dict[str, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
-    async def start(self, session_id: str, prompt: str, approval_choice: int) -> None:
+    async def start(
+        self,
+        session_id: str,
+        prompt: str,
+        approval_choice: int,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         """Start a sidecar-backed session and subscribe to its SSE stream.
 
         Args:
@@ -61,7 +67,7 @@ class SidecarRunner:
                 thread_id=thread_id,
             )
 
-        payload: dict[str, str | int | None] = {
+        payload: dict[str, Any] = {
             "session_id": session_id,
             "prompt": prompt,
             "approval_choice": approval_choice,
@@ -71,6 +77,8 @@ class SidecarRunner:
         # Only include thread_id if resuming
         if thread_id:
             payload["thread_id"] = thread_id
+        if images:
+            payload["images"] = images
 
         try:
             await self._post_json("/sessions/start", payload)
@@ -86,7 +94,12 @@ class SidecarRunner:
             return
         self._ensure_stream(session_id)
 
-    async def send_input(self, session_id: str, text: str) -> None:
+    async def send_input(
+        self,
+        session_id: str,
+        text: str,
+        images: list[dict[str, str]] | None = None,
+    ) -> None:
         """Send follow-up input to the sidecar.
 
         Args:
@@ -100,6 +113,8 @@ class SidecarRunner:
             store.add_pending_input(session_id, text)
             return
         payload = {"session_id": session_id, "text": text}
+        if images:
+            payload["images"] = images
         try:
             await self._post_json("/sessions/input", payload)
         except (RunnerUnavailableError, RuntimeError) as exc:
