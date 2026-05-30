@@ -513,38 +513,39 @@ class PiRpcRunner:
 
         elif etype == "agent_end":
             self._is_streaming.pop(session_id, False)
-            streamed = self._streamed_text.pop(session_id, False)
-            # Only emit the final accumulated text if we did NOT already
-            # stream it via text_delta events (avoids double messages).
-            if not streamed:
-                messages = event.get("messages", [])
-                for msg in messages:
-                    if isinstance(msg, dict) and msg.get("role") == "assistant":
-                        content = msg.get("content", [])
-                        for block in content if isinstance(content, list) else []:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text", "")
-                                if text:
-                                    prefix = ""
-                                    if self._assistant_marker_needed.get(session_id):
-                                        lead = (
-                                            ""
-                                            if self._at_line_start.get(session_id, True)
-                                            else "\n"
-                                        )
-                                        prefix = f"{lead}[assistant] "
-                                    await self._emit_output(
-                                        session_id,
-                                        "combined",
-                                        f"{prefix}{text}",
-                                        kind="final",
-                                        is_final=True,
-                                        bridge_segments=_bridge_segment(
-                                            "assistant", text
-                                        ),
+            self._streamed_text.pop(session_id, False)
+            # Always pass pi's accumulated final text through the final-output
+            # path.  Bridge subscribers discard buffered prose tokens when the
+            # output_final event arrives, so this avoids duplicate chat output
+            # while preserving clean Markdown and list formatting.
+            messages = event.get("messages", [])
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    content = msg.get("content", [])
+                    for block in content if isinstance(content, list) else []:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text:
+                                prefix = ""
+                                if self._assistant_marker_needed.get(session_id):
+                                    lead = (
+                                        ""
+                                        if self._at_line_start.get(session_id, True)
+                                        else "\n"
                                     )
-                                    self._assistant_marker_needed[session_id] = False
-                                    self._thinking_marker_needed[session_id] = True
+                                    prefix = f"{lead}[assistant] "
+                                await self._emit_output(
+                                    session_id,
+                                    "combined",
+                                    f"{prefix}{text}",
+                                    kind="final",
+                                    is_final=True,
+                                    bridge_segments=_bridge_segment(
+                                        "assistant", text
+                                    ),
+                                )
+                                self._assistant_marker_needed[session_id] = False
+                                self._thinking_marker_needed[session_id] = True
             # Agent finished its turn; signal waiting for input.
             # The pi process stays alive between turns, so the finally
             # block in _read_events won't fire until the process exits.

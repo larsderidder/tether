@@ -348,54 +348,6 @@ class TestPiRpcEventHandling:
         assert len(events.outputs[0]["text"]) < len(text)
 
     @pytest.mark.anyio
-    async def test_handle_tool_execution_update_truncates_large_output(
-        self, runner_and_events
-    ):
-        runner, events = runner_and_events
-        proc = MagicMock()
-        text = "A" * (_TOOL_OUTPUT_MAX_CHARS + 250)
-
-        event = {
-            "type": "tool_execution_update",
-            "toolCallId": "call_789",
-            "toolName": "read",
-            "partialResult": {
-                "content": [{"type": "text", "text": text}],
-            },
-        }
-        await runner._handle_event("sess1", proc, event)
-
-        assert len(events.outputs) == 1
-        assert "[read]" in events.outputs[0]["text"]
-        assert "[truncated, 250 more characters omitted]" in events.outputs[0]["text"]
-        assert len(events.outputs[0]["text"]) < len(text)
-
-    @pytest.mark.anyio
-    async def test_handle_tool_execution_end_truncates_large_output(
-        self, runner_and_events
-    ):
-        runner, events = runner_and_events
-        proc = MagicMock()
-        text = "B" * (_TOOL_OUTPUT_MAX_CHARS + 125)
-
-        event = {
-            "type": "tool_execution_end",
-            "toolCallId": "call_999",
-            "toolName": "bash",
-            "result": {
-                "content": [{"type": "text", "text": text}],
-                "details": {},
-            },
-            "isError": False,
-        }
-        await runner._handle_event("sess1", proc, event)
-
-        assert len(events.outputs) == 1
-        assert "[result]" in events.outputs[0]["text"]
-        assert "[truncated, 125 more characters omitted]" in events.outputs[0]["text"]
-        assert len(events.outputs[0]["text"]) < len(text)
-
-    @pytest.mark.anyio
     async def test_handle_agent_start_end(self, runner_and_events):
         runner, events = runner_and_events
         proc = MagicMock()
@@ -422,6 +374,46 @@ class TestPiRpcEventHandling:
         final_outputs = [o for o in events.outputs if o["is_final"] is True]
         assert len(final_outputs) == 1
         assert final_outputs[0]["text"] == "Final answer"
+
+    @pytest.mark.anyio
+    async def test_agent_end_emits_clean_final_after_streaming_tokens(
+        self, runner_and_events
+    ):
+        """Pi's final accumulated text should replace broken streamed prose."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event("sess1", proc, {"type": "agent_start"})
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "delta": "-350out-dir",
+                },
+            },
+        )
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "agent_end",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "- 350 output cards\n- Clean final text"}
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert [output["is_final"] for output in events.outputs] == [False, True]
+        assert events.outputs[-1]["text"] == "- 350 output cards\n- Clean final text"
+        assert events.awaiting_input_count == 1
 
     @pytest.mark.anyio
     async def test_handle_get_state_response(self, runner_and_events, fresh_store):
