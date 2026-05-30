@@ -23,11 +23,12 @@ def test_detect_image_mime_type_sniffs_supported_images() -> None:
     assert detect_image_mime_type(b"not an image") is None
 
 
-def test_make_bridge_image_rejects_mime_mismatch() -> None:
-    """Declared image MIME types must match the sniffed bytes."""
+def test_make_bridge_image_prefers_sniffed_mime_type() -> None:
+    """Bridge MIME metadata is advisory because chat providers can get it wrong."""
 
-    with pytest.raises(ValueError, match="MIME type"):
-        make_bridge_image(PNG_BYTES, declared_mime_type="image/jpeg")
+    image = make_bridge_image(PNG_BYTES, declared_mime_type="image/jpeg")
+
+    assert image.mime_type == "image/png"
 
 
 def test_make_bridge_image_encodes_api_payload() -> None:

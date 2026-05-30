@@ -65,15 +65,9 @@ def make_bridge_image(
     if sniffed_mime_type is None:
         raise ValueError("attachment is not a supported image")
 
-    if declared_mime_type:
-        base_declared_mime_type = declared_mime_type.split(";", 1)[0].strip().lower()
-        if (
-            base_declared_mime_type.startswith("image/")
-            and base_declared_mime_type in SUPPORTED_IMAGE_MIME_TYPES
-            and base_declared_mime_type != sniffed_mime_type
-        ):
-            raise ValueError("image MIME type does not match its bytes")
-
+    # Bridge metadata is advisory. Discord sometimes reports forwarded or
+    # mobile-uploaded images with the wrong image/* MIME type. Trust bytes over
+    # headers and pass the sniffed MIME type to the runner.
     safe_filename = sanitize_filename(filename, mime_type=sniffed_mime_type)
     return BridgeImage(
         data=base64.b64encode(data).decode("ascii"),
