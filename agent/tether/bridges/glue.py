@@ -216,7 +216,8 @@ async def _create_session(**kwargs) -> dict:
         from tether.templates import TemplateError, resolve_template
 
         overrides = {
-            k: v for k, v in kwargs.items()
+            k: v
+            for k, v in kwargs.items()
             if k not in ("platform", "session_name") and v is not None
         }
         try:
@@ -344,6 +345,7 @@ async def _respond_to_permission(
                 "allow": allow,
                 "message": message
                 or ("Approved" if allow else "User denied permission"),
+                **({"updated_input": {"value": message}} if allow and message else {}),
             },
             headers=_api_headers(),
             timeout=10.0,
@@ -517,8 +519,34 @@ async def _sync_session(session_id: str, force: bool = False) -> dict:
             params={"force": "true"} if force else None,
             timeout=30.0,
         )
-        response.raise_for_status()
+    if response.is_error:
+        message = _response_error_message(response)
+        raise RuntimeError(message)
     return response.json()
+
+
+def _response_error_message(response: httpx.Response) -> str:
+    """Extract a readable error message from a Tether API response."""
+
+    fallback = f"HTTP {response.status_code} {response.reason_phrase}"
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text or fallback
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        code = str(error.get("code") or "").strip()
+        if message and code:
+            return f"{message} ({code})"
+        if message:
+            return message
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if detail:
+        return str(detail)
+    return fallback
 
 
 async def _attach_external(**kwargs) -> dict:
