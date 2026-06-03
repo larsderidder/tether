@@ -115,5 +115,13 @@ def images_from_payload(value: Any) -> list[dict[str, str]]:
             continue
         if detect_image_mime_type(decoded) != base_mime_type:
             continue
-        images.append({"type": "image", "data": data, "mimeType": base_mime_type})
+        normalized = {"type": "image", "data": data, "mimeType": base_mime_type}
+        raw_filename = item.get("filename")
+        filename = sanitize_filename(
+            raw_filename if isinstance(raw_filename, str) else None,
+            mime_type=base_mime_type,
+        )
+        if filename:
+            normalized["filename"] = filename
+        images.append(normalized)
     return images

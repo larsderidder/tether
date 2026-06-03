@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from tether.runner.litellm_runner import LiteLLMRunner
     from tether.runner.opencode_sdk_sidecar import OpenCodeSidecarRunner
     from tether.runner.pi_rpc import PiRpcRunner
+    from tether.runner.runbook import RunbookRunner
 
 
 def _has_anthropic_api_key() -> bool:
@@ -71,6 +72,7 @@ def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
         - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
         - opencode: OpenCode sidecar
         - pi_rpc: Pi coding agent via JSON-RPC subprocess
+        - runbook: Local file-based runbook subprocess
 
     Runners are imported lazily to speed up agent startup.
     """
@@ -127,6 +129,11 @@ def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
         from tether.runner.pi_rpc import PiRpcRunner
 
         return PiRpcRunner(events)
+
+    if name == "runbook":
+        from tether.runner.runbook import RunbookRunner
+
+        return RunbookRunner(events)
 
     raise ValueError(f"Unknown agent adapter: {name}")
 
