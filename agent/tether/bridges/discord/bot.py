@@ -25,6 +25,7 @@ from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.attachments import attachments_from_metadata
+from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
@@ -170,6 +171,9 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
         self._starter_states: dict[str, _DiscordStarterState] = {}
         self._starter_refresh_tasks: dict[str, asyncio.Task] = {}
+        self._dashboard_message: Any | None = None
+        self._dashboard_message_id: int | None = None
+        self._dashboard_control_channel_id: int | None = None
         self._message_dedupe = ShortLivedMessageDedupe()
         self._message_expansions: dict[int, _DiscordExpansion] = {}
         self._apply_auto_pair_users()
@@ -198,6 +202,53 @@ class DiscordBridge(UpstreamDiscordBridge):
             if thread_id is None:
                 continue
             self._thread_ids.setdefault(session.id, thread_id)
+
+    def _hydrate_dashboard_states_from_store(self) -> None:
+        """Recover dashboard rows for Discord sessions after a restart."""
+
+        try:
+            from tether.store import store
+        except Exception:
+            logger.exception("Failed to import store for Discord dashboard recovery")
+            return
+
+        now_s = time.time()
+        for session in store.list_sessions():
+            if getattr(session, "platform", None) != "discord":
+                continue
+            thread_id = self._parse_thread_id(
+                getattr(session, "platform_thread_id", None)
+            )
+            if thread_id is None:
+                continue
+            self._thread_ids.setdefault(session.id, thread_id)
+            if session.id in self._starter_states:
+                continue
+            status = self._starter_status_from_session_state(
+                str(getattr(session, "state", "") or "")
+            )
+            self._starter_states[session.id] = _DiscordStarterState(
+                session_name=str(getattr(session, "name", None) or "Session"),
+                control_channel_id=int(self._channel_id or 0),
+                created_at_s=now_s,
+                last_event_at_s=now_s,
+                last_status=status,
+                last_event="Recovered after restart",
+                thread_id=thread_id,
+            )
+
+    @staticmethod
+    def _starter_status_from_session_state(session_state: str) -> str:
+        """Map stored session state to a Discord dashboard status."""
+
+        normalized = session_state.lower()
+        if normalized == "running":
+            return "executing"
+        if normalized == "awaiting_input":
+            return "awaiting_input"
+        if normalized == "error":
+            return "error"
+        return "created"
 
     def _hydrate_thread_binding(self, session_id: str) -> int | None:
         thread_id = self._thread_ids.get(session_id)
@@ -376,6 +427,99 @@ class DiscordBridge(UpstreamDiscordBridge):
             f"🔔 **Latest:** {state.last_event}"
         )[:_DISCORD_STARTER_TEXT_LIMIT]
 
+    def _render_dashboard_text(self) -> str:
+        """Render the control-channel dashboard for attached Discord sessions."""
+
+        states = sorted(
+            self._starter_states.items(),
+            key=lambda item: item[1].last_event_at_s,
+            reverse=True,
+        )
+        if not states:
+            return ""
+
+        lines = [f"🤖 **Tether sessions on {_hostname_slug()}**"]
+        for index, (session_id, state) in enumerate(states[:12], start=1):
+            status_badge, status_label = self._starter_status_badge(state.last_status)
+            session_name = self._starter_display_name(session_id, state)
+            thread_ref = (
+                f"<#{state.thread_id}>" if state.thread_id else "creating thread"
+            )
+            age_ref = self._format_relative_age(state.last_event_at_s)
+            lines.append(
+                f"{index}. {status_badge} {thread_ref} **{session_name}** | "
+                f"{status_label} | {age_ref}"
+            )
+        if len(states) > 12:
+            lines.append(f"…and {len(states) - 12} more")
+        return "\n".join(lines)[:_DISCORD_STARTER_TEXT_LIMIT]
+
+    async def _delete_dashboard_message(self) -> None:
+        """Delete the current dashboard message when it is known."""
+
+        message = self._dashboard_message
+        if message is None or not hasattr(message, "delete"):
+            self._dashboard_message = None
+            self._dashboard_message_id = None
+            return
+        try:
+            await message.delete()
+        except Exception:
+            logger.debug(
+                "Failed to delete Discord dashboard message",
+                message_id=self._dashboard_message_id,
+                exc_info=True,
+            )
+        finally:
+            self._dashboard_message = None
+            self._dashboard_message_id = None
+
+    async def _sync_dashboard_message(self) -> None:
+        """Create or edit the Discord dashboard message."""
+
+        self._hydrate_dashboard_states_from_store()
+        content = self._render_dashboard_text()
+        if not content:
+            await self._delete_dashboard_message()
+            return
+
+        old_message = self._dashboard_message
+        if old_message is not None and hasattr(old_message, "edit"):
+            try:
+                await old_message.edit(
+                    content=content,
+                    **self._starter_allowed_mentions(),
+                )
+                return
+            except Exception:
+                logger.warning(
+                    "Failed to edit Discord dashboard message",
+                    message_id=self._dashboard_message_id,
+                )
+                self._dashboard_message = None
+                self._dashboard_message_id = None
+
+        channel = await self._ensure_control_channel()
+        if channel is None or not hasattr(channel, "send"):
+            return
+
+        try:
+            dashboard_message = await channel.send(
+                content,
+                **self._starter_allowed_mentions(),
+            )
+        except Exception:
+            logger.warning("Failed to send Discord dashboard message")
+            return
+
+        self._dashboard_message = dashboard_message
+        self._dashboard_message_id = self._parse_thread_id(
+            getattr(dashboard_message, "id", 0)
+        )
+        self._dashboard_control_channel_id = self._parse_thread_id(
+            getattr(channel, "id", 0)
+        ) or int(self._channel_id or 0)
+
     async def _resolve_starter_message(self, session_id: str) -> Any | None:
         state = self._starter_states.get(session_id)
         if state is None or not self._client:
@@ -515,13 +659,16 @@ class DiscordBridge(UpstreamDiscordBridge):
         except Exception:
             logger.exception("Failed to send Discord message", session_id=session_id)
 
-        status = "done" if bool((metadata or {}).get("final")) else "streaming"
+        is_final = bool((metadata or {}).get("final"))
+        status = "done" if is_final else "streaming"
         self._update_starter_state(
             session_id,
             status=status,
             event=self._starter_event_text(status, metadata),
         )
         await self._sync_starter_message(session_id)
+        if is_final:
+            await self._sync_dashboard_message()
         await self._send_requested_output_attachments(session_id, metadata=metadata)
 
     async def _remember_output_expansion(
@@ -571,6 +718,8 @@ class DiscordBridge(UpstreamDiscordBridge):
                 event=self._starter_event_text(status, metadata),
             )
             await self._sync_starter_message(session_id)
+            if status == "error":
+                await self._sync_dashboard_message()
             return
 
         message = str((metadata or {}).get("message") or "").strip()
@@ -588,6 +737,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                 event=self._starter_event_text(status, metadata),
             )
             await self._sync_starter_message(session_id)
+            await self._sync_dashboard_message()
             return
 
         self._update_starter_state(
@@ -596,6 +746,7 @@ class DiscordBridge(UpstreamDiscordBridge):
             event=self._starter_event_text(status, metadata),
         )
         await self._sync_starter_message(session_id)
+        await self._sync_dashboard_message()
         self._schedule_error_attachment_bundle(session_id, metadata=metadata)
 
     async def on_approval_request(self, session_id: str, request) -> None:
@@ -640,7 +791,9 @@ class DiscordBridge(UpstreamDiscordBridge):
             return attachments
 
         message_id = getattr(reference, "message_id", None)
-        fetch_message = getattr(getattr(message, "channel", None), "fetch_message", None)
+        fetch_message = getattr(
+            getattr(message, "channel", None), "fetch_message", None
+        )
         if message_id and fetch_message is not None:
             try:
                 fetched = await fetch_message(message_id)
@@ -679,7 +832,9 @@ class DiscordBridge(UpstreamDiscordBridge):
             if isinstance(snapshot_message, dict):
                 snapshot_attachments = snapshot_message.get("attachments") or []
             else:
-                snapshot_attachments = getattr(snapshot_message, "attachments", []) or []
+                snapshot_attachments = (
+                    getattr(snapshot_message, "attachments", []) or []
+                )
             if isinstance(snapshot_attachments, list):
                 attachments.extend(snapshot_attachments)
         return attachments
@@ -812,12 +967,38 @@ class DiscordBridge(UpstreamDiscordBridge):
             if pending.kind == "choice":
                 selected = self.parse_choice_text(session_id, text)
                 if selected:
-                    await self._send_input_or_start_via_api(
-                        session_id=session_id,
-                        text=selected,
+                    ok = await self._respond_to_permission(
+                        session_id,
+                        pending.request_id,
+                        allow=True,
+                        message=selected,
                     )
-                    self.clear_pending_permission(session_id)
-                    await message.channel.send(f"✅ Selected: {selected}")
+                    if ok:
+                        self.clear_pending_permission(session_id)
+                        await message.channel.send(f"✅ Selected: {selected}")
+                    else:
+                        await message.channel.send(
+                            "❌ Failed. Request may have expired."
+                        )
+                    return
+
+            if pending.request_id.startswith(
+                "pi_extui:input:"
+            ) or pending.request_id.startswith("pi_extui:editor:"):
+                if text.strip():
+                    ok = await self._respond_to_permission(
+                        session_id,
+                        pending.request_id,
+                        allow=True,
+                        message=text.strip(),
+                    )
+                    if ok:
+                        self.clear_pending_permission(session_id)
+                        await message.channel.send("✅ Answer sent")
+                    else:
+                        await message.channel.send(
+                            "❌ Failed. Request may have expired."
+                        )
                     return
 
             parsed = self.parse_approval_text(text)
@@ -1073,6 +1254,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                 user=self._client.user,
                 reaction_shortcuts=self._reaction_new_session_enabled,
             )
+            await self._sync_dashboard_message()
 
         @self._client.event
         async def on_message(message: Any) -> None:
@@ -1101,6 +1283,7 @@ class DiscordBridge(UpstreamDiscordBridge):
     async def on_session_removed(self, session_id: str) -> None:
         await self._cancel_starter_refresh_task(session_id)
         self._starter_states.pop(session_id, None)
+        await self._sync_dashboard_message()
         await self._cancel_pending_error_attachment_task(session_id)
         await super().on_session_removed(session_id)
 
@@ -1197,6 +1380,99 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._restore_thread_mappings_from_store()
         return super()._session_for_thread(thread_id)
 
+    async def _dispatch_command(self, message: Any, text: str) -> None:
+        """Parse Discord commands handled by the local bridge."""
+
+        parts = text.split(None, 1)
+        cmd = parts[0].lower()
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd in {"!rename", "!name"}:
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._cmd_rename_thread(message, args)
+            return
+        if cmd == "!compact":
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._cmd_compact(message, args)
+            return
+
+        await super()._dispatch_command(message, text)
+
+    async def _cmd_help(self, message: Any) -> None:
+        """Handle !help."""
+
+        text = (
+            "Tether Commands:\n\n"
+            "!status - List all sessions\n"
+            "!list [page|search] - List external sessions (Claude Code, Codex)\n"
+            "!attach <number> [force] - Attach to an external session\n"
+            "!new [agent] [directory] - Start a new session\n"
+            "!new --clone <url> [-b branch] [-a adapter] [-m prompt] - Clone and start\n"
+            "!new --template <name> [-m prompt] - Start from template\n"
+            "!stop - Interrupt the session in this thread\n"
+            "!sync - Pull new messages from the attached external session\n"
+            "!usage - Show token usage and cost for this session\n"
+            "!compact [instructions] - Compact pi context for this session\n"
+            "!rename <name> - Rename this Discord thread\n"
+            "!setup <code> - Configure this channel as the control channel and pair you\n"
+            "!pair <code> - Pair your Discord user to authorize commands\n"
+            "!pair-status - Show whether you are authorized\n"
+            "!help - Show this help\n\n"
+            "Git Commands (inside a session thread):\n"
+            "!git - Show git status (branch, changes, last commit)\n"
+            "!pr <title> - Create a pull/merge request\n\n"
+            "Send a text message in a session thread to forward it as input."
+        )
+        await message.channel.send(text)
+
+    async def _cmd_compact(self, message: Any, args: str) -> None:
+        """Compact the runner context for the current session."""
+
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        session_id = self._session_for_thread(channel_id or 0)
+        if not session_id:
+            await message.channel.send("Use this command inside a session thread.")
+            return
+
+        try:
+            await compact_session(session_id, args or None)
+        except Exception as exc:
+            logger.exception("Failed to compact Discord session", session_id=session_id)
+            await message.channel.send(f"Failed to compact session: {exc}")
+            return
+
+        await message.channel.send("🧹 Compaction requested.")
+
+    async def _cmd_rename_thread(self, message: Any, args: str) -> None:
+        """Rename the Discord thread linked to the current session."""
+
+        if not args:
+            await message.channel.send("Usage: !rename <new thread name>")
+            return
+
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        session_id = self._session_for_thread(channel_id or 0)
+        if not session_id:
+            await message.channel.send("Use this command inside a session thread.")
+            return
+
+        try:
+            renamed = await self.rename_thread(session_id, args)
+        except Exception as exc:
+            logger.exception("Failed to rename Discord thread", session_id=session_id)
+            await message.channel.send(f"Failed to rename thread: {exc}")
+            return
+
+        safe_name = renamed.replace("`", "ʼ")
+        await message.channel.send(
+            f"✏️ Thread renamed to `{safe_name}`",
+            **self._starter_allowed_mentions(),
+        )
+
     async def create_thread(self, session_id: str, session_name: str) -> dict:
         if not self._client:
             raise RuntimeError("Discord client not initialized")
@@ -1275,6 +1551,7 @@ class DiscordBridge(UpstreamDiscordBridge):
             event="Thread renamed",
         )
         await self._sync_starter_message(session_id)
+        await self._sync_dashboard_message()
         return resolved_name
 
     def _persist_control_channel(self) -> None:
@@ -1535,6 +1812,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                 user_id=user_id,
             )
             await self._sync_starter_message(session_id)
+            await self._sync_dashboard_message()
 
             persist = True
             await self._send_input_or_start_via_api(
@@ -1608,6 +1886,7 @@ class DiscordBridge(UpstreamDiscordBridge):
                 thread_id=thread_id,
             )
             await self._sync_starter_message(session_id, force=True)
+            await self._sync_dashboard_message()
             self._ensure_starter_refresh_task(session_id)
             try:
                 await thread.send(

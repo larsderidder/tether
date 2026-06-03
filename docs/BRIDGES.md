@@ -52,14 +52,14 @@ Routes store events to bridge methods:
 ## Platform Implementations
 
 ### Telegram (`agent/tether/bridges/telegram/`)
-- **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/usage`, `/help`
+- **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/usage`, `/compact`, `/help`
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
 - Approval UI: inline keyboard with Allow, Deny, Allow {tool} (30m), Allow All (30m), Show All
 - Auto-approve sends `✅ <b>Tool</b> — auto-approved (reason)` notification
 
 ### Slack (`agent/tether/bridges/slack/`)
-- **bot.py** — Thread-based: `!attach`, `!list`, `!stop`, `!usage`, `!help`, `!status`
+- **bot.py** — Thread-based: `!attach`, `!list`, `!stop`, `!usage`, `!compact`, `!help`, `!status`
 - Git commands (inside a session thread): `!git`, `!commit <msg>`, `!push`, `!pr <title> [--draft]`
 - Socket mode for real-time events (requires `SLACK_APP_TOKEN`)
 - Text-based approval: reply `allow`, `deny`, `allow all`, `allow {tool}`
@@ -67,7 +67,7 @@ Routes store events to bridge methods:
 - Optional reaction shortcut: react with `✅` to a top-level control-channel message whose first line starts with `!new ...` and whose remaining body is the initial prompt
 
 ### Discord (`agent/tether/bridges/discord/`)
-- **bot.py** — Thread-based: same `!` commands as Slack
+- **bot.py** — Thread-based: same `!` commands as Slack, plus `!rename` / `!name`
 - Git commands (inside a session thread): `!git`, `!commit <msg>`, `!push`, `!pr <title> [--draft]`
 - discord.py client with message_content intent
 - Text-based approval: same as Slack
@@ -76,6 +76,15 @@ Routes store events to bridge methods:
 - Optional pairing/allowlist: when enabled, only authorized Discord user IDs can run commands or send input
 - Optional no-ID setup: if `DISCORD_CHANNEL_ID` is unset, run `!setup <code>` in the desired channel to configure it
 - Optional guild bootstrap: if `DISCORD_GUILD_ID` is set and `DISCORD_CHANNEL_ID` is unset, Tether will create or reuse a host-named control channel such as `🤖-kali14`
+
+## Bridge Session Commands
+
+| Command | Action |
+|---------|--------|
+| `!compact [instructions]` / `/compact [instructions]` | Request pi context compaction for the current session |
+| `!sync` | Pull new messages from an attached external session |
+| `!usage` / `/usage` | Show token usage and cost |
+| `!stop` / `/stop` | Interrupt the session |
 
 ## Bridge Git Commands
 
@@ -120,6 +129,8 @@ Stored in base class as in-memory dicts:
 | `TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED` | Enable the `!new` plus checkmark reaction shortcut in Slack and Discord (default `1`) |
 | `TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI` | Emoji or reaction name used for the new-session shortcut (default `✅`) |
 | `DISCORD_AUTO_PAIR_USER_IDS` | Comma-separated Discord user IDs to seed into the paired-user set at launch |
+| `TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS` | Max characters shown inline for Discord tool output before 📄 expansion (default: 800, range: 100-1800) |
+| `TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES` | Max lines shown inline for Discord tool output before 📄 expansion (default: 6, range: 1-50) |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 

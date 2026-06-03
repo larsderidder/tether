@@ -8,6 +8,7 @@ import pytest
 
 from agent_tether.base import BridgeCallbacks
 from tether.bridges.base import BridgeInterface
+from tether.models import SessionState
 from tether.store import SessionStore
 
 
@@ -137,10 +138,14 @@ class TestDiscordBridgePoC:
         bridge._client = mock_client
         bridge._thread_ids[session.id] = 9876543210
 
-        await bridge.on_output(session.id, "[bash] " + ("x" * 3000))
+        body = "\n".join(f"line {index}" for index in range(1, 13))
+        await bridge.on_output(session.id, f"[bash] {body}")
 
-        sent_text = mock_thread.send.await_args.args[0]
-        assert "React with 📄" in sent_text
+        sent_text = mock_thread.send.await_args_list[0].args[0]
+        assert "line 6" in sent_text
+        assert "line 7" not in sent_text
+        assert "truncated 6 lines" in sent_text
+        assert "React with 📄" not in sent_text
         sent_message.add_reaction.assert_awaited_once_with("📄")
 
         fake_discord = MagicMock()
@@ -160,7 +165,7 @@ class TestDiscordBridgePoC:
 
         expanded_call = mock_thread.send.await_args
         assert expanded_call.kwargs["file"]["filename"] == "bash.txt"
-        assert expanded_call.kwargs["file"]["content"] == ("x" * 3000).encode()
+        assert expanded_call.kwargs["file"]["content"] == body.encode()
 
     @pytest.mark.anyio
     async def test_on_output_restores_thread_id_from_persisted_session(
@@ -244,6 +249,36 @@ class TestDiscordBridgePoC:
         )
 
     @pytest.mark.anyio
+    async def test_on_output_streaming_does_not_repost_dashboard(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Streaming output updates the anchor message without moving the dashboard."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_thread = AsyncMock()
+        mock_thread.id = 9876543210
+        mock_client.get_channel.return_value = mock_thread
+        dashboard_message = AsyncMock()
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+        bridge._thread_ids[session.id] = 9876543210
+        bridge._dashboard_message = dashboard_message
+
+        await bridge.on_output(session.id, "Partial Discord output")
+
+        dashboard_message.delete.assert_not_awaited()
+
+    @pytest.mark.anyio
     async def test_on_output_final_updates_starter_status_bar(
         self, fresh_store: SessionStore
     ) -> None:
@@ -257,10 +292,12 @@ class TestDiscordBridgePoC:
         mock_channel.id = 1234567890
         mock_starter_message = AsyncMock()
         mock_starter_message.id = 111222333
+        mock_dashboard_message = AsyncMock()
+        mock_dashboard_message.id = 111222334
         mock_thread = AsyncMock()
         mock_thread.id = 9876543210
         mock_starter_message.create_thread.return_value = mock_thread
-        mock_channel.send.return_value = mock_starter_message
+        mock_channel.send.side_effect = [mock_starter_message, mock_dashboard_message]
         mock_client.get_channel.side_effect = lambda channel_id: {
             1234567890: mock_channel,
             9876543210: mock_thread,
@@ -366,7 +403,7 @@ class TestDiscordBridgePoC:
 
         await bridge.create_thread(session.id, "Test Session")
 
-        sent_text = mock_channel.send.await_args.args[0]
+        sent_text = mock_channel.send.await_args_list[0].args[0]
         assert "This starter message keeps the thread visible" not in sent_text
         assert "**Status bar:**" in sent_text
         assert "🤖 Control <#1234567890>" in sent_text
@@ -377,6 +414,93 @@ class TestDiscordBridgePoC:
         assert "🧵 Thread <#9876543210>" in edited_text
         assert "👥 Access open" in edited_text
         assert "Thread ready" in edited_text
+
+    @pytest.mark.anyio
+    async def test_create_thread_edits_dashboard_with_all_sessions(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Control channels keep a single edited dashboard message."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session_one = fresh_store.create_session("repo_one", "main")
+        session_two = fresh_store.create_session("repo_two", "main")
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        starter_one = AsyncMock()
+        starter_one.id = 111
+        dashboard_one = AsyncMock()
+        dashboard_one.id = 112
+        starter_two = AsyncMock()
+        starter_two.id = 222
+        thread_one = MagicMock()
+        thread_one.id = 9876543210
+        thread_two = MagicMock()
+        thread_two.id = 9876543211
+        starter_one.create_thread.return_value = thread_one
+        starter_two.create_thread.return_value = thread_two
+        mock_channel.send.side_effect = [
+            starter_one,
+            dashboard_one,
+            starter_two,
+        ]
+        mock_client.get_channel.return_value = mock_channel
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread(session_one.id, "First Session")
+        await bridge.create_thread(session_two.id, "Second Session")
+
+        dashboard_one.delete.assert_not_awaited()
+        dashboard_one.edit.assert_awaited_once()
+        assert bridge._dashboard_message is dashboard_one
+        dashboard_text = dashboard_one.edit.await_args.kwargs["content"]
+        assert "**Tether sessions" in dashboard_text
+        assert "First Session" in dashboard_text
+        assert "Second Session" in dashboard_text
+        assert "<#9876543210>" in dashboard_text
+        assert "<#9876543211>" in dashboard_text
+
+    @pytest.mark.anyio
+    async def test_dashboard_recovers_discord_sessions_from_store(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """The dashboard includes already attached Discord sessions after restart."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "discord"
+        session.platform_thread_id = "9876543210"
+        session.name = "Recovered Session"
+        session.state = SessionState.AWAITING_INPUT
+        fresh_store.update_session(session)
+
+        mock_client = MagicMock()
+        mock_channel = AsyncMock()
+        mock_channel.id = 1234567890
+        dashboard_message = AsyncMock()
+        dashboard_message.id = 111222333
+        mock_channel.send.return_value = dashboard_message
+        mock_client.get_channel.return_value = mock_channel
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+        )
+        bridge._client = mock_client
+
+        await bridge._sync_dashboard_message()
+
+        dashboard_text = mock_channel.send.await_args.args[0]
+        assert "Recovered Session" in dashboard_text
+        assert "<#9876543210>" in dashboard_text
+        assert "Recovered after restart" not in dashboard_text
+        assert bridge._thread_ids[session.id] == 9876543210
 
     @pytest.mark.anyio
     async def test_create_thread_starts_starter_refresh_task(
@@ -451,7 +575,7 @@ class TestDiscordBridgePoC:
         with patch.dict("sys.modules", {"discord": fake_discord}):
             await bridge.create_thread(session.id, "No Ping Session")
 
-        sent_kwargs = mock_channel.send.await_args.kwargs
+        sent_kwargs = mock_channel.send.await_args_list[0].kwargs
         edited_kwargs = mock_starter_message.edit.await_args.kwargs
         assert sent_kwargs["allowed_mentions"] == "NO_PINGS"
         assert edited_kwargs["allowed_mentions"] == "NO_PINGS"
@@ -486,8 +610,9 @@ class TestDiscordBridgePoC:
 
         result = await bridge.create_thread(session.id, "Fetched Channel Session")
 
-        mock_client.fetch_channel.assert_awaited_once_with(1234567890)
-        fetched_channel.send.assert_awaited_once()
+        assert mock_client.fetch_channel.await_count == 2
+        mock_client.fetch_channel.assert_any_await(1234567890)
+        assert fetched_channel.send.await_count == 2
         mock_starter_message.create_thread.assert_awaited_once()
         assert result["thread_id"] == "222333444"
         assert result["platform"] == "discord"
@@ -507,7 +632,10 @@ class TestDiscordBridgePoC:
         mock_thread.id = 222333444
         mock_starter_message.create_thread.return_value = mock_thread
         mock_channel.send.return_value = mock_starter_message
-        mock_client.get_channel.side_effect = [mock_channel, mock_thread]
+        mock_client.get_channel.side_effect = lambda channel_id: {
+            1234567890: mock_channel,
+            222333444: mock_thread,
+        }.get(channel_id)
 
         bridge = DiscordBridge(
             bot_token="discord_bot_token",
@@ -525,6 +653,56 @@ class TestDiscordBridgePoC:
         assert (
             bridge._thread_names["sess_1"] == "tether: rename thread after first input"
         )
+
+    @pytest.mark.anyio
+    async def test_rename_command_renames_current_discord_thread(
+        self, fresh_store: SessionStore, tmp_path
+    ) -> None:
+        """The !rename command renames the current Discord session thread."""
+        from agent_tether.base import BridgeConfig
+        from tether.bridges.discord.bot import DiscordBridge
+
+        mock_client = MagicMock()
+        control_channel = AsyncMock()
+        control_channel.id = 1234567890
+        starter_message = AsyncMock()
+        starter_message.id = 111
+        dashboard_message = AsyncMock()
+        dashboard_message.id = 112
+        next_dashboard_message = AsyncMock()
+        next_dashboard_message.id = 113
+        thread = AsyncMock()
+        thread.id = 222333444
+        starter_message.create_thread.return_value = thread
+        control_channel.send.side_effect = [
+            starter_message,
+            dashboard_message,
+            next_dashboard_message,
+        ]
+        mock_client.get_channel.side_effect = lambda channel_id: {
+            1234567890: control_channel,
+            222333444: thread,
+        }.get(channel_id)
+
+        bridge = DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            config=BridgeConfig(data_dir=str(tmp_path)),
+        )
+        bridge._client = mock_client
+
+        await bridge.create_thread("sess_1", "Repo")
+        thread.send.reset_mock()
+
+        message = MagicMock()
+        message.channel = thread
+        message.author.id = 123
+        await bridge._dispatch_command(message, "!rename Better Name")
+
+        thread.edit.assert_awaited_once_with(name="Better Name")
+        thread.send.assert_awaited_once()
+        assert "Better Name" in thread.send.await_args.args[0]
+        assert bridge._thread_names["sess_1"] == "Better Name"
 
     @pytest.mark.anyio
     async def test_auto_control_channel_reuses_existing_hostname_channel(
@@ -625,6 +803,7 @@ class TestDiscordBridgePoC:
         mock_guild.text_channels = [control_channel]
 
         mock_client = MagicMock()
+        mock_client.get_channel.return_value = control_channel
         mock_client.get_guild.return_value = mock_guild
         mock_client.guilds = [mock_guild]
 
@@ -639,7 +818,7 @@ class TestDiscordBridgePoC:
         result = await bridge.create_thread(session.id, "Test Session")
 
         assert bridge._channel_id == 1001
-        control_channel.send.assert_awaited_once()
+        assert control_channel.send.await_count == 2
         starter_message.create_thread.assert_awaited_once()
         assert result["thread_id"] == "2002"
 
@@ -813,10 +992,13 @@ class TestDiscordBridgePoC:
         )
 
         assert mock_thread.send.called
-        kwargs = mock_thread.send.call_args.kwargs
-        assert "files" in kwargs
+        file_calls = [
+            call for call in mock_thread.send.await_args_list if "files" in call.kwargs
+        ]
+        assert file_calls
+        kwargs = file_calls[0].kwargs
         assert kwargs["files"]
-        assert "Process crashed" in mock_thread.send.call_args.args[0]
+        assert "Process crashed" in file_calls[0].args[0]
 
     @pytest.mark.anyio
     async def test_error_status_falls_back_to_plain_status_when_disabled(
@@ -1230,7 +1412,9 @@ class TestDiscordBridgePoC:
         """Discord uses the filename when content type is absent."""
         from tether.bridges.discord.bot import DiscordBridge
 
-        monkeypatch.setattr("tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(
+            "tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path)
+        )
         session = fresh_store.create_session("repo_test", "main")
         callbacks = _mock_callbacks()
         bridge = DiscordBridge(
@@ -1271,7 +1455,9 @@ class TestDiscordBridgePoC:
         """Discord non-image attachments are saved and referenced in input text."""
         from tether.bridges.discord.bot import DiscordBridge
 
-        monkeypatch.setattr("tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(
+            "tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path)
+        )
         session = fresh_store.create_session("repo_test", "main")
         callbacks = _mock_callbacks()
         bridge = DiscordBridge(
@@ -1332,9 +1518,7 @@ class TestDiscordBridgePoC:
         mock_channel.id = 9876543210
         mock_message = MagicMock()
         mock_message.attachments = []
-        mock_message.messageSnapshots = [
-            {"message": {"attachments": [attachment]}}
-        ]
+        mock_message.messageSnapshots = [{"message": {"attachments": [attachment]}}]
         mock_message.reference = None
         mock_message.channel = mock_channel
         mock_message.author.name = "testuser"
