@@ -23,6 +23,7 @@ from tether.api.errors import raise_http_error
 from tether.api.runner_events import get_api_runner, get_runner_registry
 from tether.api.schemas import (
     AgentEventRequest,
+    CompactSessionRequest,
     CreateSessionRequest,
     DiffResponse,
     InputRequest,
@@ -88,7 +89,7 @@ def _short_repo_name(url: str | None) -> str:
     for sep in ("://", "@"):
         idx = name.find(sep)
         if idx != -1:
-            name = name[idx + len(sep):]
+            name = name[idx + len(sep) :]
             # Replace host:path separator (SSH style) with /
             name = name.replace(":", "/", 1)
             break
@@ -165,11 +166,22 @@ async def create_session(
             )
         normalized_directory = normalize_directory_path(payload.directory)
     # Default repo_id to "external" for external agents
-    if payload.agent_name and not payload.repo_id and not normalized_directory and not payload.clone_url:
+    if (
+        payload.agent_name
+        and not payload.repo_id
+        and not normalized_directory
+        and not payload.clone_url
+    ):
         resolved_repo_id = "external"
     else:
-        resolved_repo_id = payload.repo_id or normalized_directory or (
-            _short_repo_name(payload.clone_url) if payload.clone_url else "repo_local"
+        resolved_repo_id = (
+            payload.repo_id
+            or normalized_directory
+            or (
+                _short_repo_name(payload.clone_url)
+                if payload.clone_url
+                else "repo_local"
+            )
         )
     session = store.create_session(repo_id=resolved_repo_id, base_ref=payload.base_ref)
 
@@ -353,7 +365,9 @@ async def detach_session_platform(
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
         if not session.platform:
-            raise_http_error("INVALID_STATE", "Session is not bound to any platform", 409)
+            raise_http_error(
+                "INVALID_STATE", "Session is not bound to any platform", 409
+            )
 
         from tether.bridges.glue import bridge_subscriber
 
@@ -538,6 +552,12 @@ async def start_session(
                             f"OpenCode sidecar is not reachable: {exc}",
                             503,
                         )
+                    if (adapter or "").lower() == "pi_rpc":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            str(exc),
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
                         "Runner backend is not reachable. Check that the adapter is running and try again.",
@@ -691,6 +711,12 @@ async def send_input(
                             f"OpenCode sidecar is not reachable: {exc}",
                             503,
                         )
+                    if (adapter or "").lower() == "pi_rpc":
+                        raise_http_error(
+                            "AGENT_UNAVAILABLE",
+                            str(exc),
+                            503,
+                        )
                     raise_http_error(
                         "AGENT_UNAVAILABLE",
                         "Runner backend is not reachable. Check that the adapter is running and try again.",
@@ -708,6 +734,47 @@ async def send_input(
             store.update_session(session)
             logger.info("Session input forwarded")
             return SessionResponse.from_session(session, store)
+
+
+@router.post("/sessions/{session_id}/compact", response_model=OkResponse)
+async def compact_session(
+    session_id: str,
+    payload: CompactSessionRequest,
+    _: None = Depends(require_token),
+) -> OkResponse:
+    """Ask the active runner to compact its conversation context."""
+    with _session_logging_context(session_id):
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+            if session.state not in (SessionState.AWAITING_INPUT, SessionState.ERROR):
+                raise_http_error(
+                    "INVALID_STATE",
+                    "Session must be idle before compaction",
+                    409,
+                )
+            adapter = session.adapter
+
+        runner = get_api_runner(adapter)
+        compact = getattr(runner, "compact", None)
+        if not callable(compact):
+            raise_http_error(
+                "UNSUPPORTED_RUNNER",
+                "This runner does not support manual compaction",
+                400,
+            )
+
+        try:
+            await compact(session_id, payload.custom_instructions)
+        except RunnerUnavailableError as exc:
+            raise_http_error("AGENT_UNAVAILABLE", str(exc), 503)
+        except Exception as exc:
+            logger.exception("Runner failed while compacting", session_id=session_id)
+            raise_http_error("RUNNER_ERROR", f"Failed to compact session: {exc}", 500)
+
+        logger.info("Session compaction requested")
+        return OkResponse()
 
 
 @router.post("/sessions/{session_id}/interrupt", response_model=SessionResponse)

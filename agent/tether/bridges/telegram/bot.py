@@ -11,6 +11,7 @@ import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
 from tether.bridges.attachments import attachments_from_metadata
+from tether.bridges.compact_api import compact_session
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
     is_obvious_telegram_bot_loop,
@@ -66,15 +67,46 @@ class TelegramBridge(UpstreamTelegramBridge):
             return
 
         try:
-            from telegram.ext import MessageHandler, filters
+            from telegram.ext import CommandHandler, MessageHandler, filters
         except ImportError:
             return
 
+        self._app.add_handler(CommandHandler("compact", self._cmd_compact))
         self._app.add_handler(
             MessageHandler(
                 (filters.PHOTO | filters.ATTACHMENT) & filters.ChatType.SUPERGROUP,
                 self._handle_media_message,
             )
+        )
+
+    async def _cmd_compact(self, update: Any, context: Any) -> None:
+        """Handle /compact in a session topic."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+        topic_id = getattr(message, "message_thread_id", None)
+        if not topic_id:
+            await message.reply_text("Use this command inside a session topic.")
+            return
+        session_id = self._state.get_session_for_topic(topic_id)
+        if not session_id:
+            await message.reply_text("No session linked to this topic.")
+            return
+        custom_instructions = " ".join(getattr(context, "args", []) or []).strip()
+        try:
+            await compact_session(session_id, custom_instructions or None)
+            await message.reply_text("🧹 Compaction requested.")
+        except Exception as exc:
+            logger.exception(
+                "Failed to compact Telegram session", session_id=session_id
+            )
+            await message.reply_text(f"Failed to compact session: {exc}")
+
+    async def _cmd_help(self, update: Any, context: Any) -> None:
+        """Handle /help with local commands included."""
+        await super()._cmd_help(update, context)
+        await update.message.reply_text(
+            "Extra command: /compact [instructions] — Compact pi context for this session"
         )
 
     async def _collect_message_media(
@@ -96,7 +128,9 @@ class TelegramBridge(UpstreamTelegramBridge):
         video = getattr(message, "video", None)
         image_ref = photos[-1] if photos else document
         if image_ref is not None:
-            declared_mime_type = getattr(document, "mime_type", None) if document else "image/jpeg"
+            declared_mime_type = (
+                getattr(document, "mime_type", None) if document else "image/jpeg"
+            )
             if photos or str(declared_mime_type or "").lower().startswith("image/"):
                 filename = getattr(document, "file_name", None) if document else None
                 size = int(getattr(image_ref, "file_size", 0) or 0)
@@ -166,7 +200,9 @@ class TelegramBridge(UpstreamTelegramBridge):
     async def _collect_message_images(self, update: object) -> list[dict[str, str]]:
         """Download and validate supported Telegram image attachments."""
 
-        images, _ = await self._collect_message_media(update, "unknown", collect_files=False)
+        images, _ = await self._collect_message_media(
+            update, "unknown", collect_files=False
+        )
         return images
 
     async def _handle_media_message(self, update: object, context: object) -> None:

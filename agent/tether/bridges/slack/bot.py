@@ -12,6 +12,7 @@ from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.attachments import attachments_from_metadata
+from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.rich_output import render_slack_messages
 from tether.bridges.reaction_shortcuts import (
@@ -194,6 +195,41 @@ class SlackBridge(UpstreamSlackBridge):
             return parse_reaction_shortcut_message(text) is not None
         except ReactionShortcutError:
             return True
+
+    async def _dispatch_command(self, event: dict, text: str) -> None:
+        """Parse Slack commands handled by the local bridge."""
+        parts = text.split(None, 1)
+        cmd = parts[0].lower()
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if cmd == "!compact":
+            await self._cmd_compact(event, args)
+            return
+        await super()._dispatch_command(event, text)
+
+    async def _cmd_compact(self, event: dict, args: str) -> None:
+        """Compact the runner context for the current session."""
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
+            await self._reply(event, "Use this command inside a session thread.")
+            return
+        session_id = self._session_for_thread(thread_ts)
+        if not session_id:
+            await self._reply(event, "No session linked to this thread.")
+            return
+        try:
+            await compact_session(session_id, args or None)
+            await self._reply(event, "🧹 Compaction requested.")
+        except Exception as exc:
+            logger.exception("Failed to compact Slack session", session_id=session_id)
+            await self._reply(event, f"Failed to compact session: {exc}")
+
+    async def _cmd_help(self, event: dict) -> None:
+        """Handle !help with local commands included."""
+        await super()._cmd_help(event)
+        await self._reply(
+            event,
+            "Extra command: !compact [instructions] - Compact pi context for this session",
+        )
 
     async def _handle_message(self, event: dict) -> None:
         """Route incoming Slack messages to commands or session input."""

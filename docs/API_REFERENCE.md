@@ -76,6 +76,12 @@ Send user input to AWAITING_INPUT session.
 ### `POST /api/sessions/{id}/interrupt`
 Interrupt running session. Transitions RUNNING -> INTERRUPTING -> AWAITING_INPUT.
 
+### `POST /api/sessions/{id}/compact`
+Request runner context compaction for an idle session. Currently supported by `pi_rpc`.
+```json
+{"custom_instructions": "Focus on decisions and open tasks"}
+```
+
 ### `PATCH /api/sessions/{id}/rename`
 ```json
 {"name": "New name"}

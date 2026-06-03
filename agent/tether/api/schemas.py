@@ -79,6 +79,12 @@ class InputRequest(BaseModel):
     images: list[ImageInput] = Field(default_factory=list)
 
 
+class CompactSessionRequest(BaseModel):
+    """Request body for compacting a session."""
+
+    custom_instructions: str | None = Field(default=None, max_length=4000)
+
+
 class PermissionResponseRequest(BaseModel):
     """Request body for responding to a permission request."""
 
@@ -170,7 +176,8 @@ class SessionResponse(BaseModel):
             directory=session.directory,
             directory_has_git=session.directory_has_git,
             message_count=store.get_message_count(session.id),
-            has_pending_permission=len(store.get_all_pending_permissions(session.id)) > 0,
+            has_pending_permission=len(store.get_all_pending_permissions(session.id))
+            > 0,
             approval_mode=session.approval_mode,
             adapter=session.adapter,
             external_agent_name=session.external_agent_name,
