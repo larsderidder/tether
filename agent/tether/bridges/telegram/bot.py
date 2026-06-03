@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+import html
 from typing import Any
 
 import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
 from tether.bridges.attachments import attachments_from_metadata
+from tether.bridges.base import _EXTERNAL_MAX_FETCH, _EXTERNAL_PAGE_SIZE, _relative_time
 from tether.bridges.compact_api import compact_session
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
@@ -78,6 +80,170 @@ class TelegramBridge(UpstreamTelegramBridge):
                 self._handle_media_message,
             )
         )
+
+    @staticmethod
+    def _clip_mono(text: str, width: int) -> str:
+        """Clip text for a fixed-width Telegram listing."""
+        text = " ".join(str(text or "").split())
+        if len(text) <= width:
+            return text
+        return text[: max(1, width - 1)].rstrip() + "…"
+
+    def _format_external_page_html(self, page: int) -> tuple[str, int, int]:
+        """Format external sessions for Telegram with aligned monospace rows."""
+        sessions = self._external_view or []
+        if not sessions:
+            if self._external_query:
+                query = html.escape(self._external_query)
+                return (
+                    f"No external sessions match directory search: <code>{query}</code>\n\n"
+                    "Try a different query, or run /list to clear the search.",
+                    1,
+                    1,
+                )
+            return (
+                "No external sessions found.\n\n"
+                "Start a Claude Code or Codex session first, then use /list to see it.",
+                1,
+                1,
+            )
+
+        total = len(sessions)
+        total_pages = max(1, (total + _EXTERNAL_PAGE_SIZE - 1) // _EXTERNAL_PAGE_SIZE)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * _EXTERNAL_PAGE_SIZE
+        end = min(start + _EXTERNAL_PAGE_SIZE, total)
+
+        title = f"External Sessions (page {page}/{total_pages})"
+        if self._external_query:
+            title += f" [search: {self._external_query}]"
+
+        rows: list[str] = []
+        for idx in range(start, end):
+            session = sessions[idx]
+            number = idx + 1
+            directory = str(session.get("directory") or "")
+            dir_short = directory.rsplit("/", 1)[-1] if directory else "?"
+            runner = str(session.get("runner_type") or "?")
+            age = _relative_time(str(session.get("last_activity") or ""))
+            prompt = str(
+                session.get("last_prompt") or session.get("first_prompt") or ""
+            )
+            header = f"{number:>2}. {self._clip_mono(dir_short, 28):<28} ({runner})"
+            if age:
+                header += f" • {age}"
+            rows.append(header.rstrip())
+            if prompt:
+                rows.append(f"    ↳ {self._clip_mono(prompt, 58)}")
+
+        lines = [
+            html.escape(title) + ":",
+            "<pre>" + html.escape("\n".join(rows)) + "</pre>",
+        ]
+        if (
+            not self._external_query
+            and len(self._cached_external) == _EXTERNAL_MAX_FETCH
+        ):
+            lines.append(f"Showing up to {_EXTERNAL_MAX_FETCH} sessions (API limit).")
+        lines.append("/attach &lt;number&gt; to attach.")
+        return "\n\n".join(lines), page, total_pages
+
+    async def _cmd_list(self, update: Any, context: Any) -> None:
+        """Handle /list with Telegram-friendly aligned formatting."""
+        page = 1
+        query: str | None = None
+        args = getattr(context, "args", None) or []
+        user_id = getattr(getattr(update, "effective_user", None), "id", None)
+        if args:
+            first = args[0]
+            try:
+                page = int(first)
+                query = self._external_query
+            except Exception:
+                query = " ".join(args).strip()
+                page = 1
+
+        try:
+            await self._refresh_external_cache()
+            if not args:
+                self._set_external_view(None)
+            else:
+                self._set_external_view(query)
+        except Exception:
+            logger.exception("Failed to fetch external sessions")
+            await update.message.reply_text("Failed to list external sessions.")
+            return
+
+        if user_id is not None:
+            self._external_view_by_user[int(user_id)] = list(self._external_view)
+
+        text, page, total_pages = self._format_external_page_html(page)
+        reply_markup = self._external_pagination_markup(page, total_pages)
+        await update.message.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+
+    async def _handle_list_callback_query(self, update: Any, context: Any) -> None:
+        """Handle Telegram pagination with aligned HTML formatting."""
+        query = update.callback_query
+        if not query or not getattr(query, "data", None):
+            return
+
+        data = query.data
+        await query.answer()
+
+        if data == "list:refresh":
+            try:
+                await self._refresh_external_cache()
+            except Exception:
+                logger.exception("Failed to refresh external sessions")
+                with contextlib.suppress(Exception):
+                    await query.edit_message_text(
+                        "Failed to refresh external sessions."
+                    )
+                return
+            self._set_external_view(self._external_query)
+            page = 1
+        else:
+            try:
+                _, kind, value = data.split(":", 2)
+                if kind != "page":
+                    return
+                page = int(value)
+            except Exception:
+                return
+
+        if not self._cached_external:
+            try:
+                await self._refresh_external_cache()
+            except Exception:
+                logger.exception("Failed to fetch external sessions for pagination")
+                with contextlib.suppress(Exception):
+                    await query.edit_message_text(
+                        "Failed to list external sessions. Run /list again."
+                    )
+                return
+            self._set_external_view(self._external_query)
+
+        text, page, total_pages = self._format_external_page_html(page)
+        reply_markup = self._external_pagination_markup(page, total_pages)
+        try:
+            await query.edit_message_text(
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+        except Exception:
+            try:
+                await query.message.reply_text(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                logger.exception("Failed to send external pagination message")
 
     async def _cmd_compact(self, update: Any, context: Any) -> None:
         """Handle /compact in a session topic."""
