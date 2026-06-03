@@ -76,6 +76,15 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 | `TETHER_OPENCODE_SIDECAR_TOKEN` | Sidecar auth token |
 | `TETHER_OPENCODE_SIDECAR_MANAGED` | Auto-start/stop sidecar from Tether (default: 1) |
 | `TETHER_OPENCODE_SIDECAR_CMD` | Command for managed sidecar (default: `opencode serve`) |
+| `TETHER_PI_RESUME_MAX_SESSION_FILE_BYTES` | Max pi session file size Tether will resume (default: 157286400, range: 10MB-1GB) |
+| `TETHER_PI_TOOL_OUTPUT_MAX_CHARS` | Max characters kept from pi tool output in Tether events (default: 1200, range: 200-20000) |
+| `TETHER_PI_TOOL_OUTPUT_MAX_LINES` | Max lines kept from pi tool output in Tether events (default: 80, range: 5-1000) |
+
+## Pi RPC Compaction
+
+The `pi_rpc` adapter can request manual pi compaction through `POST /api/sessions/{id}/compact`. Tether sends the RPC `compact` command to pi and renders `compaction_start` / `compaction_end` status events to bridges. The bridge command is `!compact [instructions]` on Slack and Discord, `/compact [instructions]` on Telegram.
+
+Compaction is lossy for active model context but does not shrink pi's JSONL history file. Large session files may still be too big to resume with a provider even after compaction.
 
 ## Key Files
 

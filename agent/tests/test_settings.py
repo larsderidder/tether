@@ -80,6 +80,42 @@ class TestIntSettings:
         clean_env.setenv("TETHER_AGENT_CLAUDE_MAX_TOKENS", "8192")
         assert Settings.claude_max_tokens() == 8192
 
+    def test_tool_output_limits_defaults(self, clean_env) -> None:
+        """Tool output truncation defaults are conservative."""
+        assert Settings.pi_resume_max_session_file_bytes() == 150 * 1024 * 1024
+        assert Settings.pi_tool_output_max_chars() == 1200
+        assert Settings.pi_tool_output_max_lines() == 80
+        assert Settings.discord_tool_output_inline_chars() == 800
+        assert Settings.discord_tool_output_inline_lines() == 6
+
+    def test_tool_output_limits_can_be_configured(self, clean_env) -> None:
+        """Tool output truncation limits can be configured."""
+        clean_env.setenv("TETHER_PI_RESUME_MAX_SESSION_FILE_BYTES", "209715200")
+        clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_CHARS", "2400")
+        clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "120")
+        clean_env.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS", "900")
+        clean_env.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES", "8")
+
+        assert Settings.pi_resume_max_session_file_bytes() == 209715200
+        assert Settings.pi_tool_output_max_chars() == 2400
+        assert Settings.pi_tool_output_max_lines() == 120
+        assert Settings.discord_tool_output_inline_chars() == 900
+        assert Settings.discord_tool_output_inline_lines() == 8
+
+    def test_tool_output_limits_are_bounded(self, clean_env) -> None:
+        """Tool output truncation limits are clamped to safe ranges."""
+        clean_env.setenv("TETHER_PI_RESUME_MAX_SESSION_FILE_BYTES", "1")
+        clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_CHARS", "1")
+        clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "1")
+        clean_env.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS", "999999")
+        clean_env.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES", "999999")
+
+        assert Settings.pi_resume_max_session_file_bytes() == 10 * 1024 * 1024
+        assert Settings.pi_tool_output_max_chars() == 200
+        assert Settings.pi_tool_output_max_lines() == 5
+        assert Settings.discord_tool_output_inline_chars() == 1800
+        assert Settings.discord_tool_output_inline_lines() == 50
+
 
 class TestStringSettings:
     """Test string environment variable parsing."""

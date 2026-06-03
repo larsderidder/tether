@@ -8,12 +8,14 @@ import re
 from typing import Any
 
 from tether.bridges.telegram.formatting import markdown_to_telegram_html
+from tether.settings import settings
 
 _RESERVED_MARKERS = {"tool", "thinking", "result", "error", "assistant"}
 _DISCORD_LIMIT = 2000
 _SLACK_LIMIT = 40000
 _TELEGRAM_LIMIT = 4096
-_TOOL_OUTPUT_INLINE_LIMIT = 1200
+_DISCORD_TOOL_OUTPUT_INLINE_LINES = 6
+_DISCORD_TOOL_OUTPUT_INLINE_CHARS = 800
 _TOOL_EXPAND_REACTION = "📄"
 
 
@@ -265,14 +267,18 @@ def _is_table_start(lines: list[str], index: int) -> bool:
 
 def _is_table_row(line: str) -> bool:
     stripped = line.strip()
-    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+    return (
+        stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+    )
 
 
 def _is_table_separator(line: str) -> bool:
     if not _is_table_row(line):
         return False
     cells = _split_table_row(line)
-    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+    return bool(cells) and all(
+        re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells
+    )
 
 
 def _split_table_row(line: str) -> list[str]:
@@ -291,10 +297,16 @@ def _render_markdown_table(table_lines: list[str]) -> str | None:
     if any(len(row) != column_count for row in body):
         return None
     clean_rows = [[_clean_table_cell(cell) for cell in row] for row in [headers, *body]]
-    widths = [max(len(row[column]) for row in clean_rows) for column in range(column_count)]
+    widths = [
+        max(len(row[column]) for row in clean_rows) for column in range(column_count)
+    ]
     rendered_lines = []
     for row in clean_rows:
-        rendered_lines.append("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)).rstrip())
+        rendered_lines.append(
+            "  ".join(
+                cell.ljust(widths[index]) for index, cell in enumerate(row)
+            ).rstrip()
+        )
     return "```text\n" + "\n".join(rendered_lines) + "\n```"
 
 
@@ -356,7 +368,9 @@ def render_markdown_messages(
         if segment.kind == "assistant":
             messages.extend(
                 RenderedBridgeMessage(chunk)
-                for chunk in _chunk_plain(_normalize_plain_markdown(segment.text), limit)
+                for chunk in _chunk_plain(
+                    _normalize_plain_markdown(segment.text), limit
+                )
             )
         elif segment.kind == "thinking":
             body = _clean_thinking_markers(segment.text).strip() or "Thinking"
@@ -428,6 +442,29 @@ def render_markdown_messages(
     return [message for message in messages if message.text.strip()]
 
 
+def _truncate_discord_tool_body(body: str) -> tuple[str, str]:
+    """Return a Discord tool preview and footer when output is too large."""
+
+    lines = body.splitlines()
+    line_limit = settings.discord_tool_output_inline_lines()
+    char_limit = settings.discord_tool_output_inline_chars()
+    line_truncated = len(lines) > line_limit
+    preview_lines = lines[:line_limit] if line_truncated else lines
+    preview = "\n".join(preview_lines) if lines else body
+    char_truncated = len(preview) > char_limit
+    if char_truncated:
+        preview = preview[:char_limit].rstrip()
+
+    notes = []
+    if line_truncated:
+        notes.append(f"{len(lines) - line_limit:,} lines")
+    if char_truncated:
+        notes.append("chars")
+    if not notes:
+        return body, ""
+    return preview.rstrip(), f"\n… truncated {' and '.join(notes)}."
+
+
 def _render_tool_segment(
     segment: OutputSegment,
     *,
@@ -441,23 +478,19 @@ def _render_tool_segment(
     label_text = label if label is not None else f" `{segment.label or 'tool'}`"
     header = f"{icon} {bold}{title}{bold}{label_text}\n"
     body = segment.text or " "
-    if truncate and len(body) > _TOOL_OUTPUT_INLINE_LIMIT:
-        omitted = len(body) - _TOOL_OUTPUT_INLINE_LIMIT
-        footer = (
-            f"\n… truncated {omitted:,} chars. "
-            f"React with {_TOOL_EXPAND_REACTION} for the full output."
-        )
-        preview = body[:_TOOL_OUTPUT_INLINE_LIMIT].rstrip()
-        available = max(1, limit - len(header) - len(footer))
-        preview = preview[:available].rstrip()
-        chunk = _chunk_code_block(preview or " ", limit - len(header) - len(footer))[0]
-        return [
-            RenderedBridgeMessage(
-                text=header + chunk + footer,
-                expansion_text=body,
-                expansion_filename=f"{_safe_expansion_name(segment.label or title)}.txt",
-            )
-        ]
+    if truncate:
+        preview, footer = _truncate_discord_tool_body(body)
+        if footer:
+            chunk = _chunk_code_block(
+                preview or " ", limit - len(header) - len(footer)
+            )[0]
+            return [
+                RenderedBridgeMessage(
+                    text=header + chunk + footer,
+                    expansion_text=body,
+                    expansion_filename=f"{_safe_expansion_name(segment.label or title)}.txt",
+                )
+            ]
 
     body_chunks = _chunk_code_block(body, limit - len(header))
     return [RenderedBridgeMessage(header + chunk) for chunk in body_chunks]
@@ -523,7 +556,9 @@ def render_telegram_messages(
             )
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "thinking":
-            body = html.escape(_clean_thinking_markers(segment.text).strip() or "Thinking")
+            body = html.escape(
+                _clean_thinking_markers(segment.text).strip() or "Thinking"
+            )
             rendered = f"💭 <b>Thinking</b>\n<i>{body}</i>"
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "tool_call":

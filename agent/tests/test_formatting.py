@@ -212,10 +212,7 @@ class TestRichOutputFormatting:
 
     def test_parse_output_segments_classifies_tool_blocks(self) -> None:
         segments = parse_output_segments(
-            "[tool: bash]\n"
-            "[bash] pwd\n"
-            "/tmp/demo\n"
-            "[result] ok"
+            "[tool: bash]\n" "[bash] pwd\n" "/tmp/demo\n" "[result] ok"
         )
 
         assert [segment.kind for segment in segments] == [
@@ -239,14 +236,56 @@ class TestRichOutputFormatting:
         assert messages[1].startswith("📥 **Tool output** `bash`\n```text\n")
         assert "/tmp/demo" in messages[1]
 
-    def test_render_discord_message_objects_truncates_large_tool_output(self) -> None:
-        messages = render_discord_message_objects("[bash] " + ("x" * 3000))
+    def test_render_discord_message_objects_truncates_tool_output_by_lines(
+        self,
+    ) -> None:
+        body = "\n".join(f"line {index}" for index in range(1, 13))
+        messages = render_discord_message_objects(f"[bash] {body}")
 
         assert len(messages) == 1
-        assert "React with 📄" in messages[0].text
+        assert "line 6" in messages[0].text
+        assert "line 7" not in messages[0].text
+        assert "truncated 6 lines" in messages[0].text
+        assert "React with 📄" not in messages[0].text
         assert len(messages[0].text) < 2000
-        assert messages[0].expansion_text == "x" * 3000
+        assert messages[0].expansion_text == body
         assert messages[0].expansion_filename == "bash.txt"
+
+    def test_render_discord_message_objects_truncates_long_single_line(
+        self,
+    ) -> None:
+        body = "x" * 3000
+        messages = render_discord_message_objects("[bash] " + body)
+
+        assert len(messages) == 1
+        assert "truncated chars" in messages[0].text
+        assert "React with 📄" not in messages[0].text
+        assert messages[0].expansion_text == body
+
+    def test_render_discord_message_objects_uses_configured_tool_limits(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES", "3")
+        monkeypatch.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS", "100")
+        body = "\n".join(f"line {index}" for index in range(1, 8))
+
+        messages = render_discord_message_objects(f"[bash] {body}")
+
+        assert "line 3" in messages[0].text
+        assert "line 4" not in messages[0].text
+        assert "truncated 4 lines" in messages[0].text
+        assert messages[0].expansion_text == body
+
+    def test_render_discord_message_objects_truncates_by_lines_and_chars(
+        self,
+    ) -> None:
+        body = "\n".join(["x" * 2000, *[f"line {index}" for index in range(2, 13)]])
+        messages = render_discord_message_objects(f"[bash] {body}")
+
+        assert len(messages) == 1
+        assert "line 7" not in messages[0].text
+        assert "truncated 6 lines and chars" in messages[0].text
+        assert messages[0].expansion_text == body
 
     def test_render_discord_messages_prefers_structured_segments(self) -> None:
         messages = render_discord_messages(
@@ -285,9 +324,7 @@ class TestRichOutputFormatting:
     def test_render_telegram_messages_formats_tool_output_as_pre(self) -> None:
         messages = render_telegram_messages("[error] invalid_grant")
 
-        assert messages == [
-            "⚠️ <b>Tool error</b>\n<pre>invalid_grant</pre>"
-        ]
+        assert messages == ["⚠️ <b>Tool error</b>\n<pre>invalid_grant</pre>"]
 
     def test_render_discord_messages_splits_explicit_assistant_marker(self) -> None:
         messages = render_discord_messages(

@@ -40,6 +40,16 @@ def _get_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _get_bounded_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    """Get an integer environment variable clamped to a safe range."""
+    value = _get_int(name, default)
+    if value < minimum:
+        return minimum
+    if value > maximum:
+        return maximum
+    return value
+
+
 def _get_int_set(name: str) -> set[int]:
     """Parse a comma-separated list of integer IDs."""
     raw = os.environ.get(name, "").strip()
@@ -62,6 +72,75 @@ class Settings:
 
     Environment variables use the TETHER_AGENT_ prefix.
     """
+
+    # -------------------------------------------------------------------------
+    # Tool Output Settings
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def pi_resume_max_session_file_bytes() -> int:
+        """Maximum pi session file size Tether will try to resume.
+
+        Env: TETHER_PI_RESUME_MAX_SESSION_FILE_BYTES (default: 150 MB)
+        """
+        return _get_bounded_int(
+            "TETHER_PI_RESUME_MAX_SESSION_FILE_BYTES",
+            150 * 1024 * 1024,
+            minimum=10 * 1024 * 1024,
+            maximum=1024 * 1024 * 1024,
+        )
+
+    @staticmethod
+    def pi_tool_output_max_chars() -> int:
+        """Maximum characters kept from pi tool output in Tether events.
+
+        Env: TETHER_PI_TOOL_OUTPUT_MAX_CHARS (default: 1200)
+        """
+        return _get_bounded_int(
+            "TETHER_PI_TOOL_OUTPUT_MAX_CHARS",
+            1200,
+            minimum=200,
+            maximum=20000,
+        )
+
+    @staticmethod
+    def pi_tool_output_max_lines() -> int:
+        """Maximum lines kept from pi tool output in Tether events.
+
+        Env: TETHER_PI_TOOL_OUTPUT_MAX_LINES (default: 80)
+        """
+        return _get_bounded_int(
+            "TETHER_PI_TOOL_OUTPUT_MAX_LINES",
+            80,
+            minimum=5,
+            maximum=1000,
+        )
+
+    @staticmethod
+    def discord_tool_output_inline_chars() -> int:
+        """Maximum characters shown inline for Discord tool output.
+
+        Env: TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS (default: 800)
+        """
+        return _get_bounded_int(
+            "TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS",
+            800,
+            minimum=100,
+            maximum=1800,
+        )
+
+    @staticmethod
+    def discord_tool_output_inline_lines() -> int:
+        """Maximum lines shown inline for Discord tool output.
+
+        Env: TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES (default: 6)
+        """
+        return _get_bounded_int(
+            "TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES",
+            6,
+            minimum=1,
+            maximum=50,
+        )
 
     # -------------------------------------------------------------------------
     # Core Agent Settings
