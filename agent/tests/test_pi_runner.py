@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
 import pytest
 
+from tether.models import SessionState
+from tether.runner.base import RunnerUnavailableError
 from tether.runner.pi_rpc import (
     PiRpcRunner,
+    _PI_RPC_STREAM_LIMIT_BYTES,
     _TOOL_OUTPUT_MAX_CHARS,
+    _TOOL_OUTPUT_MAX_LINES,
     _find_pi_binary,
 )
 
@@ -149,6 +154,83 @@ async def test_send_prompt_includes_images() -> None:
         "message": "describe this",
         "images": images,
     }
+
+
+@pytest.mark.anyio
+async def test_spawn_uses_large_stream_limit(monkeypatch) -> None:
+    """Pi RPC stdout can carry large JSON lines without reader overrun."""
+
+    runner = PiRpcRunner(FakeRunnerEvents())
+    runner._pi_binary = "/bin/echo"
+    proc = MagicMock()
+    proc.stdin = FakeStdin()
+    proc.stdout = MagicMock()
+    proc.stderr = MagicMock()
+    proc.returncode = None
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.update(kwargs)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    await runner._spawn("sess1", "/tmp", None)
+
+    assert captured["limit"] == _PI_RPC_STREAM_LIMIT_BYTES
+    assert captured["limit"] >= 100 * 1024 * 1024
+    runner._cleanup("sess1")
+
+
+@pytest.mark.anyio
+async def test_spawn_fresh_session_is_persistent(monkeypatch) -> None:
+    """Fresh pi RPC sessions should persist so they survive Tether restarts."""
+
+    runner = PiRpcRunner(FakeRunnerEvents())
+    runner._pi_binary = "/bin/echo"
+    proc = MagicMock()
+    proc.stdin = FakeStdin()
+    proc.stdout = MagicMock()
+    proc.stderr = MagicMock()
+    proc.returncode = None
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    await runner._spawn("sess1", "/tmp", None)
+
+    assert "--no-session" not in captured["args"]
+    assert captured["args"] == ("/bin/echo", "--mode", "rpc")
+    runner._cleanup("sess1")
+
+
+@pytest.mark.anyio
+async def test_resolve_session_file_blocks_huge_pi_history(
+    tmp_path, monkeypatch, fresh_store
+) -> None:
+    """Huge pi session histories are not silently replaced with fresh context."""
+
+    monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+    monkeypatch.setenv("TETHER_PI_RESUME_MAX_SESSION_FILE_BYTES", "10485760")
+    runner = PiRpcRunner(FakeRunnerEvents())
+    session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_bytes(b"x" * (10 * 1024 * 1024 + 1))
+    fresh_store.set_runner_session_id(session.id, "pi-session-id")
+    monkeypatch.setattr(
+        "tether.runner.pi_rpc._find_session_file", lambda runner_sid: session_file
+    )
+
+    with pytest.raises(RunnerUnavailableError) as exc_info:
+        await runner._resolve_session_file(session.id)
+
+    assert "too large to resume" in str(exc_info.value)
+    assert fresh_store.get_runner_session_id(session.id) == "pi-session-id"
+    assert runner._session_files[session.id] == str(session_file)
 
 
 class TestPiRpcEventHandling:
@@ -319,8 +401,76 @@ class TestPiRpcEventHandling:
 
         assert len(events.outputs) == 1
         assert "[read]" in events.outputs[0]["text"]
-        assert "[truncated, 250 more characters omitted]" in events.outputs[0]["text"]
+        assert "[truncated, additional characters omitted]" in events.outputs[0]["text"]
         assert len(events.outputs[0]["text"]) < len(text)
+
+    @pytest.mark.anyio
+    async def test_auto_retry_failure_after_final_is_status_only(
+        self, runner_and_events, monkeypatch
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        session = MagicMock()
+        session.state = SessionState.AWAITING_INPUT
+        monkeypatch.setattr(
+            "tether.runner.pi_rpc.store.get_session", lambda session_id: session
+        )
+
+        runner._is_streaming["sess1"] = True
+        runner._streamed_text["sess1"] = True
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "auto_retry_end",
+                "success": False,
+                "finalError": "Codex SSE response headers timed out after 10000ms",
+            },
+        )
+
+        assert "sess1" not in runner._is_streaming
+        assert "sess1" not in runner._streamed_text
+        assert events.errors == []
+        assert events.outputs[0]["text"] == (
+            "[notify] Retry failed: Codex SSE response headers timed out after 10000ms\n"
+        )
+        assert events.outputs[0]["bridge_segments"] == [
+            {
+                "kind": "status",
+                "text": "Retry failed: Codex SSE response headers timed out after 10000ms",
+            }
+        ]
+
+    @pytest.mark.anyio
+    async def test_auto_retry_failure_before_final_marks_error(
+        self, runner_and_events, monkeypatch
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        session = MagicMock()
+        session.state = SessionState.RUNNING
+        monkeypatch.setattr(
+            "tether.runner.pi_rpc.store.get_session", lambda session_id: session
+        )
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "auto_retry_end",
+                "success": False,
+                "finalError": "Codex SSE response headers timed out after 10000ms",
+            },
+        )
+
+        assert events.errors == [
+            {
+                "session_id": "sess1",
+                "code": "PI_RETRY_FAILED",
+                "message": "Retry failed: Codex SSE response headers timed out after 10000ms",
+            }
+        ]
 
     @pytest.mark.anyio
     async def test_handle_tool_execution_end_truncates_large_output(
@@ -344,8 +494,58 @@ class TestPiRpcEventHandling:
 
         assert len(events.outputs) == 1
         assert "[result]" in events.outputs[0]["text"]
-        assert "[truncated, 125 more characters omitted]" in events.outputs[0]["text"]
+        assert "[truncated, additional characters omitted]" in events.outputs[0]["text"]
         assert len(events.outputs[0]["text"]) < len(text)
+
+    @pytest.mark.anyio
+    async def test_handle_tool_execution_end_uses_configured_truncation(
+        self, runner_and_events, monkeypatch
+    ):
+        monkeypatch.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "5")
+        monkeypatch.setenv("TETHER_PI_TOOL_OUTPUT_MAX_CHARS", "200")
+        runner, events = runner_and_events
+        proc = MagicMock()
+        text = "\n".join(f"line {index}" for index in range(10))
+
+        event = {
+            "type": "tool_execution_end",
+            "toolCallId": "call_configured",
+            "toolName": "bash",
+            "result": {
+                "content": [{"type": "text", "text": text}],
+                "details": {},
+            },
+            "isError": False,
+        }
+        await runner._handle_event("sess1", proc, event)
+
+        assert "line 4" in events.outputs[0]["text"]
+        assert "line 5" not in events.outputs[0]["text"]
+        assert "[truncated, 5 more lines omitted]" in events.outputs[0]["text"]
+
+    @pytest.mark.anyio
+    async def test_handle_tool_execution_end_truncates_by_lines(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = MagicMock()
+        text = "\n".join(f"line {index}" for index in range(_TOOL_OUTPUT_MAX_LINES + 3))
+
+        event = {
+            "type": "tool_execution_end",
+            "toolCallId": "call_lines",
+            "toolName": "bash",
+            "result": {
+                "content": [{"type": "text", "text": text}],
+                "details": {},
+            },
+            "isError": False,
+        }
+        await runner._handle_event("sess1", proc, event)
+
+        assert f"line {_TOOL_OUTPUT_MAX_LINES - 1}" in events.outputs[0]["text"]
+        assert f"line {_TOOL_OUTPUT_MAX_LINES}" not in events.outputs[0]["text"]
+        assert "[truncated, 3 more lines omitted]" in events.outputs[0]["text"]
 
     @pytest.mark.anyio
     async def test_handle_agent_start_end(self, runner_and_events):
@@ -404,7 +604,10 @@ class TestPiRpcEventHandling:
                     {
                         "role": "assistant",
                         "content": [
-                            {"type": "text", "text": "- 350 output cards\n- Clean final text"}
+                            {
+                                "type": "text",
+                                "text": "- 350 output cards\n- Clean final text",
+                            }
                         ],
                     }
                 ],
@@ -482,6 +685,111 @@ class TestPiRpcEventHandling:
             },
         )
         assert any("150000" in o["text"] for o in events.outputs)
+
+    @pytest.mark.anyio
+    async def test_handle_documented_compaction_events(self, runner_and_events):
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event("sess1", proc, {"type": "compaction_start"})
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {"type": "compaction_end", "result": {"tokensBefore": 42}},
+        )
+
+        assert any("compacting" in o["text"] for o in events.outputs)
+        assert any("42" in o["text"] for o in events.outputs)
+
+    @pytest.mark.anyio
+    async def test_compact_writes_rpc_command(self, runner_and_events):
+        runner, _events = runner_and_events
+        proc = FakeProcess()
+        runner._processes["sess1"] = proc
+
+        await runner.compact("sess1", "focus on decisions")
+
+        payload = json.loads(proc.stdin.writes[0].decode())
+        assert payload == {
+            "type": "compact",
+            "customInstructions": "focus on decisions",
+        }
+
+    @pytest.mark.anyio
+    async def test_handle_confirm_extension_round_trips_response(
+        self, runner_and_events
+    ):
+        runner, events = runner_and_events
+        proc = FakeProcess()
+        runner._processes["sess1"] = proc
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "extension_ui_request",
+                "id": "uuid-1",
+                "method": "confirm",
+                "title": "Remember this?",
+                "message": "Save this memory?",
+            },
+        )
+
+        assert events.permissions[0]["request_id"] == "pi_extui:confirm:uuid-1"
+        assert events.permissions[0]["tool_name"] == "AskUserQuestion"
+
+        from tether.store import store
+
+        assert store.resolve_pending_permission(
+            "sess1",
+            "pi_extui:confirm:uuid-1",
+            {"behavior": "allow", "updated_input": {"value": "Yes"}},
+        )
+        await asyncio.sleep(0.05)
+
+        payload = json.loads(proc.stdin.writes[0].decode())
+        assert payload == {
+            "type": "extension_ui_response",
+            "id": "uuid-1",
+            "confirmed": True,
+        }
+
+    @pytest.mark.anyio
+    async def test_handle_input_extension_round_trips_value(self, runner_and_events):
+        runner, events = runner_and_events
+        proc = FakeProcess()
+        runner._processes["sess1"] = proc
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "extension_ui_request",
+                "id": "uuid-2",
+                "method": "input",
+                "title": "Need value",
+                "placeholder": "Type value",
+            },
+        )
+
+        assert events.permissions[0]["request_id"] == "pi_extui:input:uuid-2"
+        assert events.permissions[0]["tool_name"] == "Input needed"
+
+        from tether.store import store
+
+        assert store.resolve_pending_permission(
+            "sess1",
+            "pi_extui:input:uuid-2",
+            {"behavior": "allow", "updated_input": {"value": "manual answer"}},
+        )
+        await asyncio.sleep(0.05)
+
+        payload = json.loads(proc.stdin.writes[0].decode())
+        assert payload == {
+            "type": "extension_ui_response",
+            "id": "uuid-2",
+            "value": "manual answer",
+        }
 
     @pytest.mark.anyio
     async def test_handle_notify_extension(self, runner_and_events):

@@ -20,26 +20,51 @@ from pathlib import Path
 import structlog
 
 from tether.discovery.pi_sessions import _find_session_file, get_pi_session_model
+from tether.models import SessionState
 from tether.runner.base import RunnerEvents, RunnerUnavailableError
+from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
 
 HEARTBEAT_INTERVAL = 5.0
 PERMISSION_TIMEOUT = 300.0
-_TOOL_OUTPUT_MAX_CHARS = 4000
+_PI_RPC_STREAM_LIMIT_BYTES = 100 * 1024 * 1024
+_PI_RESUME_MAX_SESSION_FILE_BYTES = 150 * 1024 * 1024
+_TOOL_OUTPUT_MAX_CHARS = 1200
+_TOOL_OUTPUT_MAX_LINES = 80
 
 # Pi tool calls that should trigger permission requests in Tether
 _PERMISSION_TOOLS = {"bash", "write", "edit"}
 
 
-def _truncate_tool_output(text: str, *, limit: int = _TOOL_OUTPUT_MAX_CHARS) -> str:
+def _truncate_tool_output(
+    text: str,
+    *,
+    char_limit: int | None = None,
+    line_limit: int | None = None,
+) -> str:
     """Keep tool output readable in chat surfaces."""
 
-    if len(text) <= limit:
+    char_limit = char_limit or settings.pi_tool_output_max_chars()
+    line_limit = line_limit or settings.pi_tool_output_max_lines()
+    lines = text.splitlines()
+    line_truncated = len(lines) > line_limit
+    preview = "\n".join(lines[:line_limit] if line_truncated else lines)
+
+    char_truncated = len(preview) > char_limit
+    if char_truncated:
+        preview = preview[:char_limit].rstrip()
+
+    notes: list[str] = []
+    if line_truncated:
+        notes.append(f"{len(lines) - line_limit:,} more lines")
+    if char_truncated:
+        notes.append("additional characters")
+
+    if not notes:
         return text
-    omitted = len(text) - limit
-    return f"{text[:limit].rstrip()}\n\n[truncated, {omitted} more characters omitted]"
+    return f"{preview.rstrip()}\n\n[truncated, {' and '.join(notes)} omitted]"
 
 
 def _bridge_segment(
@@ -91,8 +116,12 @@ class PiRpcRunner:
         self._session_files: dict[str, str] = {}  # tether session_id -> pi session file
         self._pending_inputs: dict[str, list[str]] = {}
         self._is_streaming: dict[str, bool] = {}
-        self._streamed_text: dict[str, bool] = {}  # True if text_delta events were received
-        self._tool_had_updates: dict[str, set[str]] = {}  # tool_call_ids with streamed output
+        self._streamed_text: dict[str, bool] = (
+            {}
+        )  # True if text_delta events were received
+        self._tool_had_updates: dict[str, set[str]] = (
+            {}
+        )  # tool_call_ids with streamed output
         self._assistant_marker_needed: dict[str, bool] = {}
         self._thinking_marker_needed: dict[str, bool] = {}
         self._at_line_start: dict[str, bool] = {}
@@ -120,16 +149,7 @@ class PiRpcRunner:
         session = store.get_session(session_id)
         cwd = session.directory if session and session.directory else None
 
-        # Look for an existing pi session file to resume
-        session_file = self._session_files.get(session_id)
-        if not session_file:
-            runner_sid = store.get_runner_session_id(session_id)
-            if runner_sid:
-                # runner_session_id stores the pi session UUID; find the file
-                path = _find_session_file(runner_sid)
-                if path:
-                    session_file = str(path)
-                    self._session_files[session_id] = session_file
+        session_file = await self._resolve_session_file(session_id)
 
         await self._spawn(session_id, cwd, session_file)
         await self._send_prompt(session_id, prompt, images=images)
@@ -149,15 +169,7 @@ class PiRpcRunner:
             session = store.get_session(session_id)
             cwd = session.directory if session and session.directory else None
 
-            # Look for session file (may have been attached externally)
-            session_file = self._session_files.get(session_id)
-            if not session_file:
-                runner_sid = store.get_runner_session_id(session_id)
-                if runner_sid:
-                    path = _find_session_file(runner_sid)
-                    if path:
-                        session_file = str(path)
-                        self._session_files[session_id] = session_file
+            session_file = await self._resolve_session_file(session_id)
 
             store.clear_stop_requested(session_id)
             await self._spawn(session_id, cwd, session_file)
@@ -209,6 +221,84 @@ class PiRpcRunner:
             approval_choice=approval_choice,
         )
 
+    async def compact(
+        self,
+        session_id: str,
+        custom_instructions: str | None = None,
+    ) -> None:
+        """Request manual compaction from pi RPC."""
+
+        proc = self._processes.get(session_id)
+        if not proc or proc.returncode is not None:
+            session = store.get_session(session_id)
+            cwd = session.directory if session and session.directory else None
+            session_file = await self._resolve_session_file(
+                session_id,
+                enforce_size_limit=False,
+            )
+            store.clear_stop_requested(session_id)
+            await self._spawn(session_id, cwd, session_file)
+            proc = self._processes.get(session_id)
+
+        if not proc or proc.returncode is not None:
+            raise RunnerUnavailableError("pi process is not available")
+
+        command = {"type": "compact"}
+        if custom_instructions:
+            command["customInstructions"] = custom_instructions
+        await self._write_cmd_async(proc, command)
+
+    async def _resolve_session_file(
+        self,
+        session_id: str,
+        *,
+        enforce_size_limit: bool = True,
+    ) -> str | None:
+        """Find a resumable pi session file, unless it is too large to send."""
+
+        session_file = self._session_files.get(session_id)
+        if not session_file:
+            runner_sid = store.get_runner_session_id(session_id)
+            if runner_sid:
+                path = _find_session_file(runner_sid)
+                if path:
+                    session_file = str(path)
+                    self._session_files[session_id] = session_file
+
+        if not session_file:
+            return None
+
+        try:
+            size = Path(session_file).stat().st_size
+        except OSError:
+            logger.warning(
+                "Pi session file is not readable, starting fresh",
+                session_id=session_id,
+                session_file=session_file,
+            )
+            self._session_files.pop(session_id, None)
+            return None
+
+        max_size = settings.pi_resume_max_session_file_bytes()
+        if not enforce_size_limit or size <= max_size:
+            return session_file
+
+        size_mb = size / 1024 / 1024
+        max_mb = max_size / 1024 / 1024
+        message = (
+            f"Pi session history is too large to resume ({size_mb:.0f} MB, "
+            f"limit {max_mb:.0f} MB). The session binding was kept. "
+            "Start a fresh session or compact the pi history before resuming."
+        )
+        logger.warning(
+            "Pi session file is too large to resume",
+            session_id=session_id,
+            session_file=session_file,
+            size_bytes=size,
+            max_bytes=max_size,
+        )
+        raise RunnerUnavailableError(message)
+
     # ------------------------------------------------------------------
     # Internal: subprocess lifecycle
     # ------------------------------------------------------------------
@@ -240,8 +330,6 @@ class PiRpcRunner:
                     provider=provider,
                     model_id=model_id,
                 )
-        else:
-            args.append("--no-session")
 
         logger.info(
             "Spawning pi process",
@@ -257,7 +345,7 @@ class PiRpcRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            limit=10 * 1024 * 1024,  # 10MB buffer for large tool outputs
+            limit=_PI_RPC_STREAM_LIMIT_BYTES,
         )
         self._processes[session_id] = proc
         self._is_streaming[session_id] = False
@@ -540,9 +628,7 @@ class PiRpcRunner:
                                     f"{prefix}{text}",
                                     kind="final",
                                     is_final=True,
-                                    bridge_segments=_bridge_segment(
-                                        "assistant", text
-                                    ),
+                                    bridge_segments=_bridge_segment("assistant", text),
                                 )
                                 self._assistant_marker_needed[session_id] = False
                                 self._thinking_marker_needed[session_id] = True
@@ -562,9 +648,7 @@ class PiRpcRunner:
                     self._streamed_text[session_id] = True
                     prefix = ""
                     if self._assistant_marker_needed.get(session_id):
-                        lead = (
-                            "" if self._at_line_start.get(session_id, True) else "\n"
-                        )
+                        lead = "" if self._at_line_start.get(session_id, True) else "\n"
                         prefix = f"{lead}[assistant] "
                     await self._emit_output(
                         session_id,
@@ -582,9 +666,7 @@ class PiRpcRunner:
                 if delta:
                     prefix = ""
                     if self._thinking_marker_needed.get(session_id, True):
-                        lead = (
-                            "" if self._at_line_start.get(session_id, True) else "\n"
-                        )
+                        lead = "" if self._at_line_start.get(session_id, True) else "\n"
                         prefix = f"{lead}[thinking] "
                     await self._emit_output(
                         session_id,
@@ -718,7 +800,7 @@ class PiRpcRunner:
                 self._assistant_marker_needed[session_id] = True
 
         # -- Compaction --
-        elif etype == "auto_compaction_start":
+        elif etype in {"auto_compaction_start", "compaction_start"}:
             await self._emit_output(
                 session_id,
                 "combined",
@@ -728,19 +810,32 @@ class PiRpcRunner:
                 bridge_segments=_bridge_segment("status", "compacting context..."),
             )
 
-        elif etype == "auto_compaction_end":
+        elif etype in {"auto_compaction_end", "compaction_end"}:
             result = event.get("result")
             if result:
                 tokens_before = result.get("tokensBefore", 0)
                 await self._emit_output(
                     session_id,
                     "combined",
-                    f"[compaction done — was {tokens_before} tokens]\n",
+                    f"[compaction done, was {tokens_before} tokens]\n",
                     kind="step",
                     is_final=False,
                     bridge_segments=_bridge_segment(
                         "status",
                         f"compaction done, was {tokens_before} tokens",
+                    ),
+                )
+            elif event.get("errorMessage"):
+                message = str(event.get("errorMessage"))
+                await self._emit_output(
+                    session_id,
+                    "combined",
+                    f"[compaction failed: {message}]\n",
+                    kind="step",
+                    is_final=False,
+                    bridge_segments=_bridge_segment(
+                        "status",
+                        f"compaction failed: {message}",
                     ),
                 )
 
@@ -764,26 +859,172 @@ class PiRpcRunner:
         elif etype == "auto_retry_end":
             success = event.get("success", False)
             if not success:
+                self._is_streaming.pop(session_id, False)
+                self._streamed_text.pop(session_id, False)
                 error = event.get("finalError", "Unknown")
-                await self._events.on_error(
-                    session_id, "PI_RETRY_FAILED", f"Retry failed: {error}"
-                )
-
-        # -- Extension UI requests (fire-and-forget, we log them) --
-        elif etype == "extension_ui_request":
-            method = event.get("method")
-            if method == "notify":
-                msg = event.get("message", "")
-                if msg:
+                message = f"Retry failed: {error}"
+                session = store.get_session(session_id)
+                if session and session.state == SessionState.AWAITING_INPUT:
                     await self._emit_output(
                         session_id,
                         "combined",
-                        f"[notify] {msg}\n",
+                        f"[notify] {message}\n",
                         kind="step",
                         is_final=False,
-                        bridge_segments=_bridge_segment("status", msg),
+                        bridge_segments=_bridge_segment("status", message),
                     )
-                    self._assistant_marker_needed[session_id] = True
+                    return
+                await self._events.on_error(session_id, "PI_RETRY_FAILED", message)
+
+        # -- Extension UI requests --
+        elif etype == "extension_ui_request":
+            await self._handle_extension_ui_request(session_id, event)
+
+    async def _handle_extension_ui_request(self, session_id: str, event: dict) -> None:
+        """Forward pi extension UI requests to Tether bridge prompts."""
+
+        method = str(event.get("method") or "")
+        if method == "notify":
+            msg = event.get("message", "")
+            if msg:
+                await self._emit_output(
+                    session_id,
+                    "combined",
+                    f"[notify] {msg}\n",
+                    kind="step",
+                    is_final=False,
+                    bridge_segments=_bridge_segment("status", msg),
+                )
+                self._assistant_marker_needed[session_id] = True
+            return
+
+        request_id = str(event.get("id") or f"extui_{uuid.uuid4().hex[:12]}")
+        tether_request_id = f"pi_extui:{method}:{request_id}"
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        store.add_pending_permission(
+            session_id,
+            tether_request_id,
+            f"pi extension UI: {method}",
+            event,
+            future,
+        )
+        asyncio.create_task(
+            self._wait_for_extension_ui_response(
+                session_id,
+                tether_request_id,
+                request_id,
+                method,
+                event,
+                future,
+            )
+        )
+
+        title = str(event.get("title") or "Input needed")
+        if method == "select":
+            options = [str(item) for item in event.get("options", []) if str(item)]
+            await self._events.on_permission_request(
+                session_id,
+                request_id=tether_request_id,
+                tool_name="AskUserQuestion",
+                tool_input={
+                    "questions": [
+                        {
+                            "header": title,
+                            "question": title,
+                            "options": [{"label": item} for item in options],
+                        }
+                    ]
+                },
+            )
+        elif method == "confirm":
+            await self._events.on_permission_request(
+                session_id,
+                request_id=tether_request_id,
+                tool_name="AskUserQuestion",
+                tool_input={
+                    "questions": [
+                        {
+                            "header": title,
+                            "question": str(event.get("message") or title),
+                            "options": [{"label": "Yes"}, {"label": "No"}],
+                        }
+                    ]
+                },
+            )
+        elif method in {"input", "editor"}:
+            prompt = str(
+                event.get("placeholder")
+                or event.get("prefill")
+                or "Reply with the answer."
+            )
+            await self._events.on_permission_request(
+                session_id,
+                request_id=tether_request_id,
+                tool_name="Input needed",
+                tool_input={"prompt": title, "details": prompt},
+            )
+        else:
+            store.resolve_pending_permission(
+                session_id,
+                tether_request_id,
+                {
+                    "behavior": "deny",
+                    "message": f"Unsupported extension UI method: {method}",
+                },
+            )
+
+    async def _wait_for_extension_ui_response(
+        self,
+        session_id: str,
+        tether_request_id: str,
+        pi_request_id: str,
+        method: str,
+        event: dict,
+        future: asyncio.Future,
+    ) -> None:
+        proc = self._processes.get(session_id)
+        if not proc or proc.returncode is not None:
+            return
+        try:
+            result = await asyncio.wait_for(future, timeout=PERMISSION_TIMEOUT)
+        except asyncio.TimeoutError:
+            result = {"behavior": "deny", "message": "Timed out"}
+        allowed = result.get("behavior") == "allow"
+        value = ""
+        updated = result.get("updated_input")
+        if isinstance(updated, dict):
+            value = str(updated.get("value") or "")
+        if not value:
+            value = str(result.get("message") or "")
+
+        if not allowed:
+            response = {
+                "type": "extension_ui_response",
+                "id": pi_request_id,
+                "cancelled": True,
+            }
+        elif method == "confirm":
+            response = {
+                "type": "extension_ui_response",
+                "id": pi_request_id,
+                "confirmed": value.strip().casefold() not in {"no", "false", "cancel"},
+            }
+        else:
+            response = {
+                "type": "extension_ui_response",
+                "id": pi_request_id,
+                "value": value,
+            }
+
+        await self._write_cmd_async(proc, response)
+        await self._events.on_permission_resolved(
+            session_id,
+            request_id=tether_request_id,
+            resolved_by="user" if allowed else "system",
+            allowed=allowed,
+            message=value or str(result.get("message") or ""),
+        )
 
     async def _handle_response(self, session_id: str, event: dict) -> None:
         """Handle a command response from pi."""
@@ -801,6 +1042,18 @@ class PiRpcRunner:
             if command == "prompt":
                 await self._events.on_error(
                     session_id, "PI_PROMPT_ERROR", f"Prompt failed: {error}"
+                )
+            elif command == "compact":
+                await self._emit_output(
+                    session_id,
+                    "combined",
+                    f"[compaction failed: {error}]\n",
+                    kind="step",
+                    is_final=False,
+                    bridge_segments=_bridge_segment(
+                        "status",
+                        f"compaction failed: {error}",
+                    ),
                 )
 
         if command == "get_state":
