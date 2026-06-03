@@ -123,6 +123,7 @@ Set `TETHER_DEFAULT_AGENT_ADAPTER` to use `tether new` or create sessions from t
 | `opencode` | OpenCode via TypeScript sidecar (auto-managed) |
 | `codex_sdk_sidecar` | Codex via TypeScript sidecar |
 | `pi_rpc` | Pi coding agent via JSON-RPC |
+| `runbook` | Local YAML runbooks backed by subprocess steps |
 | `litellm` | Any model via LiteLLM (experimental) |
 
 ## CLI

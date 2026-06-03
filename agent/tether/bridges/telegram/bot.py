@@ -53,6 +53,22 @@ class _TelegramMediaGroupBuffer:
 class TelegramBridge(UpstreamTelegramBridge):
     """Render tool calls and pass Telegram images through to sessions."""
 
+    @staticmethod
+    def _agent_to_adapter(raw: str) -> str | None:
+        """Map user-friendly agent names to local adapter names."""
+
+        if (raw or "").strip().lower() == "runbook":
+            return "runbook"
+        return UpstreamTelegramBridge._agent_to_adapter(raw)
+
+    @staticmethod
+    def _adapter_label(adapter: str | None) -> str | None:
+        """Map local adapter names to user-friendly labels."""
+
+        if adapter == "runbook":
+            return "Runbook"
+        return UpstreamTelegramBridge._adapter_label(adapter)
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._media_group_buffers: dict[str, _TelegramMediaGroupBuffer] = {}
