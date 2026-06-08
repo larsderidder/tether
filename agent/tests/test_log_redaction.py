@@ -21,3 +21,15 @@ async def test_redacts_bearer_string_anywhere() -> None:
     event_dict = {"event": "error", "body": "oops Authorization: Bearer abc.def.ghi"}
     out = redactor(None, "test", event_dict)
     assert "abc.def.ghi" not in str(out)
+
+
+@pytest.mark.anyio
+async def test_redacts_telegram_token_in_exception_text() -> None:
+    redactor = make_log_redactor()
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+    event_dict = {"event": "error", "exception": f"ExtBot[token={token}]"}
+
+    out = redactor(None, "test", event_dict)
+
+    assert token not in str(out)
+    assert "[REDACTED]" in str(out)

@@ -5,6 +5,7 @@ from tether.bridges.rich_output import (
     coerce_output_segments,
     render_discord_message_objects,
     render_discord_messages,
+    render_slack_messages,
     render_telegram_messages,
 )
 from tether.bridges.telegram.formatting import (
@@ -265,8 +266,8 @@ class TestRichOutputFormatting:
     def test_render_discord_message_objects_uses_configured_tool_limits(
         self, monkeypatch
     ) -> None:
-        monkeypatch.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES", "3")
-        monkeypatch.setenv("TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS", "100")
+        monkeypatch.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES", "3")
+        monkeypatch.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS", "100")
         body = "\n".join(f"line {index}" for index in range(1, 8))
 
         messages = render_discord_message_objects(f"[bash] {body}")
@@ -325,6 +326,38 @@ class TestRichOutputFormatting:
         messages = render_telegram_messages("[error] invalid_grant")
 
         assert messages == ["⚠️ <b>Tool error</b>\n<pre>invalid_grant</pre>"]
+
+    def test_render_telegram_messages_truncates_tool_output_by_lines(self) -> None:
+        body = "\n".join(f"line {index}" for index in range(1, 13))
+        messages = render_telegram_messages(f"[bash] {body}")
+
+        assert len(messages) == 1
+        assert "line 6" in messages[0]
+        assert "line 7" not in messages[0]
+        assert "truncated 6 lines" in messages[0]
+
+    def test_render_slack_messages_truncates_tool_output_by_lines(self) -> None:
+        body = "\n".join(f"line {index}" for index in range(1, 13))
+        messages = render_slack_messages(f"[bash] {body}")
+
+        assert len(messages) == 1
+        assert "line 6" in messages[0]
+        assert "line 7" not in messages[0]
+        assert "truncated 6 lines" in messages[0]
+
+    def test_render_telegram_messages_formats_automation_message_as_markdown(
+        self,
+    ) -> None:
+        messages = render_telegram_messages(
+            "ignored fallback",
+            metadata={
+                "bridge_segments": [
+                    {"kind": "automation_message", "text": "**Done**\n\n- card A"}
+                ]
+            },
+        )
+
+        assert messages == ["<b>Done</b>\n\n• card A"]
 
     def test_render_discord_messages_splits_explicit_assistant_marker(self) -> None:
         messages = render_discord_messages(

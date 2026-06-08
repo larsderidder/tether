@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-MAX_IMAGES_PER_MESSAGE = 4
+MAX_IMAGES_PER_MESSAGE = 10
 SUPPORTED_IMAGE_MIME_TYPES = {
     "image/jpeg": "jpg",
     "image/png": "png",

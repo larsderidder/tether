@@ -10,8 +10,6 @@ import pytest
 
 from tether.git_ops import (
     PrResult,
-    _create_github_pr,
-    _create_gitlab_mr,
     _extract_pr_number,
     _extract_url_from_output,
     create_pr,
@@ -468,7 +466,7 @@ class TestGitPrCli:
     def test_cmd_git_pr_prints_url(self, capsys):
         """cmd_git_pr prints the PR URL after creation."""
         from tether import cli_client
-        from tests.test_cli_client import _mock_response, _patch_client
+        from test_cli_client import _mock_response, _patch_client
 
         pr_resp = _mock_response(201, {
             "url": "https://github.com/owner/repo/pull/42",

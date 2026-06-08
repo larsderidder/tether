@@ -62,6 +62,28 @@ router = APIRouter(tags=["sessions"])
 logger = structlog.get_logger(__name__)
 
 
+async def _warn_if_remote_bypass_permissions(
+    session, approval_choice: int | None
+) -> None:
+    """Warn when a bridge-controlled session bypasses tool approvals."""
+    if approval_choice != 2:
+        return
+    platform = str(getattr(session, "platform", "") or "").lower()
+    if platform not in {"telegram", "slack", "discord"}:
+        return
+
+    logger.warning(
+        "Bridge-controlled session is using permission bypass",
+        session_id=session.id,
+        platform=platform,
+    )
+    await emit_warning(
+        session,
+        "REMOTE_BYPASS_PERMISSIONS",
+        f"Full auto-approve is enabled for this {platform} session. Remote messages can trigger tool use without prompts.",
+    )
+
+
 def _make_working_branch_name(session_id: str, pattern: str) -> str:
     """Return the working-branch name for a session using *pattern*.
 
@@ -452,6 +474,7 @@ async def start_session(
             # Persist approval mode so the runner can recover it after restart
             session.approval_mode = approval_choice
             store.update_session(session)
+            await _warn_if_remote_bypass_permissions(session, approval_choice)
 
             # Clear stale state from previous runs
             # NOTE: Do NOT clear runner_session_id here - it may contain an attached
@@ -665,9 +688,9 @@ async def send_input(
         # Phase 2: forward to runner with lock released.
         # Runner callbacks (on_error, on_exit, on_awaiting_input) acquire
         # the session lock, so we must not hold it here.
-        runner = get_api_runner(adapter)
         send_error: tuple[str, Exception] | None = None
         try:
+            runner = get_api_runner(adapter)
             if images:
                 await runner.send_input(session_id, text, images=images)
             else:
@@ -900,6 +923,7 @@ async def update_approval_mode(
 
         session.approval_mode = payload.approval_mode
         store.update_session(session)
+        await _warn_if_remote_bypass_permissions(session, payload.approval_mode)
 
         # Update runner's permission mode if session is active
         if session.state in (SessionState.RUNNING, SessionState.AWAITING_INPUT):

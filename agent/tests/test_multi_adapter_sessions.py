@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tether.main import app
 from tether.api.runner_registry import RunnerRegistry
 from tether.models import SessionState
 
@@ -91,7 +90,9 @@ async def test_create_session_invalid_adapter(api_client, tmpdir):
     test_dir = str(tmpdir.mkdir("test_project"))
 
     with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
-        mock_get_runner.side_effect = ValueError("Unknown agent adapter: invalid_adapter")
+        mock_get_runner.side_effect = ValueError(
+            "Unknown agent adapter: invalid_adapter"
+        )
 
         response = await api_client.post(
             "/api/sessions",
@@ -189,6 +190,39 @@ async def test_session_adapter_routing_on_input(
         assert mock_runner.send_input.called
 
 
+async def test_send_input_runner_lookup_failure_marks_session_error(
+    api_client, fresh_store, tmpdir
+):
+    """Runner lookup failures are reported cleanly and do not strand RUNNING state."""
+    test_dir = str(tmpdir.mkdir("test_project"))
+
+    with patch("tether.api.runner_events.get_runner_registry") as mock_get_registry:
+        mock_registry = MagicMock(spec=RunnerRegistry)
+        mock_registry.validate_adapter = MagicMock()
+        mock_get_registry.return_value = mock_registry
+
+        response = await api_client.post(
+            "/api/sessions",
+            json={"directory": test_dir, "adapter": "codex_sdk_sidecar"},
+        )
+        session_id = response.json()["id"]
+
+        session = fresh_store.get_session(session_id)
+        session.state = SessionState.AWAITING_INPUT
+        session.adapter = "nope"
+        fresh_store.update_session(session)
+        mock_registry.get_runner.side_effect = ValueError("Unknown agent adapter: nope")
+
+        input_response = await api_client.post(
+            f"/api/sessions/{session_id}/input",
+            json={"text": "test input"},
+        )
+
+        assert input_response.status_code == 500
+        assert input_response.json()["error"]["code"] == "RUNNER_ERROR"
+        assert fresh_store.get_session(session_id).state == SessionState.ERROR
+
+
 async def test_session_adapter_routing_on_interrupt(
     api_client, fresh_store, tmpdir, mock_runner
 ):
@@ -256,9 +290,7 @@ async def test_session_adapter_routing_on_approval_mode(
         assert mock_runner.update_permission_mode.called
 
 
-async def test_backward_compatibility_null_adapter(
-    api_client, tmpdir, mock_runner
-):
+async def test_backward_compatibility_null_adapter(api_client, tmpdir, mock_runner):
     """Test that NULL adapter field uses default runner."""
     test_dir = str(tmpdir.mkdir("test_project"))
 

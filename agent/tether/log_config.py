@@ -42,7 +42,8 @@ def configure_logging() -> None:
     log_level = getattr(logging, log_level_name, logging.INFO)
     log_format = settings.log_format()
 
-    # Redact secrets from all log events (structlog + stdlib/uvicorn via ProcessorFormatter).
+    # Redact secrets from all log events. Keep a second pass after exception
+    # formatting because rich tracebacks can include object reprs from locals.
     redactor = make_log_redactor()
 
     shared_processors = [
@@ -56,14 +57,18 @@ def configure_logging() -> None:
     if log_format == "json":
         renderer = structlog.processors.JSONRenderer()
     else:
-        # Default to a dev-friendly console renderer.
-        renderer = structlog.dev.ConsoleRenderer()
+        # Default to a dev-friendly console renderer. Disable local-variable
+        # tracebacks because third-party objects can include credentials in reprs.
+        renderer = structlog.dev.ConsoleRenderer(
+            exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False)
+        )
 
     structlog.configure(
         processors=shared_processors
         + [
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            redactor,
             structlog.processors.UnicodeDecoder(),
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],

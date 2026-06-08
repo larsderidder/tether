@@ -65,6 +65,18 @@ class BridgeTurnAccumulator:
             return 0
         return sum(len(text) for text in state.stream_parts)
 
+    def buffered_segment_kinds(self, session_id: str) -> set[str]:
+        """Return structured segment kinds currently buffered for a session."""
+
+        state = self._states.get(session_id)
+        if not state:
+            return set()
+        return {
+            str(segment.get("kind") or "")
+            for segment in state.bridge_segments
+            if segment.get("kind")
+        }
+
     def flush_stream(self, session_id: str) -> BridgeFlush | None:
         """Return buffered stream output and clear the stream buffer."""
 

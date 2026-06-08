@@ -350,6 +350,7 @@ _BRIDGE_ENV_VARS: dict[str, list[tuple[str, str, bool]]] = {
     "telegram": [
         ("TELEGRAM_BOT_TOKEN", "Telegram bot token", True),
         ("TELEGRAM_FORUM_GROUP_ID", "Telegram forum group ID", True),
+        ("TELEGRAM_ALLOWED_USER_IDS", "Allowed Telegram user IDs", False),
     ],
     "slack": [
         ("SLACK_BOT_TOKEN", "Slack bot token (xoxb-...)", True),

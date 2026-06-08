@@ -442,12 +442,12 @@ def render_markdown_messages(
     return [message for message in messages if message.text.strip()]
 
 
-def _truncate_discord_tool_body(body: str) -> tuple[str, str]:
-    """Return a Discord tool preview and footer when output is too large."""
+def _truncate_tool_body(body: str) -> tuple[str, str]:
+    """Return a shared bridge tool preview and footer when output is too large."""
 
     lines = body.splitlines()
-    line_limit = settings.discord_tool_output_inline_lines()
-    char_limit = settings.discord_tool_output_inline_chars()
+    line_limit = settings.bridge_tool_output_inline_lines()
+    char_limit = settings.bridge_tool_output_inline_chars()
     line_truncated = len(lines) > line_limit
     preview_lines = lines[:line_limit] if line_truncated else lines
     preview = "\n".join(preview_lines) if lines else body
@@ -479,7 +479,7 @@ def _render_tool_segment(
     header = f"{icon} {bold}{title}{bold}{label_text}\n"
     body = segment.text or " "
     if truncate:
-        preview, footer = _truncate_discord_tool_body(body)
+        preview, footer = _truncate_tool_body(body)
         if footer:
             chunk = _chunk_code_block(
                 preview or " ", limit - len(header) - len(footer)
@@ -536,12 +536,43 @@ def render_slack_messages(
 ) -> list[str]:
     """Render output segments for Slack."""
 
-    return render_markdown_segments(
-        text,
-        limit=_SLACK_LIMIT,
-        bold="*",
-        segments=_segments_from_metadata(metadata),
+    return [
+        message.text
+        for message in render_markdown_messages(
+            text,
+            limit=_SLACK_LIMIT,
+            bold="*",
+            segments=_segments_from_metadata(metadata),
+            truncate_tool_outputs=True,
+        )
+    ]
+
+
+def _render_telegram_tool_messages(
+    segment: OutputSegment,
+    *,
+    title: str,
+    icon: str = "📥",
+    label: str | None = None,
+) -> list[str]:
+    """Render one tool segment as compact Telegram HTML."""
+
+    label_text = (
+        label
+        if label is not None
+        else f" <code>{html.escape(segment.label or 'tool')}</code>"
     )
+    header = f"{icon} <b>{title}</b>{label_text}\n"
+    body = segment.text or " "
+    preview, footer = _truncate_tool_body(body)
+    body_chunks = _chunk_plain(
+        html.escape(preview or " "),
+        _TELEGRAM_LIMIT - len(header) - len(footer) - 11,
+    )
+    rendered = [header + f"<pre>{chunk}</pre>" for chunk in body_chunks]
+    if footer and rendered:
+        rendered[-1] += html.escape(footer)
+    return rendered
 
 
 def render_telegram_messages(
@@ -570,42 +601,46 @@ def render_telegram_messages(
                 )
             )
         elif segment.kind == "tool_output":
-            label = html.escape(segment.label or "tool")
-            header = f"📥 <b>Tool output</b> <code>{label}</code>\n"
-            body_chunks = _chunk_plain(
-                html.escape(segment.text or " "),
-                _TELEGRAM_LIMIT - len(header) - 11,
+            messages.extend(
+                _render_telegram_tool_messages(segment, title="Tool output")
             )
-            messages.extend(header + f"<pre>{chunk}</pre>" for chunk in body_chunks)
         elif segment.kind in {"result", "tool_result"}:
             label = (
                 f" <code>{html.escape(segment.label)}</code>"
                 if segment.label and segment.label != segment.kind
                 else ""
             )
-            header = f"📥 <b>Tool result</b>{label}\n"
-            body_chunks = _chunk_plain(
-                html.escape(segment.text or " "),
-                _TELEGRAM_LIMIT - len(header) - 11,
+            messages.extend(
+                _render_telegram_tool_messages(
+                    segment,
+                    title="Tool result",
+                    label=label,
+                )
             )
-            messages.extend(header + f"<pre>{chunk}</pre>" for chunk in body_chunks)
         elif segment.kind in {"error", "tool_error"}:
             label = (
                 f" <code>{html.escape(segment.label)}</code>"
                 if segment.label and segment.label != segment.kind
                 else ""
             )
-            header = f"⚠️ <b>Tool error</b>{label}\n"
-            body_chunks = _chunk_plain(
-                html.escape(segment.text or " "),
-                _TELEGRAM_LIMIT - len(header) - 11,
+            messages.extend(
+                _render_telegram_tool_messages(
+                    segment,
+                    title="Tool error",
+                    label=label,
+                    icon="⚠️",
+                )
             )
-            messages.extend(header + f"<pre>{chunk}</pre>" for chunk in body_chunks)
+        elif segment.kind == "automation_message":
+            rendered = markdown_to_telegram_html(
+                _normalize_plain_markdown(segment.text)
+            )
+            messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "status":
             rendered = f"ℹ️ {html.escape(segment.text)}"
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         else:
-            rendered = f"ℹ️ {html.escape(segment.text)}"
+            rendered = html.escape(segment.text)
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
     return [message for message in messages if message.strip()]
 

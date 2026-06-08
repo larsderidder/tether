@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram.ext import ApplicationHandlerStop
 
 from agent_tether.base import BridgeCallbacks
 from tether.bridges.telegram.bot import TelegramBridge
@@ -125,10 +126,14 @@ class FakeTextMessage(FakeMessage):
 
 
 @pytest.mark.anyio
-async def test_handle_media_message_saves_non_image_document(tmp_path, monkeypatch) -> None:
+async def test_handle_media_message_saves_non_image_document(
+    tmp_path, monkeypatch
+) -> None:
     """Telegram non-image documents are saved and referenced in input text."""
 
-    monkeypatch.setattr("tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        "tether.bridges.media_io.settings.data_dir", lambda: str(tmp_path)
+    )
     callbacks = _mock_callbacks()
     bridge = TelegramBridge("token", 123, callbacks=callbacks)
     bridge._state.get_session_for_topic = MagicMock(return_value="sess1")
@@ -185,15 +190,15 @@ async def test_media_group_warns_when_images_are_skipped() -> None:
 
     callbacks = _mock_callbacks()
     bridge = TelegramBridge("token", 123, callbacks=callbacks)
-    messages = [FakeMessage(caption=f"image {index}") for index in range(5)]
+    messages = [FakeMessage(caption=f"image {index}") for index in range(11)]
 
     for message in messages:
         await bridge._buffer_media_group(FakeUpdate(message), "sess1", 99, "album2")
     await bridge._flush_media_group("456:99:album2")
 
-    assert messages[0].replies == ["⚠️ Received 4 of 5 images; 1 was skipped."]
+    assert messages[0].replies == ["⚠️ Received 10 of 11 images; 1 was skipped."]
     callbacks.send_input.assert_awaited_once()
-    assert len(callbacks.send_input.await_args.kwargs["images"]) == 4
+    assert len(callbacks.send_input.await_args.kwargs["images"]) == 10
 
 
 @pytest.mark.anyio
@@ -225,3 +230,58 @@ async def test_output_attachment_uses_document_when_image_extension_is_spoofed(
 
     bridge._app.bot.send_document.assert_awaited_once()
     bridge._app.bot.send_photo.assert_not_awaited()
+
+
+class FakeUser:
+    """Fake Telegram user."""
+
+    def __init__(self, user_id: int) -> None:
+        self.id = user_id
+        self.username = "tester"
+
+
+class FakeGuardMessage:
+    """Fake Telegram message for access checks."""
+
+    def __init__(self, user_id: int) -> None:
+        self.from_user = FakeUser(user_id)
+        self.replies: list[str] = []
+
+    async def reply_text(self, text: str) -> None:
+        self.replies.append(text)
+
+
+class FakeGuardUpdate:
+    """Fake Telegram update for access checks."""
+
+    def __init__(self, user_id: int) -> None:
+        self.effective_user = FakeUser(user_id)
+        self.message = FakeGuardMessage(user_id)
+        self.callback_query = None
+
+
+@pytest.mark.anyio
+async def test_telegram_guard_allows_configured_user(monkeypatch) -> None:
+    """Telegram allowlist permits matching users."""
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "42")
+    bridge = TelegramBridge("token", 123)
+    update = FakeGuardUpdate(42)
+
+    await bridge._guard_update(update, object())
+
+    assert update.message.replies == []
+
+
+@pytest.mark.anyio
+async def test_telegram_guard_blocks_unconfigured_user(monkeypatch) -> None:
+    """Telegram allowlist blocks unknown users before routing."""
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "42")
+    bridge = TelegramBridge("token", 123)
+    update = FakeGuardUpdate(7)
+
+    with pytest.raises(ApplicationHandlerStop):
+        await bridge._guard_update(update, object())
+
+    assert update.message.replies == ["🔒 This Tether bridge is restricted."]

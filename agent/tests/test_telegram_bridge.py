@@ -36,6 +36,32 @@ class TestTelegramBridgeIntegration:
         assert bridge is not None
 
     @pytest.mark.anyio
+    async def test_rename_thread_updates_telegram_topic(self) -> None:
+        """rename_thread updates the Telegram forum topic name."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session("sess_1", 12345, "Old name")
+
+        renamed = await bridge.rename_thread("sess_1", "New pi session")
+
+        assert renamed == "New pi session"
+        mock_bot.edit_forum_topic.assert_awaited_once_with(
+            chat_id=-1001234567890,
+            message_thread_id=12345,
+            name="New pi session",
+        )
+        assert bridge._state._mappings["sess_1"].name == "New pi session"
+
+    @pytest.mark.anyio
     async def test_on_output_sends_to_telegram(self, fresh_store: SessionStore) -> None:
         """on_output sends text to Telegram topic."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -67,7 +93,9 @@ class TestTelegramBridgeIntegration:
         assert mock_bot.send_message.called
 
     @pytest.mark.anyio
-    async def test_on_output_formats_tool_messages_for_telegram(self, fresh_store: SessionStore) -> None:
+    async def test_on_output_formats_tool_messages_for_telegram(
+        self, fresh_store: SessionStore
+    ) -> None:
         """Tool calls and tool output get distinct Telegram styling."""
         from tether.bridges.telegram.bot import TelegramBridge
 
@@ -97,7 +125,9 @@ class TestTelegramBridgeIntegration:
 
     @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
     @pytest.mark.anyio
-    async def test_on_approval_request_creates_inline_keyboard(self, fresh_store: SessionStore) -> None:
+    async def test_on_approval_request_creates_inline_keyboard(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_approval_request creates Telegram inline keyboard."""
         from tether.bridges.telegram.bot import TelegramBridge
 
@@ -129,8 +159,9 @@ class TestTelegramBridgeIntegration:
         )
 
         # Mock the telegram imports that happen inside the method
-        with patch("telegram.InlineKeyboardButton"), patch(
-            "telegram.InlineKeyboardMarkup"
+        with (
+            patch("telegram.InlineKeyboardButton"),
+            patch("telegram.InlineKeyboardMarkup"),
         ):
 
             # Send approval
@@ -141,8 +172,58 @@ class TestTelegramBridgeIntegration:
             call_kwargs = mock_bot.send_message.call_args.kwargs
             assert "reply_markup" in call_kwargs
 
+    @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
     @pytest.mark.anyio
-    async def test_create_thread_creates_telegram_topic(self, fresh_store: SessionStore) -> None:
+    async def test_choice_approval_uses_short_callback_data(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Pi extension prompts use callback data below Telegram's 64-byte limit."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        buttons = []
+
+        def make_button(text, callback_data):
+            button = MagicMock()
+            button.text = text
+            button.callback_data = callback_data
+            buttons.append(button)
+            return button
+
+        request = ApprovalRequest(
+            kind="choice",
+            request_id="pi_extui:confirm:96d62e1d-3470-4c6d-9864-5af2d5f13e49",
+            title="Remember in project memory?",
+            description="Save this fact?",
+            options=["Yes", "No"],
+        )
+
+        with (
+            patch("telegram.InlineKeyboardButton", side_effect=make_button),
+            patch("telegram.InlineKeyboardMarkup"),
+        ):
+            await bridge.on_approval_request(session.id, request)
+
+        assert mock_bot.send_message.called
+        assert [button.text for button in buttons] == ["1. Yes", "2. No"]
+        assert all(len(button.callback_data.encode()) <= 64 for button in buttons)
+        assert all(button.callback_data.startswith("choice:") for button in buttons)
+
+    @pytest.mark.anyio
+    async def test_create_thread_creates_telegram_topic(
+        self, fresh_store: SessionStore
+    ) -> None:
         """create_thread creates a Telegram forum topic."""
         from tether.bridges.telegram.bot import TelegramBridge
 

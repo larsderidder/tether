@@ -363,7 +363,7 @@ class ClaudeSubprocessRunner:
             session_id,
             title=title,
             model=model,
-            provider="Anthropic (OAuth, subprocess)",
+            provider="Anthropic (Claude Agent SDK)",
         )
 
     async def _on_output(self, session_id: str, event: dict) -> None:

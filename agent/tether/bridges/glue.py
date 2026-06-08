@@ -130,8 +130,8 @@ def preferred_thread_name(session) -> str | None:
 
 
 def preferred_thread_name_for_platform(session, platform: str | None) -> str | None:
-    """Only Slack and Discord reuse the session title as the thread title."""
-    if platform not in {"slack", "discord"}:
+    """Return a session title for platforms that can name threads."""
+    if platform not in {"telegram", "slack", "discord"}:
         return None
     return preferred_thread_name(session)
 
@@ -141,7 +141,7 @@ async def sync_bound_thread_name(
     *,
     preferred_name: str | None = None,
 ) -> str | None:
-    """Best-effort rename of a bound Slack/Discord thread to the session title."""
+    """Best-effort rename of a bound bridge thread to the session title."""
     from tether.store import store
 
     session = store.get_session(session_id)

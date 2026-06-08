@@ -226,6 +226,38 @@ class TestEventRouting:
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
+    async def test_automation_message_output_flushes_immediately(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Automation messages are delivered as separate bridge replies."""
+
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "Working on it",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "automation_message", "text": "Working on it"}
+                    ],
+                },
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["text"] == "Working on it"
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "automation_message", "text": "Working on it"}
+        ]
+
+    @pytest.mark.anyio
     async def test_skips_structured_prose_final_before_output_final(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
@@ -320,7 +352,10 @@ class TestEventRouting:
             },
         )
         await sub.unsubscribe(session.id)
-        assert [call["text"] for call in fake_bridge.output_calls] == ["first", "second"]
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "first",
+            "second",
+        ]
 
     @pytest.mark.anyio
     async def test_routes_output_final_blob(
@@ -343,6 +378,87 @@ class TestEventRouting:
         assert len(fake_bridge.output_calls) == 1
         assert fake_bridge.output_calls[0]["text"] == "accumulated blob"
         assert fake_bridge.output_calls[0]["metadata"]["final"] is True
+
+    @pytest.mark.anyio
+    async def test_output_final_discards_buffered_tool_activity(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Tool telemetry is not sent separately when a final answer exists."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "[tool: bash]\n",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "tool_call", "label": "bash", "text": "pwd"}
+                    ],
+                },
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "Done."},
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == ["Done."]
+
+    @pytest.mark.anyio
+    async def test_tool_activity_flushes_as_one_group_at_turn_end(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Tool-only turns are grouped into one bridge message."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        for text in ["pwd", "/tmp/demo"]:
+            await self._emit_and_wait(
+                fresh_store,
+                session.id,
+                {
+                    "session_id": session.id,
+                    "type": "output",
+                    "data": {
+                        "text": text,
+                        "final": False,
+                        "bridge_segments": [
+                            {"kind": "tool_output", "label": "bash", "text": text}
+                        ],
+                    },
+                },
+            )
+        assert fake_bridge.output_calls == []
+
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "session_state",
+                "data": {"state": "AWAITING_INPUT"},
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "tool_output", "label": "bash", "text": "pwd"},
+            {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+        ]
 
     @pytest.mark.anyio
     async def test_output_final_replaces_buffered_streaming_prose(

@@ -130,6 +130,7 @@ Environment=ANTHROPIC_API_KEY=<your-key>
 # Messaging bridge (add only the ones you use)
 Environment=TELEGRAM_BOT_TOKEN=<bot-token>
 Environment=TELEGRAM_FORUM_GROUP_ID=<group-id>
+Environment=TELEGRAM_ALLOWED_USER_IDS=<your-telegram-user-id>
 
 [Install]
 WantedBy=multi-user.target
@@ -194,7 +195,7 @@ has write permission or use a personal access token via HTTPS.
 | `pi` (Claude Code via pi) | `ANTHROPIC_API_KEY` + pi installed | same |
 | `codex_sdk_sidecar` | `OPENAI_API_KEY` | same |
 
-API-key based auth is simplest for servers — no browser OAuth required.
+API-key based auth is simplest for servers because no browser OAuth is required. For shared or hosted deployments, prefer `ANTHROPIC_API_KEY` over Claude subscription OAuth. Do not route multiple people through one user's Claude account.
 
 ---
 
@@ -248,6 +249,12 @@ The data directory can be overridden with `TETHER_AGENT_DATA_DIR`.
 - **API keys:** store credentials in the systemd unit file or
   `~/.config/tether/config.env`, not in session-visible environment variables
   that agents could read.
+- **Bridge access:** set `TELEGRAM_ALLOWED_USER_IDS`, Discord pairing, or the
+  matching Slack access controls before using bridges with other people. A
+  bridge user can send prompts and may approve tool use for the bound session.
+- **Full auto-approve:** avoid approval mode 2 on bridge-controlled sessions
+  unless the bridge is private and all allowed users are trusted with shell and
+  file access on the server.
 
 ---
 

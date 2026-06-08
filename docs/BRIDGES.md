@@ -41,9 +41,10 @@ Shared helpers (in base class):
 ## BridgeSubscriber (`agent/tether/bridges/subscriber.py`)
 
 Routes store events to bridge methods:
-- `output` with `bridge_segments` → `on_output()` with structured metadata, avoiding marker parsing
-- `output` with `final=True` → `on_output()` (skips history and empty output)
-- `output_final` → skipped (accumulated blob, bridges get individual output events)
+- `output` with assistant or thinking `bridge_segments` → buffered until final output
+- `output` with tool `bridge_segments` → grouped and usually suppressed when final output exists
+- `output` with `final=True` → skipped because `output_final` carries the final blob
+- `output_final` → sent once as the final assistant message
 - `permission_request` → builds `ApprovalRequest`, calls `on_approval_request()`
 - `session_state` RUNNING → `on_typing()`
 - `session_state` ERROR → `on_status_change("error")`
@@ -56,6 +57,7 @@ Routes store events to bridge methods:
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
 - Approval UI: inline keyboard with Allow, Deny, Allow {tool} (30m), Allow All (30m), Show All
+- Optional sender allowlist through `TELEGRAM_ALLOWED_USER_IDS`; without it, all forum users can control bound sessions
 - Auto-approve sends `✅ <b>Tool</b> — auto-approved (reason)` notification
 
 ### Slack (`agent/tether/bridges/slack/`)
@@ -117,6 +119,7 @@ Stored in base class as in-memory dicts:
 |---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `TELEGRAM_FORUM_GROUP_ID` | Telegram supergroup ID (forum mode) |
+| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated Telegram user IDs allowed to run commands, send input, and approve tools |
 | `SLACK_BOT_TOKEN` | Slack bot token (xoxb-) |
 | `SLACK_APP_TOKEN` | Slack app token for socket mode |
 | `SLACK_CHANNEL_ID` | Slack channel ID |
@@ -129,8 +132,8 @@ Stored in base class as in-memory dicts:
 | `TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED` | Enable the `!new` plus checkmark reaction shortcut in Slack and Discord (default `1`) |
 | `TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI` | Emoji or reaction name used for the new-session shortcut (default `✅`) |
 | `DISCORD_AUTO_PAIR_USER_IDS` | Comma-separated Discord user IDs to seed into the paired-user set at launch |
-| `TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS` | Max characters shown inline for Discord tool output before 📄 expansion (default: 800, range: 100-1800) |
-| `TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES` | Max lines shown inline for Discord tool output before 📄 expansion (default: 6, range: 1-50) |
+| `TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS` | Max characters shown inline for tool output across bridges (default: 800, range: 100-1800) |
+| `TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES` | Max lines shown inline for tool output across bridges (default: 6, range: 1-50) |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 

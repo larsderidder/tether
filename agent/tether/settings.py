@@ -117,26 +117,26 @@ class Settings:
         )
 
     @staticmethod
-    def discord_tool_output_inline_chars() -> int:
-        """Maximum characters shown inline for Discord tool output.
+    def bridge_tool_output_inline_chars() -> int:
+        """Maximum characters shown inline for bridge tool output.
 
-        Env: TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS (default: 800)
+        Env: TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS (default: 800)
         """
         return _get_bounded_int(
-            "TETHER_DISCORD_TOOL_OUTPUT_INLINE_CHARS",
+            "TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS",
             800,
             minimum=100,
             maximum=1800,
         )
 
     @staticmethod
-    def discord_tool_output_inline_lines() -> int:
-        """Maximum lines shown inline for Discord tool output.
+    def bridge_tool_output_inline_lines() -> int:
+        """Maximum lines shown inline for bridge tool output.
 
-        Env: TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES (default: 6)
+        Env: TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES (default: 6)
         """
         return _get_bounded_int(
-            "TETHER_DISCORD_TOOL_OUTPUT_INLINE_LINES",
+            "TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES",
             6,
             minimum=1,
             maximum=50,
@@ -630,6 +630,14 @@ class Settings:
             return int(value)
         except ValueError:
             return 0
+
+    @staticmethod
+    def telegram_allowed_user_ids() -> set[int]:
+        """Comma-separated Telegram user IDs allowed to control the bridge.
+
+        Env: TELEGRAM_ALLOWED_USER_IDS (for example, "123,456")
+        """
+        return _get_int_set("TELEGRAM_ALLOWED_USER_IDS")
 
     @staticmethod
     def slack_bot_token() -> str:

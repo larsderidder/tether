@@ -92,6 +92,20 @@ class BridgeSubscriber:
         return self._turns.buffered_size(session_id)
 
     @staticmethod
+    def _is_automation_message(
+        bridge_segments: list[dict[str, str]] | None,
+    ) -> bool:
+        """Return true for automation outputs that should become separate replies."""
+
+        return bool(
+            bridge_segments
+            and any(
+                str(segment.get("kind") or "") == "automation_message"
+                for segment in bridge_segments
+            )
+        )
+
+    @staticmethod
     def _is_streaming_prose(
         bridge_segments: list[dict[str, str]] | None,
     ) -> bool:
@@ -100,7 +114,45 @@ class BridgeSubscriber:
         if not bridge_segments:
             return False
         prose_kinds = {"assistant", "thinking"}
-        return all(str(segment.get("kind") or "") in prose_kinds for segment in bridge_segments)
+        return all(
+            str(segment.get("kind") or "") in prose_kinds for segment in bridge_segments
+        )
+
+    @staticmethod
+    def _is_tool_activity(
+        bridge_segments: list[dict[str, str]] | None,
+    ) -> bool:
+        """Return true for tool telemetry that should be grouped, not streamed."""
+
+        if not bridge_segments:
+            return False
+        tool_kinds = {
+            "tool_call",
+            "tool_output",
+            "tool_result",
+            "tool_error",
+            "result",
+            "error",
+        }
+        return all(
+            str(segment.get("kind") or "") in tool_kinds for segment in bridge_segments
+        )
+
+    def _has_only_buffered_tool_activity(self, session_id: str) -> bool:
+        """Return true when the current buffer contains only tool telemetry."""
+
+        kinds = self._turns.buffered_segment_kinds(session_id)
+        if not kinds:
+            return False
+        tool_kinds = {
+            "tool_call",
+            "tool_output",
+            "tool_result",
+            "tool_error",
+            "result",
+            "error",
+        }
+        return kinds.issubset(tool_kinds)
 
     def _discard_buffered_output(self, session_id: str) -> None:
         """Drop buffered streaming output for a session."""
@@ -189,7 +241,13 @@ class BridgeSubscriber:
                             self._buffer_output(
                                 session_id, text, bridge_segments=bridge_segments
                             )
-                            if not self._is_streaming_prose(bridge_segments):
+                            if self._is_automation_message(bridge_segments):
+                                await self._flush_output(session_id, bridge)
+                            elif self._is_streaming_prose(bridge_segments):
+                                continue
+                            elif self._is_tool_activity(bridge_segments):
+                                continue
+                            else:
                                 await self._schedule_flush(session_id, bridge)
 
                     elif event_type == "output_final":
@@ -219,7 +277,10 @@ class BridgeSubscriber:
                             self._turns.mark_final_sent(session_id, flush.final_key)
 
                     elif event_type == "permission_request":
-                        await self._flush_output(session_id, bridge)
+                        if self._has_only_buffered_tool_activity(session_id):
+                            self._discard_buffered_output(session_id)
+                        else:
+                            await self._flush_output(session_id, bridge)
                         request = self._build_approval_request(data)
                         await bridge.on_approval_request(session_id, request)
 
