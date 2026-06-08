@@ -14,7 +14,9 @@ from tether.runner import RunnerEvents
 class MockRunnerEvents(RunnerEvents):
     """Mock runner events for testing."""
 
-    async def on_output(self, session_id: str, stream: str, text: str, **kwargs) -> None:
+    async def on_output(
+        self, session_id: str, stream: str, text: str, **kwargs
+    ) -> None:
         pass
 
     async def on_header(self, session_id: str, **kwargs) -> None:
@@ -29,7 +31,9 @@ class MockRunnerEvents(RunnerEvents):
     async def on_awaiting_input(self, session_id: str) -> None:
         pass
 
-    async def on_metadata(self, session_id: str, key: str, value: object, raw: str) -> None:
+    async def on_metadata(
+        self, session_id: str, key: str, value: object, raw: str
+    ) -> None:
         pass
 
     async def on_heartbeat(self, session_id: str, elapsed_s: float, done: bool) -> None:
@@ -101,11 +105,28 @@ def test_registry_caches_runners(registry, mock_events):
             assert runner1 is runner2
 
 
+def test_registry_maps_script_alias_to_automation(registry):
+    """Script is a user-facing alias for the automation adapter."""
+    with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
+        mock_runner = MagicMock()
+        mock_runner.runner_type = "automation"
+        mock_get_runner.return_value = mock_runner
+
+        runner = registry.get_runner("script")
+
+        assert runner is mock_runner
+        mock_get_runner.assert_called_once_with(registry._events, name="automation")
+        assert "automation" in registry._runners
+        assert "script" not in registry._runners
+
+
 def test_registry_validates_adapter(registry):
     """Test that registry validates adapter names."""
     with patch.dict(os.environ, {"TETHER_DEFAULT_AGENT_ADAPTER": "invalid_adapter"}):
         with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
-            mock_get_runner.side_effect = ValueError("Unknown agent adapter: invalid_adapter")
+            mock_get_runner.side_effect = ValueError(
+                "Unknown agent adapter: invalid_adapter"
+            )
 
             with pytest.raises(ValueError, match="Unknown agent adapter"):
                 registry.validate_adapter("invalid_adapter")

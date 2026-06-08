@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import structlog
 
-from tether.runner import Runner, RunnerEvents, get_runner
+from tether.runner import Runner, RunnerEvents, get_runner, normalize_adapter_name
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -35,7 +35,7 @@ class RunnerRegistry:
         Raises:
             ValueError: If adapter name is invalid or missing credentials.
         """
-        name = adapter_name or self._default_adapter
+        name = normalize_adapter_name(adapter_name or self._default_adapter)
         if not name:
             raise ValueError(
                 "No adapter specified and no default adapter configured. "

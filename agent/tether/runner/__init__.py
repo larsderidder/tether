@@ -5,19 +5,8 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from tether.runner.base import Runner, RunnerEvents
 from tether.settings import settings
-
-# Lazy imports - these SDKs are heavy and slow down startup
-if TYPE_CHECKING:
-    from tether.runner.claude_subprocess import ClaudeSubprocessRunner
-    from tether.runner.codex_sdk_sidecar import SidecarRunner
-    from tether.runner.litellm_runner import LiteLLMRunner
-    from tether.runner.opencode_sdk_sidecar import OpenCodeSidecarRunner
-    from tether.runner.pi_rpc import PiRpcRunner
-    from tether.runner.runbook import RunbookRunner
 
 
 def _has_anthropic_api_key() -> bool:
@@ -58,6 +47,17 @@ def _require_claude_sdk() -> None:
         ) from e
 
 
+def normalize_adapter_name(name: str | None) -> str | None:
+    """Return the canonical adapter name for user-facing aliases."""
+
+    if name is None:
+        return None
+    normalized = name.strip().lower()
+    if normalized == "script":
+        return "automation"
+    return normalized
+
+
 def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
     """Return the configured runner adapter based on environment settings.
 
@@ -72,12 +72,13 @@ def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
         - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
         - opencode: OpenCode sidecar
         - pi_rpc: Pi coding agent via JSON-RPC subprocess
-        - runbook: Local file-based runbook subprocess
+        - automation: Local script automation subprocess
 
     Runners are imported lazily to speed up agent startup.
     """
     if name is None:
         name = settings.adapter()
+    name = normalize_adapter_name(name)
     if not name:
         raise ValueError(
             "No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not set."
@@ -130,12 +131,12 @@ def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
 
         return PiRpcRunner(events)
 
-    if name == "runbook":
-        from tether.runner.runbook import RunbookRunner
+    if name == "automation":
+        from tether.runner.automation import AutomationRunner
 
-        return RunbookRunner(events)
+        return AutomationRunner(events)
 
     raise ValueError(f"Unknown agent adapter: {name}")
 
 
-__all__ = ["get_runner", "Runner", "RunnerEvents"]
+__all__ = ["get_runner", "normalize_adapter_name", "Runner", "RunnerEvents"]
