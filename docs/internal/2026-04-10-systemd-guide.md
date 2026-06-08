@@ -1,4 +1,4 @@
-# Tether systemd runbook
+# Tether systemd guide
 
 Tether now runs as a user service from the repo checkout.
 
