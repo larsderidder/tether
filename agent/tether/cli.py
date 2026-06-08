@@ -90,13 +90,15 @@ def main(argv: list[str] | None = None) -> None:
 
     # Global connection flags (apply to all client subcommands).
     parser.add_argument(
-        "--host", "-H",
+        "--host",
+        "-H",
         dest="remote_host",
         metavar="HOST",
         help="Remote Tether server hostname or IP (overrides TETHER_AGENT_HOST)",
     )
     parser.add_argument(
-        "--port", "-P",
+        "--port",
+        "-P",
         dest="remote_port",
         type=int,
         metavar="PORT",
@@ -109,7 +111,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Bearer token for remote server auth (overrides TETHER_AGENT_TOKEN)",
     )
     parser.add_argument(
-        "--server", "-S",
+        "--server",
+        "-S",
         dest="server",
         metavar="NAME",
         help="Use a named server profile from ~/.config/tether/servers.yaml",
@@ -120,7 +123,9 @@ def main(argv: list[str] | None = None) -> None:
     # tether start
     start_parser = sub.add_parser("start", help="Start the Tether server")
     start_parser.add_argument("--host", dest="bind_host", help="Host to bind to")
-    start_parser.add_argument("--port", dest="bind_port", type=int, help="Port to bind to")
+    start_parser.add_argument(
+        "--port", dest="bind_port", type=int, help="Port to bind to"
+    )
     start_parser.add_argument(
         "--dev", action="store_true", help="Enable dev mode (no auth required)"
     )
@@ -159,6 +164,26 @@ def main(argv: list[str] | None = None) -> None:
         help="Prompt for all agents, even those without local credentials",
     )
 
+    # tether integrations install
+    integrations_parser = sub.add_parser(
+        "integrations", help="Install bundled agent integrations"
+    )
+    integrations_sub = integrations_parser.add_subparsers(dest="integrations_command")
+    integrations_install = integrations_sub.add_parser(
+        "install", help="Install pi, Claude Code, and Codex attach helpers"
+    )
+    integrations_install.add_argument(
+        "targets",
+        nargs="*",
+        default=None,
+        help="Integrations to install. Default: detected agents. Use all, pi, claude, or codex.",
+    )
+    integrations_install.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing integration files",
+    )
+
     # tether status
     sub.add_parser("status", help="Server health and session summary")
 
@@ -192,6 +217,45 @@ def main(argv: list[str] | None = None) -> None:
         "--state",
         "-s",
         help="Filter Tether sessions by state (running, awaiting_input, error, created)",
+    )
+
+    # tether attach-current
+    attach_current_parser = sub.add_parser(
+        "attach-current", help="Attach the current external agent session"
+    )
+    attach_current_parser.add_argument(
+        "--runner-type",
+        "-r",
+        default="claude_code",
+        help="Runner type (claude_code, codex, pi)",
+    )
+    attach_current_parser.add_argument(
+        "--directory",
+        "-d",
+        default=".",
+        help="Working directory (default: current directory)",
+    )
+    attach_current_parser.add_argument(
+        "--external-id",
+        help="External session ID, if the agent exposes one",
+    )
+    attach_current_parser.add_argument(
+        "--bridge",
+        "-p",
+        dest="platform",
+        default="auto",
+        metavar="BRIDGE",
+        help="Bridge to bind: auto, none, telegram, slack, discord",
+    )
+    attach_current_parser.add_argument(
+        "--name",
+        help="Name to give the Tether session",
+    )
+    attach_current_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print machine-readable JSON",
     )
 
     # tether attach
@@ -232,7 +296,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Working directory (default: current directory, unless --clone is used)",
     )
     new_parser.add_argument(
-        "--template", "-t",
+        "--template",
+        "-t",
         metavar="NAME_OR_PATH",
         help="Session template name or path (overrides can be mixed with other flags)",
     )
@@ -254,13 +319,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Bind to a bridge (telegram, slack, discord)",
     )
     new_parser.add_argument(
-        "--clone", "-c",
+        "--clone",
+        "-c",
         dest="clone_url",
         metavar="URL",
         help="Git repo URL to clone as the session workspace",
     )
     new_parser.add_argument(
-        "--branch", "-b",
+        "--branch",
+        "-b",
         dest="clone_branch",
         metavar="BRANCH",
         help="Branch to checkout (only valid with --clone or template)",
@@ -296,7 +363,9 @@ def main(argv: list[str] | None = None) -> None:
     interrupt_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
     # tether delete
-    detach_parser = sub.add_parser("detach", help="Remove the platform binding from a session")
+    detach_parser = sub.add_parser(
+        "detach", help="Remove the platform binding from a session"
+    )
     detach_parser.add_argument("session_id", help="Session ID (prefix is fine)")
 
     delete_parser = sub.add_parser("delete", help="Delete a session")
@@ -325,14 +394,20 @@ def main(argv: list[str] | None = None) -> None:
     git_sub = git_parser.add_subparsers(dest="git_command")
 
     # tether git status <session-id>
-    git_status_p = git_sub.add_parser("status", help="Show branch, changes, last commit")
+    git_status_p = git_sub.add_parser(
+        "status", help="Show branch, changes, last commit"
+    )
     git_status_p.add_argument("session_id", help="Session ID (prefix is fine)")
 
     # tether git log <session-id> [-n N]
     git_log_p = git_sub.add_parser("log", help="Show recent commits")
     git_log_p.add_argument("session_id", help="Session ID (prefix is fine)")
     git_log_p.add_argument(
-        "-n", "--count", type=int, default=10, metavar="N",
+        "-n",
+        "--count",
+        type=int,
+        default=10,
+        metavar="N",
         help="Number of commits to show (default: 10)",
     )
 
@@ -344,7 +419,10 @@ def main(argv: list[str] | None = None) -> None:
     git_commit_p = git_sub.add_parser("commit", help="Commit all changes")
     git_commit_p.add_argument("session_id", help="Session ID (prefix is fine)")
     git_commit_p.add_argument(
-        "--message", "-m", required=True, metavar="MSG",
+        "--message",
+        "-m",
+        required=True,
+        metavar="MSG",
         help="Commit message",
     )
 
@@ -363,7 +441,8 @@ def main(argv: list[str] | None = None) -> None:
     git_branch_p.add_argument("session_id", help="Session ID (prefix is fine)")
     git_branch_p.add_argument("name", help="New branch name")
     git_branch_p.add_argument(
-        "--no-checkout", action="store_true",
+        "--no-checkout",
+        action="store_true",
         help="Create branch without switching to it",
     )
 
@@ -375,12 +454,20 @@ def main(argv: list[str] | None = None) -> None:
     # tether git pr <session-id> -t <title>
     git_pr_p = git_sub.add_parser("pr", help="Create a pull/merge request")
     git_pr_p.add_argument("session_id", help="Session ID (prefix is fine)")
-    git_pr_p.add_argument("--title", "-t", required=True, metavar="TITLE", help="PR title")
-    git_pr_p.add_argument("--body", "-b", default="", metavar="BODY", help="PR description")
-    git_pr_p.add_argument("--base", metavar="BRANCH", help="Target branch (default: repo default)")
+    git_pr_p.add_argument(
+        "--title", "-t", required=True, metavar="TITLE", help="PR title"
+    )
+    git_pr_p.add_argument(
+        "--body", "-b", default="", metavar="BODY", help="PR description"
+    )
+    git_pr_p.add_argument(
+        "--base", metavar="BRANCH", help="Target branch (default: repo default)"
+    )
     git_pr_p.add_argument("--draft", action="store_true", help="Create as a draft PR")
     git_pr_p.add_argument(
-        "--no-push", action="store_true", dest="no_push",
+        "--no-push",
+        action="store_true",
+        dest="no_push",
         help="Do not auto-push before creating the PR",
     )
 
@@ -396,9 +483,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # tether workspaces clean
     workspaces_sub = workspaces_parser.add_subparsers(dest="workspaces_command")
-    workspaces_sub.add_parser(
-        "clean", help="Remove orphaned workspace directories"
-    )
+    workspaces_sub.add_parser("clean", help="Remove orphaned workspace directories")
 
     # tether context [list|use <name>]
     context_parser = sub.add_parser(
@@ -406,9 +491,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     context_sub = context_parser.add_subparsers(dest="context_command")
     context_sub.add_parser("list", help="List all available contexts")
-    context_use_p = context_sub.add_parser(
-        "use", help="Switch to a named context"
-    )
+    context_use_p = context_sub.add_parser("use", help="Switch to a named context")
     context_use_p.add_argument(
         "context_name", help="Context name (use 'local' for local server)"
     )
@@ -437,7 +520,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # tether server git-key <name>
     server_git_key_p = server_sub.add_parser(
-        "git-key", help="Show the SSH public key for cloning git repos on a remote server"
+        "git-key",
+        help="Show the SSH public key for cloning git repos on a remote server",
     )
     server_git_key_p.add_argument("name", help="Server alias from servers.yaml")
 
@@ -480,6 +564,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_init()
     elif args.command == "templates":
         _run_templates(args)
+    elif args.command == "integrations":
+        _run_integrations(args)
     elif args.command == "context":
         _run_context(args)
     elif args.command == "server":
@@ -487,8 +573,21 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "setup":
         _run_setup(args)
     elif args.command in (
-        "status", "verify", "open", "list", "attach", "new", "input", "interrupt", "detach", "delete", "sync",
-        "watch", "git", "workspaces",
+        "status",
+        "verify",
+        "open",
+        "list",
+        "attach-current",
+        "attach",
+        "new",
+        "input",
+        "interrupt",
+        "detach",
+        "delete",
+        "sync",
+        "watch",
+        "git",
+        "workspaces",
     ):
         _apply_connection_args(args)
         _run_client(args)
@@ -536,6 +635,19 @@ def _run_templates(args: argparse.Namespace) -> None:
     else:
         print("Usage: tether templates <list|show>", file=sys.stderr)
         sys.exit(1)
+
+
+def _run_integrations(args: argparse.Namespace) -> None:
+    """Handle ``tether integrations`` subcommands."""
+    cmd = getattr(args, "integrations_command", None)
+    if cmd == "install":
+        from tether.cli_client import cmd_install_integrations
+
+        cmd_install_integrations(args.targets, force=args.force)
+        return
+
+    print("Usage: tether integrations install [all|pi|claude|codex]", file=sys.stderr)
+    sys.exit(1)
 
 
 def _run_context(args: argparse.Namespace) -> None:
@@ -632,7 +744,6 @@ def _run_setup(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-
 def _run_client(args: argparse.Namespace) -> None:
     """Handle client subcommands that talk to a running server."""
     # Connection args are applied in ``main()`` before dispatching here.
@@ -643,6 +754,7 @@ def _run_client(args: argparse.Namespace) -> None:
 
     from tether.cli_client import (
         cmd_attach,
+        cmd_attach_current,
         cmd_delete,
         cmd_detach,
         cmd_git_branch,
@@ -761,6 +873,15 @@ def _run_client(args: argparse.Namespace) -> None:
                 else:
                     directory = os.path.abspath(args.directory or ".")
                 cmd_new(directory, args.adapter, args.prompt, args.platform)
+    elif args.command == "attach-current":
+        cmd_attach_current(
+            runner_type=args.runner_type,
+            directory=args.directory,
+            external_id=args.external_id,
+            platform=args.platform,
+            name=args.name,
+            as_json=args.as_json,
+        )
     elif args.command == "attach":
         directory = os.path.abspath(args.directory)
         cmd_attach(args.external_id, args.runner_type, directory, args.platform)
@@ -779,7 +900,10 @@ def _run_client(args: argparse.Namespace) -> None:
     elif args.command == "git":
         git_cmd = getattr(args, "git_command", None)
         if not git_cmd:
-            print("Error: specify a git subcommand (status, log, diff, commit, push, branch, checkout).", file=sys.stderr)
+            print(
+                "Error: specify a git subcommand (status, log, diff, commit, push, branch, checkout).",
+                file=sys.stderr,
+            )
             sys.exit(1)
         if git_cmd == "status":
             cmd_git_status(args.session_id)
@@ -790,7 +914,11 @@ def _run_client(args: argparse.Namespace) -> None:
         elif git_cmd == "commit":
             cmd_git_commit(args.session_id, args.message)
         elif git_cmd == "push":
-            cmd_git_push(args.session_id, remote=args.remote, branch=getattr(args, "branch", None))
+            cmd_git_push(
+                args.session_id,
+                remote=args.remote,
+                branch=getattr(args, "branch", None),
+            )
         elif git_cmd == "branch":
             cmd_git_branch(args.session_id, args.name, checkout=not args.no_checkout)
         elif git_cmd == "checkout":
@@ -915,7 +1043,7 @@ def _run_server_init(args: argparse.Namespace) -> None:
         print(f"  SSH user: {user}")
     print(f"  Port:    {port}")
     if telegram_token:
-        print(f"  Telegram: configured")
+        print("  Telegram: configured")
     print()
 
     try:
@@ -954,7 +1082,7 @@ def _run_server_init(args: argparse.Namespace) -> None:
     print()
     print("To switch to this server:")
     print(f"  tether context use {result.name}")
-    print(f"  tether status")
+    print("  tether status")
 
     if result.ssh_public_key:
         print()
@@ -1027,7 +1155,7 @@ def _run_server_status(args: argparse.Namespace) -> None:
         quiet=True,
     )
     if rc == 0 and out:
-        print(f"  Status: healthy")
+        print("  Status: healthy")
         try:
             import json
 
@@ -1078,7 +1206,7 @@ def _run_server_upgrade(args: argparse.Namespace) -> None:
     print("Restarting service...")
     rc2, _, _ = ssh_run(
         host,
-        f"sudo systemctl restart tether 2>/dev/null || systemctl --user restart tether 2>/dev/null",
+        "sudo systemctl restart tether 2>/dev/null || systemctl --user restart tether 2>/dev/null",
         quiet=True,
     )
     if rc2 == 0:

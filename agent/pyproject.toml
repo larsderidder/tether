@@ -92,7 +92,7 @@ tether-mcp = "tether.mcp_server.server:main"
 include = ["tether*"]
 
 [tool.setuptools.package-data]
-tether = ["static_ui/**/*", "sidecars/*.mjs", "py.typed"]
+tether = ["static_ui/**/*", "sidecars/*.mjs", "integrations/**/*", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

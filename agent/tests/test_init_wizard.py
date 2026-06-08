@@ -5,8 +5,34 @@ import stat
 
 import pytest
 
-from tether.init_wizard import _write_config
+from tether.init_wizard import _configure_integrations, _write_config
 from tether.config import parse_env_file
+
+
+class TestConfigureIntegrations:
+    """Test in-agent helper setup."""
+
+    def test_skips_when_no_agents_detected(self):
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                "tether.agent_integrations.detected_integrations", lambda: []
+            )
+            _configure_integrations()
+
+    def test_installs_detected_agents_on_confirmation(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "tether.agent_integrations.detected_integrations", lambda: ["pi"]
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+        monkeypatch.setattr(
+            "tether.agent_integrations.install_integrations",
+            lambda targets: calls.append(targets) or [],
+        )
+
+        _configure_integrations()
+
+        assert calls == [["pi"]]
 
 
 class TestWriteConfig:
@@ -44,6 +70,3 @@ class TestWriteConfig:
 
         parsed = parse_env_file(dest)
         assert parsed["K"] == "val#ue"
-
-
-

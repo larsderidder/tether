@@ -55,7 +55,9 @@ def _parse_positive_timeout_env(name: str, default: float) -> float:
     return parsed
 
 
-def _build_timeout(*, read_timeout: float = _DEFAULT_HTTP_TIMEOUT_SECONDS) -> httpx.Timeout:
+def _build_timeout(
+    *, read_timeout: float = _DEFAULT_HTTP_TIMEOUT_SECONDS
+) -> httpx.Timeout:
     return httpx.Timeout(
         connect=_DEFAULT_HTTP_TIMEOUT_SECONDS,
         read=read_timeout,
@@ -85,6 +87,7 @@ def _client(*, timeout: httpx.Timeout | float | None = None) -> httpx.Client:
 _RUNNER_TYPE_ALIASES: dict[str, str] = {
     "claude": "claude_code",
     "cc": "claude_code",
+    "codex_code": "codex",
 }
 
 
@@ -95,7 +98,10 @@ def _normalize_runner_type(value: str) -> str:
 
 def _handle_connection_error() -> None:
     """Print a friendly message when the server is unreachable."""
-    print("Error: Cannot connect to the Tether server or the request timed out.", file=sys.stderr)
+    print(
+        "Error: Cannot connect to the Tether server or the request timed out.",
+        file=sys.stderr,
+    )
     print("Is it running? Start it with: tether start", file=sys.stderr)
     sys.exit(1)
 
@@ -486,6 +492,38 @@ def _post_json(path: str, body: dict) -> dict:
         return resp.json()
 
 
+def cmd_install_integrations(
+    targets: list[str] | None = None, *, force: bool = False
+) -> None:
+    """Install bundled agent integration files."""
+    from tether.agent_integrations import install_integrations, known_integrations
+
+    selected_targets = targets or None
+    try:
+        results = install_integrations(selected_targets, force=force)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Known integrations: {', '.join(known_integrations())}", file=sys.stderr)
+        sys.exit(1)
+
+    if not results:
+        print(
+            "No supported agent CLIs found on PATH. Use `tether integrations install all` to install every helper."
+        )
+        return
+
+    conflicts = [result for result in results if result.action == "conflict"]
+    for result in results:
+        print(f"{result.name}: {result.action} {result.path}")
+
+    if conflicts:
+        print(
+            "\nSome files already exist and differ. Re-run with --force to overwrite them.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def cmd_status() -> None:
     """Print server health and session summary."""
     _print_context_banner()
@@ -572,6 +610,132 @@ def cmd_list_external(
     _print_external_sessions_table(items)
 
 
+def _resolve_attach_platform(platform: str | None) -> str | None:
+    """Resolve auto or none bridge selection for non-interactive attach."""
+    value = (platform or "").strip().lower()
+    if value in {"", "none", "no", "false"}:
+        return None
+    if value != "auto":
+        return value
+
+    configured = os.environ.get("TETHER_ATTACH_BRIDGE", "").strip().lower()
+    if configured and configured not in {"auto", "none"}:
+        return configured
+
+    running = _get_running_platforms()
+    if len(running) == 1:
+        return running[0]
+    return None
+
+
+def _pick_current_external_session(
+    sessions: list[dict],
+    *,
+    directory: str,
+) -> dict | None:
+    """Pick the best matching current external session from discovery results."""
+    normalized = directory.rstrip("/")
+    exact = [
+        s for s in sessions if str(s.get("directory") or "").rstrip("/") == normalized
+    ]
+    candidates = exact or sessions
+    if not candidates:
+        return None
+
+    running = [s for s in candidates if s.get("is_running")]
+    candidates = running or candidates
+    return max(candidates, key=lambda s: str(s.get("last_activity") or ""))
+
+
+def cmd_attach_current(
+    *,
+    runner_type: str,
+    directory: str,
+    external_id: str | None = None,
+    platform: str | None = "auto",
+    name: str | None = None,
+    as_json: bool = False,
+) -> None:
+    """Attach the current agent session without an interactive picker."""
+    try:
+        resolved_runner_type = _normalize_runner_type(runner_type)
+        resolved_directory = os.path.abspath(directory)
+        resolved_platform = _resolve_attach_platform(platform)
+
+        match = None
+        if external_id:
+            match = {
+                "id": external_id,
+                "runner_type": resolved_runner_type,
+                "directory": resolved_directory,
+            }
+        else:
+            sessions = _fetch_external_sessions(
+                directory=resolved_directory,
+                runner_type=resolved_runner_type,
+            )
+            match = _pick_current_external_session(
+                sessions,
+                directory=resolved_directory,
+            )
+            if not match:
+                print(
+                    f"Error: no {resolved_runner_type} session found in {resolved_directory}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        body: dict = {
+            "external_id": match["id"],
+            "runner_type": match.get("runner_type", resolved_runner_type),
+            "directory": match.get("directory") or resolved_directory,
+        }
+        if resolved_platform:
+            body["platform"] = resolved_platform
+
+        resp = _post_attach(body)
+        _check_response(resp)
+        session = resp.json()
+
+        cleaned_name = " ".join(name.split()) if name else ""
+        if cleaned_name:
+            with _client(timeout=_mutation_timeout()) as c:
+                rename_resp = c.patch(
+                    f"/api/sessions/{session['id']}/rename",
+                    json={"name": cleaned_name[:80]},
+                )
+                _check_response(rename_resp)
+                session = rename_resp.json()
+    except _CLIENT_ERROR_TYPES:
+        _handle_connection_error()
+        return
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "session_id": session["id"],
+                    "external_id": body["external_id"],
+                    "runner_type": body["runner_type"],
+                    "directory": session.get("directory"),
+                    "platform": session.get("platform"),
+                    "state": session.get("state"),
+                    "name": session.get("name"),
+                }
+            )
+        )
+        return
+
+    print(f"Attached current {body['runner_type']} session to Tether")
+    print(f"  Session:   {session['id']}")
+    print(f"  State:     {_format_state(session['state'])}")
+    print(f"  Directory: {session.get('directory') or '?'}")
+    if session.get("name"):
+        print(f"  Name:      {session['name']}")
+    if session.get("platform"):
+        print(f"  Platform:  {session['platform']}")
+
+
 def cmd_attach(
     external_id: str | None,
     runner_type: str,
@@ -591,7 +755,9 @@ def cmd_attach(
         # Interactive mode: no ID given, pick from current directory
         if not external_id:
             cwd = os.getcwd()
-            ext_sessions = _fetch_external_sessions(directory=cwd, runner_type=runner_type)
+            ext_sessions = _fetch_external_sessions(
+                directory=cwd, runner_type=runner_type
+            )
             local = [
                 s
                 for s in ext_sessions
@@ -864,7 +1030,9 @@ def cmd_sync(session_id: str, force: bool = False) -> None:
         print(f"Already up to date ({total} message{'s' if total != 1 else ''} total)")
     else:
         action = "Force-synced" if force else "Synced"
-        print(f"{action} {synced} new message{'s' if synced != 1 else ''} ({total} total)")
+        print(
+            f"{action} {synced} new message{'s' if synced != 1 else ''} ({total} total)"
+        )
 
 
 def cmd_interrupt(session_id: str) -> None:
@@ -964,7 +1132,13 @@ def cmd_watch(session_id: str) -> None:
 
     except KeyboardInterrupt:
         print("\nStopped watching.")
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, ConnectionRefusedError, OSError):
+    except (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        ConnectionRefusedError,
+        OSError,
+    ):
         _handle_connection_error()
     finally:
         try:
@@ -1003,9 +1177,14 @@ def cmd_verify() -> None:
             resp = c.get("/api/sessions")
         if resp.status_code == 200:
             sessions = resp.json()
-            print(f"  API:        ok ({len(sessions)} session{'s' if len(sessions) != 1 else ''})")
+            print(
+                f"  API:        ok ({len(sessions)} session{'s' if len(sessions) != 1 else ''})"
+            )
         elif resp.status_code == 401:
-            print("  API:        FAIL (401 unauthorized, check TETHER_AGENT_TOKEN)", file=sys.stderr)
+            print(
+                "  API:        FAIL (401 unauthorized, check TETHER_AGENT_TOKEN)",
+                file=sys.stderr,
+            )
             all_ok = False
         else:
             print(f"  API:        FAIL (HTTP {resp.status_code})", file=sys.stderr)
@@ -1274,7 +1453,9 @@ def cmd_git_log(session_id: str, count: int = 10) -> None:
         return
 
     try:
-        commits = _get_json(f"/api/sessions/{session_id}/git/log", params={"count": str(count)})
+        commits = _get_json(
+            f"/api/sessions/{session_id}/git/log", params={"count": str(count)}
+        )
     except (httpx.ConnectError, httpx.ConnectTimeout):
         _handle_connection_error()
         return
@@ -1328,7 +1509,9 @@ def cmd_git_commit(session_id: str, message: str) -> None:
     print(f"Committed {commit['hash']}: {commit['message']}")
 
 
-def cmd_git_push(session_id: str, remote: str = "origin", branch: str | None = None) -> None:
+def cmd_git_push(
+    session_id: str, remote: str = "origin", branch: str | None = None
+) -> None:
     """Push commits from a session's workspace to a remote."""
     session_id = _resolve_session_id(session_id)
     if not session_id:
@@ -1387,7 +1570,12 @@ def cmd_git_pr(
     if not session_id:
         return
 
-    payload: dict = {"title": title, "body": body, "draft": draft, "auto_push": auto_push}
+    payload: dict = {
+        "title": title,
+        "body": body,
+        "draft": draft,
+        "auto_push": auto_push,
+    }
     if base:
         payload["base"] = base
 
@@ -1406,7 +1594,9 @@ def cmd_git_pr(
 
     draft_label = " (draft)" if result.get("draft") else ""
     forge = result.get("forge", "")
-    print(f"{'PR' if forge == 'github' else 'MR'} created{draft_label}: {result['url']}")
+    print(
+        f"{'PR' if forge == 'github' else 'MR'} created{draft_label}: {result['url']}"
+    )
 
 
 def cmd_git_checkout(session_id: str, branch: str) -> None:
@@ -1701,9 +1891,13 @@ def cmd_setup_bridge(bridge_name: str) -> None:
                 local_channel_id = local_config.get("DISCORD_CHANNEL_ID", "")
                 print()
                 try:
-                    create_new = input(
-                        f"  Reuse existing channel ({local_channel_id}), enter a different ID, or create a new one? [reuse/id/create]: "
-                    ).strip().lower()
+                    create_new = (
+                        input(
+                            f"  Reuse existing channel ({local_channel_id}), enter a different ID, or create a new one? [reuse/id/create]: "
+                        )
+                        .strip()
+                        .lower()
+                    )
                 except (EOFError, KeyboardInterrupt):
                     print()
                     sys.exit(0)
@@ -1729,31 +1923,41 @@ def cmd_setup_bridge(bridge_name: str) -> None:
                     except RuntimeError as exc:
                         print(f"  Warning: {exc}")
                         try:
-                            guild_id = input("  Enter the Discord guild/server ID manually: ").strip()
+                            guild_id = input(
+                                "  Enter the Discord guild/server ID manually: "
+                            ).strip()
                         except (EOFError, KeyboardInterrupt):
                             print()
                             sys.exit(0)
 
                     try:
-                        new_channel_name = input(
-                            "  New channel name [tether]: "
-                        ).strip() or "tether"
+                        new_channel_name = (
+                            input("  New channel name [tether]: ").strip() or "tether"
+                        )
                     except (EOFError, KeyboardInterrupt):
                         print()
                         sys.exit(0)
 
                     print(f"  Creating #{new_channel_name}...")
                     try:
-                        new_channel_id = _create_discord_channel(bot_token, guild_id, new_channel_name)
+                        new_channel_id = _create_discord_channel(
+                            bot_token, guild_id, new_channel_name
+                        )
                         env["DISCORD_CHANNEL_ID"] = new_channel_id
                         print(f"  Created channel (ID: {new_channel_id})")
                     except RuntimeError as exc:
                         print(f"  Error creating channel: {exc}", file=sys.stderr)
-                        print("  Tip: give the bot 'Manage Channels' permission in your Discord server,")
-                        print("       or create a channel manually and use the 'id' option.")
+                        print(
+                            "  Tip: give the bot 'Manage Channels' permission in your Discord server,"
+                        )
+                        print(
+                            "       or create a channel manually and use the 'id' option."
+                        )
                         print("  Falling back to existing channel.")
                 elif create_new not in ("", "reuse", "r"):
-                    print(f"  Unrecognised input '{create_new}', keeping existing channel.")
+                    print(
+                        f"  Unrecognised input '{create_new}', keeping existing channel."
+                    )
             else:
                 # Non-Discord: offer to override per-field.
                 print()
@@ -1762,7 +1966,12 @@ def cmd_setup_bridge(bridge_name: str) -> None:
                     key = var["key"]
                     label = var["label"]
                     current = env.get(key, "")
-                    display = current[:8] + "..." if ("token" in key.lower() or "password" in key.lower()) and len(current) > 8 else current
+                    display = (
+                        current[:8] + "..."
+                        if ("token" in key.lower() or "password" in key.lower())
+                        and len(current) > 8
+                        else current
+                    )
                     try:
                         value = input(f"    {label} [{display}]: ").strip()
                     except (EOFError, KeyboardInterrupt):
@@ -1802,4 +2011,6 @@ def cmd_setup_bridge(bridge_name: str) -> None:
 
     print(f"  {result.get('message', 'Done.')}")
     print()
-    print(f"Bridge configured. The {bridge_name} bridge is now active on {server_label}.")
+    print(
+        f"Bridge configured. The {bridge_name} bridge is now active on {server_label}."
+    )

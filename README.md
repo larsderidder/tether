@@ -26,6 +26,14 @@ tether start         # runs in the background
 tether attach        # pick from sessions running in the current directory
 ```
 
+You can also install one-command helpers into the agents themselves:
+
+```bash
+tether integrations install
+```
+
+That installs helpers for the agent CLIs found on your machine: `/tether` in Pi, `/tether` in Claude Code, and `/prompts:tether` in Codex. Running the helper from inside an agent session attaches that session to Tether and binds the single running bridge automatically. The Pi helper also carries over the current Pi session name when one is set. `tether init` also offers to install these helpers.
+
 From that point the session appears in the web UI and, if you set up a bridge, gets its own Telegram topic or Discord thread where output streams live and approvals show up as buttons.
 
 If you want to launch agents through Tether rather than directly:
@@ -96,7 +104,18 @@ tether list --external            # show all discoverable sessions
 tether attach                     # pick from sessions in current directory
 tether attach <id-prefix>         # attach by ID (prefix is fine)
 tether attach <id> -p telegram    # attach and create a Telegram topic
+tether attach-current -r pi       # non-interactive attach for agent helpers
 ```
+
+To install in-agent helpers:
+
+```bash
+tether integrations install       # install helpers for detected agents
+tether integrations install all   # install pi, Claude Code, and Codex helpers
+tether integrations install pi    # only the Pi extension
+```
+
+`tether init` offers the same install step when it detects a supported agent CLI. After installing, use `/tether` in Pi, `/tether` in Claude Code, or `/prompts:tether` in Codex. Pass `none`, `telegram`, `slack`, or `discord` to override the default `auto` bridge selection.
 
 After attaching, use `tether sync` to pull messages that arrived before attachment.
 
@@ -112,6 +131,10 @@ Configure credentials in `~/.config/tether/config.env` (or `.env` in the project
 
 Telegram requires a supergroup with Topics enabled. Each session gets its own topic. Commands work in the General topic: `/list`, `/attach`, `/new`, `/help`.
 
+For Telegram, set `TELEGRAM_ALLOWED_USER_IDS` to a comma-separated list of user IDs that may control sessions and approve tools. Without it, everyone in the forum can interact with bound sessions.
+
+Claude subscription OAuth is intended for your own local use. If other people use your Tether instance, give each person their own credentials or use `ANTHROPIC_API_KEY` for a server or team deployment. Do not expose one Claude account to a shared Telegram, Slack, or Discord bridge.
+
 ## Adapters
 
 Set `TETHER_DEFAULT_AGENT_ADAPTER` to use `tether new` or create sessions from the UI without specifying an adapter each time. If you only ever attach external sessions, you do not need this.
@@ -123,7 +146,7 @@ Set `TETHER_DEFAULT_AGENT_ADAPTER` to use `tether new` or create sessions from t
 | `opencode` | OpenCode via TypeScript sidecar (auto-managed) |
 | `codex_sdk_sidecar` | Codex via TypeScript sidecar |
 | `pi_rpc` | Pi coding agent via JSON-RPC |
-| `runbook` | Local YAML runbooks backed by subprocess steps |
+| `automation` | Script automations backed by local commands and manifests |
 | `litellm` | Any model via LiteLLM (experimental) |
 
 ## CLI
@@ -140,6 +163,8 @@ tether list --external               # discover Claude Code / Codex / OpenCode /
 tether attach                        # pick from sessions in current directory
 tether attach <id>                   # attach by ID prefix
 tether attach <id> -p telegram       # attach and bind a messaging thread
+tether attach-current -r codex       # attach the current running session non-interactively
+tether integrations install          # install helpers for detected agents
 
 # manage Tether sessions
 tether status                        # server health and active bridges

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import shutil
 from pathlib import Path
 
 from tether.config import config_dir
@@ -30,7 +29,10 @@ def run_wizard() -> None:
     # 2. Bridge setup
     _configure_bridge(config)
 
-    # 3. Write config
+    # 3. In-agent helpers
+    _configure_integrations()
+
+    # 4. Write config
     dest = config_dir() / "config.env"
     _write_config(config, dest)
 
@@ -38,15 +40,41 @@ def run_wizard() -> None:
     print(f"Configuration written to {dest}")
     print()
     print("Next steps:")
-    print(f"  tether start")
+    print("  tether start")
     print()
-    print(f"To create sessions from the CLI or UI, set a default agent adapter:")
-    print(f"  TETHER_DEFAULT_AGENT_ADAPTER=claude_auto   # or opencode, pi_rpc, codex_sdk_sidecar")
+    print("To create sessions from the CLI or UI, set a default agent adapter:")
+    print(
+        "  TETHER_DEFAULT_AGENT_ADAPTER=claude_auto   # or opencode, pi_rpc, codex_sdk_sidecar"
+    )
     print()
-    print(f"Your auth token (save this for connecting from your browser):")
+    print("Your auth token (save this for connecting from your browser):")
     print(f"  {token}")
     print()
 
+
+def _configure_integrations() -> None:
+    """Offer to install attach helpers for detected local agent CLIs."""
+    from tether.agent_integrations import detected_integrations, install_integrations
+
+    targets = detected_integrations()
+    if not targets:
+        return
+
+    print()
+    choice = _prompt_choice(
+        f"Install /tether helpers for detected agents ({', '.join(targets)})?",
+        ["Install", "Skip"],
+    )
+    if choice == "Skip":
+        return
+
+    results = install_integrations(targets)
+    for result in results:
+        print(f"  {result.name}: {result.action} {result.path}")
+    if any(result.action == "conflict" for result in results):
+        print(
+            "  Some helpers already exist and differ. Run `tether integrations install --force` to overwrite them."
+        )
 
 
 def _configure_bridge(config: dict[str, str]) -> None:
@@ -65,10 +93,17 @@ def _configure_bridge(config: dict[str, str]) -> None:
         print("Create a Telegram bot via @BotFather and enable topics in your group.")
         config["TELEGRAM_BOT_TOKEN"] = _prompt("Telegram bot token")
         config["TELEGRAM_FORUM_GROUP_ID"] = _prompt("Telegram forum group ID")
+        allowed_users = _prompt(
+            "Allowed Telegram user IDs, comma-separated (recommended)"
+        )
+        if allowed_users:
+            config["TELEGRAM_ALLOWED_USER_IDS"] = allowed_users
 
     elif choice == "Slack":
         print()
-        print("Create a Slack app at https://api.slack.com/apps with Socket Mode enabled.")
+        print(
+            "Create a Slack app at https://api.slack.com/apps with Socket Mode enabled."
+        )
         config["SLACK_BOT_TOKEN"] = _prompt("Slack bot token (xoxb-...)")
         config["SLACK_APP_TOKEN"] = _prompt("Slack app token (xapp-...)")
         config["SLACK_CHANNEL_ID"] = _prompt("Slack channel ID")
