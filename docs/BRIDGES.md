@@ -17,6 +17,7 @@ Bridges are one of the event consumption paths from the store subscriber queue (
 - `BridgeInterface` (ABC) — shared base with abstract methods + shared helpers
 - `BridgeManager` — singleton registry mapping platform names to bridge instances
 - `BridgeSubscriber` — background task per session consuming events from store queue
+- `command_catalog.py` — shared command metadata for bridge help text and Telegram menu registration
 
 ## BridgeInterface (`agent/tether/bridges/base.py`)
 
@@ -53,7 +54,7 @@ Routes store events to bridge methods:
 ## Platform Implementations
 
 ### Telegram (`agent/tether/bridges/telegram/`)
-- **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/usage`, `/compact`, `/help`
+- **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/sync`, `/usage`, `/compact`, `/help`
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
 - Approval UI: inline keyboard with Allow, Deny, Allow {tool} (30m), Allow All (30m), Show All
@@ -61,8 +62,8 @@ Routes store events to bridge methods:
 - Auto-approve sends `✅ <b>Tool</b> — auto-approved (reason)` notification
 
 ### Slack (`agent/tether/bridges/slack/`)
-- **bot.py** — Thread-based: `!attach`, `!list`, `!stop`, `!usage`, `!compact`, `!help`, `!status`
-- Git commands (inside a session thread): `!git`, `!commit <msg>`, `!push`, `!pr <title> [--draft]`
+- **bot.py** — Thread-based: `!attach`, `!list`, `!stop`, `!sync`, `!usage`, `!compact`, `!help`, `!status`
+- Git commands (inside a session thread): `!git`, `!pr <title> [--draft]`
 - Socket mode for real-time events (requires `SLACK_APP_TOKEN`)
 - Text-based approval: reply `allow`, `deny`, `allow all`, `allow {tool}`
 - Auto-approve sends `✅ *Tool* — auto-approved (reason)` notification
@@ -70,7 +71,7 @@ Routes store events to bridge methods:
 
 ### Discord (`agent/tether/bridges/discord/`)
 - **bot.py** — Thread-based: same `!` commands as Slack, plus `!rename` / `!name`
-- Git commands (inside a session thread): `!git`, `!commit <msg>`, `!push`, `!pr <title> [--draft]`
+- Git commands (inside a session thread): `!git`, `!pr <title> [--draft]`
 - discord.py client with message_content intent
 - Text-based approval: same as Slack
 - Auto-approve sends `✅ **Tool** — auto-approved (reason)` notification
@@ -84,24 +85,24 @@ Routes store events to bridge methods:
 | Command | Action |
 |---------|--------|
 | `!compact [instructions]` / `/compact [instructions]` | Request pi context compaction for the current session |
-| `!sync` | Pull new messages from an attached external session |
+| `!sync` / `/sync` | Pull new messages from an attached external session |
 | `!usage` / `/usage` | Show token usage and cost |
 | `!stop` / `/stop` | Interrupt the session |
 
 ## Bridge Git Commands
 
-Available inside a session thread on Slack and Discord (and via Telegram `/commit`, `/push`, `/pr`):
+Available inside a session thread on Slack and Discord and inside a session topic on Telegram:
 
 | Command | Action |
 |---------|--------|
-| `!git` | Show git status: branch, ahead/behind, changed files, last commit |
-| `!commit <message>` | Stage all changes and commit |
-| `!push` | Push current branch to origin |
-| `!pr <title> [--draft]` | Create a pull/merge request via `gh` or `glab` |
+| `!git` / `/git` | Show git status: branch, ahead/behind, changed files, last commit |
+| `!pr <title> [--draft]` / `/pr <title> [--draft]` | Create a pull/merge request via `gh` or `glab` |
+| `/diff` | Telegram only: show a change summary and attach the full patch |
+| `/log [n]` | Telegram only: show recent commits |
 
 These call the git API endpoints on the Tether server. The session workspace
-must be a git repository (i.e. the session was created with `--clone`). Git
-write commands are blocked while the session is `RUNNING`.
+must be a git repository. Git write commands such as commit and push are
+available through the API and CLI, but not through bridge chat commands.
 
 Forge detection is automatic: `github.com` URLs use `gh`, GitLab URLs use `glab`.
 
@@ -142,6 +143,7 @@ Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 - `agent/tether/bridges/base.py` — Interface + shared logic
 - `agent/tether/bridges/manager.py` — BridgeManager singleton
 - `agent/tether/bridges/subscriber.py` — Event consumer/router
+- `agent/tether/bridges/command_catalog.py` — Shared bridge command catalog
 - `agent/tether/bridges/telegram/` — Telegram implementation
 - `agent/tether/bridges/slack/` — Slack implementation
 - `agent/tether/bridges/discord/` — Discord implementation

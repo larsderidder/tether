@@ -12,6 +12,7 @@ from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.attachments import attachments_from_metadata
+from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.rich_output import render_slack_messages
@@ -224,12 +225,8 @@ class SlackBridge(UpstreamSlackBridge):
             await self._reply(event, f"Failed to compact session: {exc}")
 
     async def _cmd_help(self, event: dict) -> None:
-        """Handle !help with local commands included."""
-        await super()._cmd_help(event)
-        await self._reply(
-            event,
-            "Extra command: !compact [instructions] - Compact pi context for this session",
-        )
+        """Handle !help."""
+        await self._reply(event, help_text("slack", prefix="!"))
 
     async def _handle_message(self, event: dict) -> None:
         """Route incoming Slack messages to commands or session input."""

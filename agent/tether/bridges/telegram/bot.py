@@ -14,8 +14,10 @@ import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
 try:
+    from telegram import BotCommand
     from telegram.ext import ApplicationHandlerStop
 except ImportError:
+    BotCommand = None
 
     class ApplicationHandlerStop(Exception):
         """Fallback used when python-telegram-bot is not installed."""
@@ -28,6 +30,7 @@ from tether.bridges.base import (
     _EXTERNAL_PAGE_SIZE,
     _relative_time,
 )
+from tether.bridges.command_catalog import help_text, telegram_menu_commands
 from tether.bridges.compact_api import compact_session
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
@@ -331,7 +334,9 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._app.add_handler(MessageHandler(filters.ALL, self._guard_update), group=-1)
         self._app.add_handler(CallbackQueryHandler(self._guard_update), group=-1)
 
+        self._app.add_handler(CommandHandler("sync", self._cmd_sync))
         self._app.add_handler(CommandHandler("compact", self._cmd_compact))
+        await self._register_command_menu()
         self._app.add_handler(
             MessageHandler(
                 (filters.PHOTO | filters.ATTACHMENT) & filters.ChatType.SUPERGROUP,
@@ -503,16 +508,68 @@ class TelegramBridge(UpstreamTelegramBridge):
             except Exception:
                 logger.exception("Failed to send external pagination message")
 
+    async def _register_command_menu(self) -> None:
+        """Register the local Telegram command menu."""
+        if not self._app:
+            return
+        if BotCommand is None:
+            return
+
+        await self._app.bot.set_my_commands(
+            [
+                BotCommand(command, description)
+                for command, description in telegram_menu_commands()
+            ]
+        )
+
+    def _session_id_for_topic_message(self, message: Any) -> str | None:
+        """Return the session linked to a Telegram topic message."""
+        topic_id = getattr(message, "message_thread_id", None)
+        if not topic_id:
+            return None
+        return self._state.get_session_for_topic(topic_id)
+
+    async def _cmd_sync(self, update: Any, context: Any) -> None:
+        """Handle /sync in a session topic."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+        session_id = self._session_id_for_topic_message(message)
+        if not getattr(message, "message_thread_id", None):
+            await message.reply_text("Use this command inside a session topic.")
+            return
+        if not session_id:
+            await message.reply_text("No session linked to this topic.")
+            return
+        if not self._callbacks.sync_session:
+            await message.reply_text("Sync is not supported by this Tether version.")
+            return
+
+        try:
+            result = await self._callbacks.sync_session(session_id)
+            synced = result.get("synced", 0)
+            total = result.get("total", 0)
+            if synced:
+                await message.reply_text(
+                    f"🔄 Synced {synced} new message(s) ({total} total)."
+                )
+            else:
+                await message.reply_text(
+                    f"✅ Already up to date ({total} message(s) total)."
+                )
+        except Exception as exc:
+            logger.exception("Failed to sync Telegram session", session_id=session_id)
+            await message.reply_text(f"Failed to sync: {exc}")
+
     async def _cmd_compact(self, update: Any, context: Any) -> None:
         """Handle /compact in a session topic."""
         message = getattr(update, "message", None)
         if message is None:
             return
-        topic_id = getattr(message, "message_thread_id", None)
-        if not topic_id:
+        session_id = self._session_id_for_topic_message(message)
+        if not getattr(message, "message_thread_id", None):
             await message.reply_text("Use this command inside a session topic.")
             return
-        session_id = self._state.get_session_for_topic(topic_id)
         if not session_id:
             await message.reply_text("No session linked to this topic.")
             return
@@ -527,11 +584,8 @@ class TelegramBridge(UpstreamTelegramBridge):
             await message.reply_text(f"Failed to compact session: {exc}")
 
     async def _cmd_help(self, update: Any, context: Any) -> None:
-        """Handle /help with local commands included."""
-        await super()._cmd_help(update, context)
-        await update.message.reply_text(
-            "Extra command: /compact [instructions] — Compact pi context for this session"
-        )
+        """Handle /help."""
+        await update.message.reply_text(help_text("telegram", prefix="/"))
 
     async def _collect_message_media(
         self,

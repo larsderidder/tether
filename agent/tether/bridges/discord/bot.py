@@ -25,6 +25,7 @@ from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
 from tether.bridges.attachments import attachments_from_metadata
+from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.dedupe import (
@@ -1404,30 +1405,7 @@ class DiscordBridge(UpstreamDiscordBridge):
 
     async def _cmd_help(self, message: Any) -> None:
         """Handle !help."""
-
-        text = (
-            "Tether Commands:\n\n"
-            "!status - List all sessions\n"
-            "!list [page|search] - List external sessions (Claude Code, Codex)\n"
-            "!attach <number> [force] - Attach to an external session\n"
-            "!new [agent] [directory] - Start a new session\n"
-            "!new --clone <url> [-b branch] [-a adapter] [-m prompt] - Clone and start\n"
-            "!new --template <name> [-m prompt] - Start from template\n"
-            "!stop - Interrupt the session in this thread\n"
-            "!sync - Pull new messages from the attached external session\n"
-            "!usage - Show token usage and cost for this session\n"
-            "!compact [instructions] - Compact pi context for this session\n"
-            "!rename <name> - Rename this Discord thread\n"
-            "!setup <code> - Configure this channel as the control channel and pair you\n"
-            "!pair <code> - Pair your Discord user to authorize commands\n"
-            "!pair-status - Show whether you are authorized\n"
-            "!help - Show this help\n\n"
-            "Git Commands (inside a session thread):\n"
-            "!git - Show git status (branch, changes, last commit)\n"
-            "!pr <title> - Create a pull/merge request\n\n"
-            "Send a text message in a session thread to forward it as input."
-        )
-        await message.channel.send(text)
+        await message.channel.send(help_text("discord", prefix="!"))
 
     async def _cmd_compact(self, message: Any, args: str) -> None:
         """Compact the runner context for the current session."""

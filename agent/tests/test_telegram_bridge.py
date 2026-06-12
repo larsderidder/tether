@@ -174,6 +174,80 @@ class TestTelegramBridgeIntegration:
 
     @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
     @pytest.mark.anyio
+    async def test_start_registers_local_telegram_command_menu(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Telegram menu includes locally added commands."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        async def fake_upstream_start(bridge) -> None:
+            bridge._app = MagicMock()
+            bridge._app.bot = AsyncMock()
+
+        monkeypatch.setattr(
+            "agent_tether.telegram.bot.TelegramBridge.start",
+            fake_upstream_start,
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+
+        await bridge.start()
+
+        commands = bridge._app.bot.set_my_commands.await_args.args[0]
+        command_names = [command.command for command in commands]
+        assert "sync" in command_names
+        assert "compact" in command_names
+        assert "diff" in command_names
+        assert "log" in command_names
+        assert "commit" not in command_names
+        assert "push" not in command_names
+
+    @pytest.mark.anyio
+    async def test_sync_command_uses_bridge_callback(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Telegram /sync pulls new messages through the shared callback."""
+        from agent_tether.base import BridgeCallbacks
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = BridgeCallbacks(
+            create_session=AsyncMock(),
+            send_input=AsyncMock(),
+            stop_session=AsyncMock(),
+            respond_to_permission=AsyncMock(),
+            list_sessions=AsyncMock(),
+            get_usage=AsyncMock(),
+            check_directory=AsyncMock(),
+            list_external_sessions=AsyncMock(),
+            get_external_history=AsyncMock(),
+            attach_external=AsyncMock(),
+            sync_session=AsyncMock(return_value={"synced": 2, "total": 5}),
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+            callbacks=callbacks,
+        )
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        message = MagicMock()
+        message.message_thread_id = 12345
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.message = message
+
+        await bridge._cmd_sync(update, MagicMock())
+
+        callbacks.sync_session.assert_awaited_once_with(session.id)
+        message.reply_text.assert_awaited_once_with(
+            "🔄 Synced 2 new message(s) (5 total)."
+        )
+
+    @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
+    @pytest.mark.anyio
     async def test_choice_approval_uses_short_callback_data(
         self, fresh_store: SessionStore
     ) -> None:
