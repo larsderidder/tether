@@ -7,6 +7,16 @@ from hashlib import sha1
 from typing import Any
 
 
+TOOL_SEGMENT_KINDS = {
+    "tool_call",
+    "tool_output",
+    "tool_result",
+    "tool_error",
+    "result",
+    "error",
+}
+
+
 @dataclass(frozen=True)
 class BridgeFlush:
     """Output ready to send to a chat bridge."""
@@ -17,11 +27,18 @@ class BridgeFlush:
 
 
 @dataclass
+class _StreamItem:
+    """One streamed output event buffered for bridge delivery."""
+
+    text: str
+    bridge_segments: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
 class _TurnState:
     """Mutable output state for one bridge session turn."""
 
-    stream_parts: list[str] = field(default_factory=list)
-    bridge_segments: list[dict[str, str]] = field(default_factory=list)
+    stream_items: list[_StreamItem] = field(default_factory=list)
     final_sent: bool = False
     final_key: str | None = None
 
@@ -41,8 +58,7 @@ class BridgeTurnAccumulator:
         """Drop buffered stream output while preserving final dedupe state."""
 
         state = self._state(session_id)
-        state.stream_parts.clear()
-        state.bridge_segments.clear()
+        state.stream_items.clear()
 
     def buffer_stream(
         self,
@@ -53,9 +69,7 @@ class BridgeTurnAccumulator:
         """Buffer streamed output until it is safe to send."""
 
         state = self._state(session_id)
-        state.stream_parts.append(text)
-        if bridge_segments:
-            state.bridge_segments.extend(bridge_segments)
+        state.stream_items.append(_StreamItem(text, list(bridge_segments or [])))
 
     def buffered_size(self, session_id: str) -> int:
         """Return the total buffered stream character count."""
@@ -63,7 +77,7 @@ class BridgeTurnAccumulator:
         state = self._states.get(session_id)
         if not state:
             return 0
-        return sum(len(text) for text in state.stream_parts)
+        return sum(len(item.text) for item in state.stream_items)
 
     def buffered_segment_kinds(self, session_id: str) -> set[str]:
         """Return structured segment kinds currently buffered for a session."""
@@ -73,9 +87,57 @@ class BridgeTurnAccumulator:
             return set()
         return {
             str(segment.get("kind") or "")
-            for segment in state.bridge_segments
+            for item in state.stream_items
+            for segment in item.bridge_segments
             if segment.get("kind")
         }
+
+    def has_tool_activity(self, session_id: str) -> bool:
+        """Return true when there is buffered tool telemetry for a session."""
+
+        return bool(self.buffered_segment_kinds(session_id) & TOOL_SEGMENT_KINDS)
+
+    def flush_tool_activity(self, session_id: str) -> BridgeFlush | None:
+        """Return buffered tool telemetry as one bridge message."""
+
+        state = self._states.get(session_id)
+        if not state:
+            return None
+
+        tool_segments: list[dict[str, str]] = []
+        tool_text_parts: list[str] = []
+        remaining: list[_StreamItem] = []
+
+        for item in state.stream_items:
+            item_tool_segments = [
+                segment
+                for segment in item.bridge_segments
+                if str(segment.get("kind") or "") in TOOL_SEGMENT_KINDS
+            ]
+            item_other_segments = [
+                segment
+                for segment in item.bridge_segments
+                if str(segment.get("kind") or "") not in TOOL_SEGMENT_KINDS
+            ]
+
+            if item_tool_segments:
+                tool_segments.extend(item_tool_segments)
+                tool_text_parts.append(item.text)
+
+            if item_other_segments:
+                remaining.append(_StreamItem(item.text, item_other_segments))
+            elif not item.bridge_segments and item.text:
+                remaining.append(item)
+
+        state.stream_items = remaining
+        if not tool_segments:
+            return None
+
+        text = "".join(tool_text_parts).strip() or "Tool activity"
+        return BridgeFlush(
+            text=text,
+            metadata={"bridge_segments": tool_segments, "tool_activity": True},
+        )
 
     def flush_stream(self, session_id: str) -> BridgeFlush | None:
         """Return buffered stream output and clear the stream buffer."""
@@ -83,13 +145,13 @@ class BridgeTurnAccumulator:
         state = self._states.get(session_id)
         if not state:
             return None
-        parts = state.stream_parts
-        segments = state.bridge_segments
-        state.stream_parts = []
-        state.bridge_segments = []
-        if not parts and not segments:
+        items = state.stream_items
+        state.stream_items = []
+        if not items:
             return None
-        text = "".join(parts)
+
+        text = "".join(item.text for item in items)
+        segments = [segment for item in items for segment in item.bridge_segments]
         if not text.strip() and not segments:
             return None
         metadata = {"bridge_segments": segments} if segments else None
@@ -106,8 +168,7 @@ class BridgeTurnAccumulator:
         """Return exactly one final assistant output per bridge turn."""
 
         state = self._state(session_id)
-        state.stream_parts.clear()
-        state.bridge_segments.clear()
+        state.stream_items.clear()
         if not text.strip():
             return None
 

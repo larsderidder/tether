@@ -322,6 +322,72 @@ class TestRichOutputFormatting:
             },
         ) == ["The Price Chart"]
 
+    def test_tool_activity_bundle_renders_as_one_discord_message(self) -> None:
+        messages = render_discord_messages(
+            "ignored fallback",
+            metadata={
+                "tool_activity": True,
+                "bridge_segments": [
+                    {"kind": "tool_call", "label": "bash", "text": "pwd"},
+                    {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+                ],
+            },
+        )
+
+        assert messages == [
+            "🔧 **Tool activity**\n\n"
+            "🔧 **Tool call** `bash`\n\n"
+            "📥 **Tool output** `bash`\n```text\n/tmp/demo\n```"
+        ]
+
+    def test_tool_activity_bundle_renders_as_one_slack_message(self) -> None:
+        messages = render_slack_messages(
+            "ignored fallback",
+            metadata={
+                "tool_activity": True,
+                "bridge_segments": [
+                    {"kind": "tool_call", "label": "bash", "text": "pwd"},
+                    {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+                ],
+            },
+        )
+
+        assert len(messages) == 1
+        assert "🔧 *Tool activity*" in messages[0]
+        assert "📥 *Tool output* `bash`" in messages[0]
+
+    def test_tool_activity_bundle_renders_as_one_telegram_message(self) -> None:
+        messages = render_telegram_messages(
+            "ignored fallback",
+            metadata={
+                "tool_activity": True,
+                "bridge_segments": [
+                    {"kind": "tool_call", "label": "bash", "text": "pwd"},
+                    {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+                ],
+            },
+        )
+
+        assert len(messages) == 1
+        assert "🔧 <b>Tool activity</b>" in messages[0]
+        assert "📥 <b>Tool output</b> <code>bash</code>" in messages[0]
+
+    def test_tool_activity_bundle_can_keep_separate_messages(self, monkeypatch) -> None:
+        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES", "0")
+
+        messages = render_discord_messages(
+            "ignored fallback",
+            metadata={
+                "tool_activity": True,
+                "bridge_segments": [
+                    {"kind": "tool_call", "label": "bash", "text": "pwd"},
+                    {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+                ],
+            },
+        )
+
+        assert len(messages) == 2
+
     def test_render_telegram_messages_formats_tool_output_as_pre(self) -> None:
         messages = render_telegram_messages("[error] invalid_grant")
 

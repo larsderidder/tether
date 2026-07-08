@@ -17,6 +17,7 @@ class FakeBridge(BridgeInterface):
 
     def __init__(self):
         super().__init__()
+        self.calls: list[tuple[str, dict]] = []
         self.output_calls: list[dict] = []
         self.approval_calls: list[dict] = []
         self.status_calls: list[dict] = []
@@ -26,14 +27,16 @@ class FakeBridge(BridgeInterface):
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
-        self.output_calls.append(
-            {"session_id": session_id, "text": text, "metadata": metadata}
-        )
+        call = {"session_id": session_id, "text": text, "metadata": metadata}
+        self.output_calls.append(call)
+        self.calls.append(("output", call))
 
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
     ) -> None:
-        self.approval_calls.append({"session_id": session_id, "request": request})
+        call = {"session_id": session_id, "request": request}
+        self.approval_calls.append(call)
+        self.calls.append(("approval", call))
 
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
@@ -380,10 +383,10 @@ class TestEventRouting:
         assert fake_bridge.output_calls[0]["metadata"]["final"] is True
 
     @pytest.mark.anyio
-    async def test_output_final_discards_buffered_tool_activity(
+    async def test_output_final_flushes_buffered_tool_activity(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
-        """Tool telemetry is not sent separately when a final answer exists."""
+        """Tool telemetry is bundled before the final answer."""
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -414,7 +417,151 @@ class TestEventRouting:
         )
         await sub.unsubscribe(session.id)
 
-        assert [call["text"] for call in fake_bridge.output_calls] == ["Done."]
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "[tool: bash]",
+            "Done.",
+        ]
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "tool_call", "label": "bash", "text": "pwd"}
+        ]
+
+    @pytest.mark.anyio
+    async def test_tool_activity_flushes_as_one_group_after_delay(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Tool telemetry is buffered briefly and then sent as one bridge message."""
+        monkeypatch.setattr("tether.bridges.subscriber._TOOL_FLUSH_DELAY_S", 0.01)
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        for text in ["pwd", "/tmp/demo"]:
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "type": "output",
+                    "data": {
+                        "text": text,
+                        "final": False,
+                        "bridge_segments": [
+                            {"kind": "tool_output", "label": "bash", "text": text}
+                        ],
+                    },
+                },
+            )
+        await asyncio.sleep(0.03)
+        await sub.unsubscribe(session.id)
+
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["metadata"]["tool_activity"] is True
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "tool_output", "label": "bash", "text": "pwd"},
+            {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+        ]
+
+    @pytest.mark.anyio
+    async def test_tool_activity_can_wait_until_final_output(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Tool telemetry can be held until the final assistant message."""
+        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "1")
+        monkeypatch.setattr("tether.bridges.subscriber._TOOL_FLUSH_DELAY_S", 0.01)
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        for text in ["pwd", "/tmp/demo"]:
+            await fresh_store.emit(
+                session.id,
+                {
+                    "session_id": session.id,
+                    "type": "output",
+                    "data": {
+                        "text": text,
+                        "final": False,
+                        "bridge_segments": [
+                            {"kind": "tool_output", "label": "bash", "text": text}
+                        ],
+                    },
+                },
+            )
+        await asyncio.sleep(0.03)
+        assert fake_bridge.output_calls == []
+
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "Done."},
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "pwd/tmp/demo",
+            "Done.",
+        ]
+        assert fake_bridge.output_calls[0]["metadata"]["tool_activity"] is True
+
+    @pytest.mark.anyio
+    async def test_tool_activity_flush_timer_is_not_reset_by_more_tool_events(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Tool telemetry flushes periodically while more tool output arrives."""
+        monkeypatch.setattr("tether.bridges.subscriber._TOOL_FLUSH_DELAY_S", 0.02)
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "pwd",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "tool_output", "label": "bash", "text": "pwd"}
+                    ],
+                },
+            },
+        )
+        await asyncio.sleep(0.01)
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "/tmp/demo",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"}
+                    ],
+                },
+            },
+        )
+        await asyncio.sleep(0.02)
+        await sub.unsubscribe(session.id)
+
+        assert len(fake_bridge.output_calls) == 1
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "tool_output", "label": "bash", "text": "pwd"},
+            {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+        ]
 
     @pytest.mark.anyio
     async def test_tool_activity_flushes_as_one_group_at_turn_end(
@@ -495,6 +642,72 @@ class TestEventRouting:
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.output_calls) == 1
         assert fake_bridge.output_calls[0]["text"] == "- fixed\n- list"
+
+    @pytest.mark.anyio
+    async def test_permission_request_flushes_buffered_output_in_event_order(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Buffered thinking stays before tool activity when a permission prompt arrives."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        for segment in [
+            {"kind": "thinking", "label": "thinking", "text": "checking state"},
+            {"kind": "tool_call", "label": "kubectl_exec", "text": "{}"},
+        ]:
+            await self._emit_and_wait(
+                fresh_store,
+                session.id,
+                {
+                    "session_id": session.id,
+                    "type": "output",
+                    "data": {
+                        "text": segment["text"],
+                        "final": False,
+                        "bridge_segments": [segment],
+                    },
+                },
+            )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "permission_request",
+                "data": {
+                    "request_id": "perm_1",
+                    "tool_name": "Read",
+                    "tool_input": {"path": "/tmp/test.txt"},
+                },
+            },
+        )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "[Read] Waiting for confirmation: Read /tmp/test.txt\n",
+                    "final": False,
+                    "bridge_segments": [
+                        {
+                            "kind": "tool_output",
+                            "label": "Read",
+                            "text": "Waiting for confirmation: Read /tmp/test.txt",
+                        }
+                    ],
+                },
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert [kind for kind, _ in fake_bridge.calls] == ["output", "approval"]
+        assert [
+            segment["kind"]
+            for segment in fake_bridge.output_calls[0]["metadata"]["bridge_segments"]
+        ] == ["thinking", "tool_call"]
 
     @pytest.mark.anyio
     async def test_routes_permission_request(

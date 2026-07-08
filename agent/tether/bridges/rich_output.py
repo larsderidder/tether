@@ -17,6 +17,15 @@ _TELEGRAM_LIMIT = 4096
 _DISCORD_TOOL_OUTPUT_INLINE_LINES = 6
 _DISCORD_TOOL_OUTPUT_INLINE_CHARS = 800
 _TOOL_EXPAND_REACTION = "📄"
+_TOOL_ACTIVITY_KINDS = {
+    "tool_call",
+    "tool_output",
+    "tool_result",
+    "tool_error",
+    "result",
+    "error",
+}
+_FENCED_CODE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 
 
 @dataclass(slots=True)
@@ -507,15 +516,124 @@ def _segments_from_metadata(metadata: dict[str, Any] | None) -> list[OutputSegme
     return coerce_output_segments((metadata or {}).get("bridge_segments"))
 
 
+def _is_tool_activity_bundle(
+    metadata: dict[str, Any] | None,
+    segments: list[OutputSegment],
+) -> bool:
+    """Return true when metadata represents one buffered tool activity bundle."""
+
+    return bool(
+        settings.bridge_tool_activity_combine_messages()
+        and (metadata or {}).get("tool_activity")
+        and segments
+        and all(segment.kind in _TOOL_ACTIVITY_KINDS for segment in segments)
+    )
+
+
+def _tool_segment_heading(segment: OutputSegment, *, bold: str) -> tuple[str, str]:
+    """Return icon and markdown title for a tool segment."""
+
+    if segment.kind == "tool_call":
+        return "🔧", f"{bold}Tool call{bold}"
+    if segment.kind in {"error", "tool_error"}:
+        return "⚠️", f"{bold}Tool error{bold}"
+    if segment.kind in {"result", "tool_result"}:
+        return "📥", f"{bold}Tool result{bold}"
+    return "📥", f"{bold}Tool output{bold}"
+
+
+def _render_markdown_tool_activity_bundle(
+    segments: list[OutputSegment],
+    *,
+    limit: int,
+    bold: str,
+) -> list[RenderedBridgeMessage]:
+    """Render multiple tool segments as one Discord or Slack message."""
+
+    parts = [f"🔧 {bold}Tool activity{bold}"]
+    expansion_parts: list[str] = []
+    for segment in segments:
+        icon, title = _tool_segment_heading(segment, bold=bold)
+        label = segment.label or "tool"
+        if segment.kind == "tool_call":
+            parts.append(f"{icon} {title} `{label}`")
+            continue
+
+        body = segment.text or " "
+        preview, footer = _truncate_tool_body(body)
+        parts.append(
+            f"{icon} {title} `{label}`\n```text\n{preview or ' '}\n```{footer}"
+        )
+        if footer:
+            expansion_parts.append(f"{title.replace(bold, '')} {label}\n{body}")
+
+    full_text = "\n\n".join(parts)
+    expansion_text = "\n\n".join(expansion_parts) or None
+    if len(full_text) > limit:
+        suffix = "\n… truncated tool activity."
+        expansion_text = full_text
+        full_text = full_text[: max(0, limit - len(suffix))].rstrip() + suffix
+
+    return [
+        RenderedBridgeMessage(
+            text=full_text,
+            expansion_text=expansion_text,
+            expansion_filename="tool-activity.txt",
+        )
+    ]
+
+
+def _tool_segment_html_title(segment: OutputSegment) -> tuple[str, str]:
+    """Return icon and HTML title for a Telegram tool segment."""
+
+    if segment.kind == "tool_call":
+        return "🔧", "Tool call"
+    if segment.kind in {"error", "tool_error"}:
+        return "⚠️", "Tool error"
+    if segment.kind in {"result", "tool_result"}:
+        return "📥", "Tool result"
+    return "📥", "Tool output"
+
+
+def _render_telegram_tool_activity_bundle(
+    segments: list[OutputSegment],
+) -> list[str]:
+    """Render multiple tool segments as compact Telegram HTML."""
+
+    parts = ["🔧 <b>Tool activity</b>"]
+    for segment in segments:
+        icon, title = _tool_segment_html_title(segment)
+        label = html.escape(segment.label or "tool")
+        if segment.kind == "tool_call":
+            parts.append(f"{icon} <b>{title}</b> <code>{label}</code>")
+            continue
+
+        preview, footer = _truncate_tool_body(segment.text or " ")
+        parts.append(
+            f"{icon} <b>{title}</b> <code>{label}</code>\n"
+            f"<pre>{html.escape(preview or ' ')}</pre>{html.escape(footer)}"
+        )
+
+    return _chunk_plain("\n\n".join(parts), _TELEGRAM_LIMIT)
+
+
 def render_discord_message_objects(
     text: str, metadata: dict[str, Any] | None = None
 ) -> list[RenderedBridgeMessage]:
     """Render output segments for Discord with optional expansion payloads."""
 
+    segments = _segments_from_metadata(metadata)
+    if _is_tool_activity_bundle(metadata, segments):
+        return _render_markdown_tool_activity_bundle(
+            segments,
+            limit=_DISCORD_LIMIT,
+            bold="**",
+        )
+
     return render_markdown_messages(
         text,
         limit=_DISCORD_LIMIT,
-        segments=_segments_from_metadata(metadata),
+        segments=segments,
         truncate_tool_outputs=True,
     )
 
@@ -536,13 +654,24 @@ def render_slack_messages(
 ) -> list[str]:
     """Render output segments for Slack."""
 
+    segments = _segments_from_metadata(metadata)
+    if _is_tool_activity_bundle(metadata, segments):
+        return [
+            message.text
+            for message in _render_markdown_tool_activity_bundle(
+                segments,
+                limit=_SLACK_LIMIT,
+                bold="*",
+            )
+        ]
+
     return [
         message.text
         for message in render_markdown_messages(
             text,
             limit=_SLACK_LIMIT,
             bold="*",
-            segments=_segments_from_metadata(metadata),
+            segments=segments,
             truncate_tool_outputs=True,
         )
     ]
@@ -579,8 +708,12 @@ def render_telegram_messages(
     text: str, metadata: dict[str, Any] | None = None
 ) -> list[str]:
     """Render parsed or structured segments to Telegram HTML messages."""
+    metadata_segments = _segments_from_metadata(metadata)
+    if _is_tool_activity_bundle(metadata, metadata_segments):
+        return _render_telegram_tool_activity_bundle(metadata_segments)
+
     messages: list[str] = []
-    for segment in _segments_from_metadata(metadata) or parse_output_segments(text):
+    for segment in metadata_segments or parse_output_segments(text):
         if segment.kind == "assistant":
             rendered = markdown_to_telegram_html(
                 _normalize_plain_markdown(segment.text)

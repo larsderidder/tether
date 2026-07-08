@@ -11,9 +11,12 @@ from agent_tether.base import ApprovalRequest
 from agent_tether.manager import BridgeManager
 from agent_tether.subscriber import _OUTPUT_FLUSH_DELAY_S, _OUTPUT_FLUSH_MAX_CHARS
 
-from tether.bridges.turn_accumulator import BridgeTurnAccumulator
+from tether.bridges.turn_accumulator import BridgeTurnAccumulator, TOOL_SEGMENT_KINDS
+from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+_TOOL_FLUSH_DELAY_S = settings.bridge_tool_activity_flush_delay_seconds()
 
 
 class BridgeSubscriber:
@@ -47,6 +50,7 @@ class BridgeSubscriber:
         self._queues: dict[str, asyncio.Queue] = {}
         self._turns = BridgeTurnAccumulator()
         self._output_flush_tasks: dict[str, asyncio.Task] = {}
+        self._tool_flush_tasks: dict[str, asyncio.Task] = {}
 
     def subscribe(self, session_id: str, platform: str) -> None:
         """Start consuming store events for a session and routing to a bridge."""
@@ -70,6 +74,9 @@ class BridgeSubscriber:
         if task:
             task.cancel()
             logger.info("Bridge subscriber stopped", session_id=session_id)
+        tool_task = self._tool_flush_tasks.pop(session_id, None)
+        if tool_task and not tool_task.done():
+            tool_task.cancel()
 
         if platform:
             bridge = self._bridge_manager.get_bridge(platform)
@@ -126,16 +133,23 @@ class BridgeSubscriber:
 
         if not bridge_segments:
             return False
-        tool_kinds = {
-            "tool_call",
-            "tool_output",
-            "tool_result",
-            "tool_error",
-            "result",
-            "error",
-        }
         return all(
-            str(segment.get("kind") or "") in tool_kinds for segment in bridge_segments
+            str(segment.get("kind") or "") in TOOL_SEGMENT_KINDS
+            for segment in bridge_segments
+        )
+
+    @staticmethod
+    def _is_confirmation_wait_output(
+        bridge_segments: list[dict[str, str]] | None,
+    ) -> bool:
+        """Return true for redundant wait notices covered by approval prompts."""
+
+        if not bridge_segments:
+            return False
+        return all(
+            str(segment.get("kind") or "") == "tool_output"
+            and str(segment.get("text") or "").startswith("Waiting for confirmation:")
+            for segment in bridge_segments
         )
 
     def _has_only_buffered_tool_activity(self, session_id: str) -> bool:
@@ -144,29 +158,16 @@ class BridgeSubscriber:
         kinds = self._turns.buffered_segment_kinds(session_id)
         if not kinds:
             return False
-        tool_kinds = {
-            "tool_call",
-            "tool_output",
-            "tool_result",
-            "tool_error",
-            "result",
-            "error",
-        }
-        return kinds.issubset(tool_kinds)
-
-    def _discard_buffered_output(self, session_id: str) -> None:
-        """Drop buffered streaming output for a session."""
-
-        task = self._output_flush_tasks.pop(session_id, None)
-        if task and not task.done():
-            task.cancel()
-        self._turns.discard(session_id)
+        return kinds.issubset(TOOL_SEGMENT_KINDS)
 
     async def _flush_output(self, session_id: str, bridge: object) -> None:
         """Send all buffered output for a session to the bridge."""
         task = self._output_flush_tasks.pop(session_id, None)
         if task and not task.done():
             task.cancel()
+        tool_task = self._tool_flush_tasks.pop(session_id, None)
+        if tool_task and not tool_task.done():
+            tool_task.cancel()
 
         flush = self._turns.flush_stream(session_id)
         if not flush:
@@ -176,6 +177,23 @@ class BridgeSubscriber:
             await bridge.on_output(session_id, flush.text, metadata=flush.metadata)
         except Exception:
             logger.exception("Failed to flush output to bridge", session_id=session_id)
+
+    async def _flush_tool_activity(self, session_id: str, bridge: object) -> None:
+        """Send buffered tool telemetry as one bridge message."""
+        task = self._tool_flush_tasks.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+
+        flush = self._turns.flush_tool_activity(session_id)
+        if not flush:
+            return
+
+        try:
+            await bridge.on_output(session_id, flush.text, metadata=flush.metadata)
+        except Exception:
+            logger.exception(
+                "Failed to flush tool activity to bridge", session_id=session_id
+            )
 
     async def _schedule_flush(self, session_id: str, bridge: object) -> None:
         """Schedule a delayed flush of buffered output."""
@@ -196,6 +214,25 @@ class BridgeSubscriber:
             await self._flush_output(session_id, bridge)
 
         self._output_flush_tasks[session_id] = asyncio.create_task(_delayed_flush())
+
+    async def _schedule_tool_flush(self, session_id: str, bridge: object) -> None:
+        """Schedule the next periodic bundled flush of tool telemetry."""
+        if settings.bridge_tool_activity_flush_on_final_only():
+            return
+
+        existing = self._tool_flush_tasks.get(session_id)
+        if existing and not existing.done():
+            return
+
+        async def _delayed_flush() -> None:
+            try:
+                await asyncio.sleep(_TOOL_FLUSH_DELAY_S)
+            except asyncio.CancelledError:
+                return
+            self._tool_flush_tasks.pop(session_id, None)
+            await self._flush_tool_activity(session_id, bridge)
+
+        self._tool_flush_tasks[session_id] = asyncio.create_task(_delayed_flush())
 
     async def _consume(
         self, session_id: str, platform: str, queue: asyncio.Queue
@@ -231,6 +268,9 @@ class BridgeSubscriber:
                             continue
                         is_final = bool(data.get("final") or data.get("is_final"))
 
+                        if self._is_confirmation_wait_output(bridge_segments):
+                            continue
+
                         if is_final:
                             # finalize_output emits an output_final aggregate
                             # immediately after final output events. Route only
@@ -246,12 +286,12 @@ class BridgeSubscriber:
                             elif self._is_streaming_prose(bridge_segments):
                                 continue
                             elif self._is_tool_activity(bridge_segments):
-                                continue
+                                await self._schedule_tool_flush(session_id, bridge)
                             else:
                                 await self._schedule_flush(session_id, bridge)
 
                     elif event_type == "output_final":
-                        self._discard_buffered_output(session_id)
+                        await self._flush_tool_activity(session_id, bridge)
                         text = data.get("text", "")
                         metadata = {
                             "final": True,
@@ -278,7 +318,7 @@ class BridgeSubscriber:
 
                     elif event_type == "permission_request":
                         if self._has_only_buffered_tool_activity(session_id):
-                            self._discard_buffered_output(session_id)
+                            await self._flush_tool_activity(session_id, bridge)
                         else:
                             await self._flush_output(session_id, bridge)
                         request = self._build_approval_request(data)
@@ -290,7 +330,10 @@ class BridgeSubscriber:
                             self._turns.reset_turn(session_id)
                             await bridge.on_typing(session_id)
                         elif state == "AWAITING_INPUT":
-                            await self._flush_output(session_id, bridge)
+                            if self._has_only_buffered_tool_activity(session_id):
+                                await self._flush_tool_activity(session_id, bridge)
+                            else:
+                                await self._flush_output(session_id, bridge)
                             await bridge.on_typing_stopped(session_id)
                         elif state == "ERROR":
                             await self._flush_output(session_id, bridge)

@@ -40,9 +40,32 @@ def _get_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _get_float(name: str, default: float = 0.0) -> float:
+    """Get a float environment variable."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def _get_bounded_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     """Get an integer environment variable clamped to a safe range."""
     value = _get_int(name, default)
+    if value < minimum:
+        return minimum
+    if value > maximum:
+        return maximum
+    return value
+
+
+def _get_bounded_float(
+    name: str, default: float, *, minimum: float, maximum: float
+) -> float:
+    """Get a float environment variable clamped to a safe range."""
+    value = _get_float(name, default)
     if value < minimum:
         return minimum
     if value > maximum:
@@ -140,6 +163,41 @@ class Settings:
             6,
             minimum=1,
             maximum=50,
+        )
+
+    @staticmethod
+    def bridge_tool_activity_flush_delay_seconds() -> float:
+        """Seconds to buffer bridge tool activity before sending a bundle.
+
+        Env: TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS (default: 5)
+        """
+        return _get_bounded_float(
+            "TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS",
+            5.0,
+            minimum=0.0,
+            maximum=300.0,
+        )
+
+    @staticmethod
+    def bridge_tool_activity_combine_messages() -> bool:
+        """Render buffered bridge tool activity as one platform message when possible.
+
+        Env: TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES (default: 1)
+        """
+        return _get_bool(
+            "TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES",
+            default=True,
+        )
+
+    @staticmethod
+    def bridge_tool_activity_flush_on_final_only() -> bool:
+        """Keep bridge tool activity buffered until final output or turn end.
+
+        Env: TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY (default: 0)
+        """
+        return _get_bool(
+            "TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY",
+            default=False,
         )
 
     # -------------------------------------------------------------------------
