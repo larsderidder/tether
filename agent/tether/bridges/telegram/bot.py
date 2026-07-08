@@ -15,8 +15,10 @@ from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
 try:
     from telegram import BotCommand
+    from telegram.error import BadRequest
     from telegram.ext import ApplicationHandlerStop
 except ImportError:
+    BadRequest = None
     BotCommand = None
 
     class ApplicationHandlerStop(Exception):
@@ -56,12 +58,14 @@ from tether.bridges.model_api import (
     set_session_model,
 )
 from tether.bridges.rich_output import render_telegram_messages
-from tether.bridges.retry import with_bridge_send_retry
+from tether.bridges.retry import bridge_retry_after_s, with_bridge_send_retry
 from tether.bridges.telegram.formatting import markdown_to_telegram_html
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
 _TELEGRAM_MEDIA_GROUP_DEBOUNCE_S = 0.7
+_TELEGRAM_OUTPUT_MIN_INTERVAL_S = 1.25
+_TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S = 30.0
 
 
 @dataclass
@@ -103,6 +107,9 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._message_dedupe = ShortLivedMessageDedupe()
         self._output_send_lock = asyncio.Lock()
         self._allowed_user_ids = settings.telegram_allowed_user_ids()
+        self._output_paused_until = 0.0
+        self._last_output_send_at = 0.0
+        self._dropped_output_count_by_topic: dict[int, int] = {}
 
     @staticmethod
     def _update_user_id(update: Any) -> int | None:
@@ -947,6 +954,123 @@ class TelegramBridge(UpstreamTelegramBridge):
                 topic_id=buffer.topic_id,
             )
 
+    def _compact_output_messages(self, messages: list[str]) -> list[str]:
+        """Limit one bridge output when a cap is configured."""
+
+        max_messages = settings.telegram_output_max_messages()
+        if max_messages <= 0 or len(messages) <= max_messages:
+            return messages
+
+        if max_messages == 1:
+            return [messages[-1]]
+
+        notice_slots = 1
+        head_count = max(0, max_messages - notice_slots - 1)
+        omitted = len(messages) - head_count - 1
+        notice = (
+            "⚠️ <b>Telegram output shortened</b>\n"
+            f"Skipped {omitted} middle message chunks to avoid flood limits. "
+            "The final chunk is still shown below. The full output remains in Tether and the local session log."
+        )
+        return [*messages[:head_count], notice, messages[-1]]
+
+    @staticmethod
+    def _is_missing_thread_error(exc: Exception) -> bool:
+        """Return true when Telegram reports a deleted forum topic."""
+        if BadRequest is not None and isinstance(exc, BadRequest):
+            return "message thread not found" in str(exc).casefold()
+        return "message thread not found" in str(exc).casefold()
+
+    def _drop_missing_topic_binding(self, session_id: str, topic_id: int) -> None:
+        """Forget a Telegram binding after its forum topic was deleted."""
+        self._state.remove_session(session_id)
+        self._dropped_output_count_by_topic.pop(topic_id, None)
+        try:
+            from tether.external_session_watcher import external_session_watcher
+            from tether.store import store
+
+            session = store.get_session(session_id)
+            if session and session.platform == "telegram":
+                session.platform = None
+                session.platform_thread_id = None
+                store.update_session(session)
+            external_session_watcher.unregister(session_id)
+        except Exception:
+            logger.exception(
+                "Failed to clear deleted Telegram topic binding",
+                session_id=session_id,
+                topic_id=topic_id,
+            )
+
+    async def _send_output_message(
+        self, session_id: str, topic_id: int, message: str
+    ) -> bool:
+        """Send one Telegram output message with flood-limit recovery."""
+
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if now < self._output_paused_until:
+            self._dropped_output_count_by_topic[topic_id] = (
+                self._dropped_output_count_by_topic.get(topic_id, 0) + 1
+            )
+            logger.warning(
+                "Suppressed Telegram output during flood-control cooldown",
+                session_id=session_id,
+                topic_id=topic_id,
+                cooldown_remaining_s=round(self._output_paused_until - now, 2),
+            )
+            return False
+
+        dropped = self._dropped_output_count_by_topic.pop(topic_id, 0)
+        if dropped:
+            message = (
+                "⚠️ <b>Telegram flood control recovered</b>\n"
+                f"Suppressed {dropped} output message(s) while Telegram was rate limiting this bridge.\n\n"
+                f"{message}"
+            )
+
+        delay_s = _TELEGRAM_OUTPUT_MIN_INTERVAL_S - (now - self._last_output_send_at)
+        if self._last_output_send_at and delay_s > 0:
+            await asyncio.sleep(delay_s)
+
+        try:
+            await with_bridge_send_retry(
+                "telegram.output",
+                lambda: self._app.bot.send_message(
+                    chat_id=self._forum_group_id,
+                    message_thread_id=topic_id,
+                    text=message,
+                    parse_mode="HTML",
+                ),
+                max_delay_s=60.0,
+            )
+            self._last_output_send_at = loop.time()
+            return True
+        except Exception as exc:
+            if self._is_missing_thread_error(exc):
+                logger.warning(
+                    "Telegram topic is gone; clearing session binding",
+                    session_id=session_id,
+                    topic_id=topic_id,
+                )
+                self._drop_missing_topic_binding(session_id, topic_id)
+                return False
+            retry_after = bridge_retry_after_s(exc)
+            if retry_after is not None:
+                pause_s = max(retry_after, _TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S)
+                self._output_paused_until = loop.time() + pause_s
+                self._dropped_output_count_by_topic[topic_id] = (
+                    self._dropped_output_count_by_topic.get(topic_id, 0) + 1
+                )
+                logger.warning(
+                    "Telegram flood control detected; pausing bridge output",
+                    session_id=session_id,
+                    topic_id=topic_id,
+                    pause_s=round(pause_s, 2),
+                )
+                return False
+            raise
+
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
@@ -962,49 +1086,36 @@ class TelegramBridge(UpstreamTelegramBridge):
             logger.warning("No Telegram topic for session", session_id=session_id)
             return
 
-        messages = render_telegram_messages(text, metadata=metadata) or [text]
+        messages = self._compact_output_messages(
+            render_telegram_messages(text, metadata=metadata) or [text]
+        )
+        sent_any = False
         async with self._output_send_lock:
             for message in messages:
                 try:
-                    await with_bridge_send_retry(
-                        "telegram.output",
-                        lambda message=message: self._app.bot.send_message(
-                            chat_id=self._forum_group_id,
-                            message_thread_id=topic_id,
-                            text=message,
-                            parse_mode="HTML",
-                        ),
-                        max_delay_s=60.0,
+                    sent = await self._send_output_message(
+                        session_id, topic_id, message
                     )
-                except Exception as exc:
-                    if getattr(exc, "retry_after", None) is not None:
-                        logger.warning(
-                            "Dropped Telegram message after flood-control retry failure",
-                            session_id=session_id,
-                            topic_id=topic_id,
-                        )
-                        continue
+                    sent_any = sent_any or sent
+                    if not sent:
+                        break
+                except Exception:
                     try:
-                        await with_bridge_send_retry(
-                            "telegram.output_fallback",
-                            lambda message=message: self._app.bot.send_message(
-                                chat_id=self._forum_group_id,
-                                message_thread_id=topic_id,
-                                text=html.unescape(re.sub(r"<[^>]+>", "", message))[
-                                    :4096
-                                ],
-                            ),
-                            max_delay_s=60.0,
+                        fallback = html.unescape(re.sub(r"<[^>]+>", "", message))[:4096]
+                        sent = await self._send_output_message(
+                            session_id, topic_id, fallback
                         )
+                        sent_any = sent_any or sent
                     except Exception:
                         logger.exception(
                             "Failed to send Telegram message",
                             session_id=session_id,
                             topic_id=topic_id,
                         )
-                await asyncio.sleep(1.1)
+                        break
 
-        await self._send_output_attachments(session_id, topic_id, metadata=metadata)
+        if sent_any:
+            await self._send_output_attachments(session_id, topic_id, metadata=metadata)
 
     async def _send_output_attachments(
         self,

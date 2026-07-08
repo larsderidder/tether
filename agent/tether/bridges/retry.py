@@ -28,7 +28,7 @@ def _status_code(exc: BaseException) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _retry_after_s(exc: BaseException) -> float | None:
+def bridge_retry_after_s(exc: BaseException) -> float | None:
     """Extract a retry-after delay from common bridge exceptions."""
 
     for attr in ("retry_after", "retryAfter"):
@@ -78,8 +78,11 @@ async def with_bridge_send_retry(
             last_error = exc
             if attempt >= total_attempts or not _is_retryable_bridge_error(exc):
                 raise
-            retry_after = _retry_after_s(exc)
-            delay_s = min(max_delay_s, retry_after if retry_after is not None else min_delay_s * attempt)
+            retry_after = bridge_retry_after_s(exc)
+            delay_s = min(
+                max_delay_s,
+                retry_after if retry_after is not None else min_delay_s * attempt,
+            )
             logger.warning(
                 "Bridge send failed; retrying",
                 label=label,

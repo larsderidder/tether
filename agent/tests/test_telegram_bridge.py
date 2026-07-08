@@ -93,12 +93,177 @@ class TestTelegramBridgeIntegration:
         assert mock_bot.send_message.called
 
     @pytest.mark.anyio
+    async def test_on_output_sends_large_message_batches_slowly(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """on_output sends every Telegram chunk unless a cap is configured."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        monkeypatch.delenv("TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES", raising=False)
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "telegram"
+        session.platform_thread_id = "12345"
+        fresh_store.update_session(session)
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        await bridge.on_output(session.id, "x" * 30000)
+
+        assert mock_bot.send_message.await_count > 5
+
+    @pytest.mark.anyio
+    async def test_configured_output_cap_preserves_final_chunk(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured Telegram output caps keep the tail visible."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        monkeypatch.setenv("TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES", "5")
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "telegram"
+        session.platform_thread_id = "12345"
+        fresh_store.update_session(session)
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        await bridge.on_output(session.id, "x" * 30000 + "final-tail")
+
+        assert mock_bot.send_message.await_count == 5
+        notice_text = mock_bot.send_message.await_args_list[-2].kwargs["text"]
+        last_text = mock_bot.send_message.await_args_list[-1].kwargs["text"]
+        assert "Telegram output shortened" in notice_text
+        assert "final-tail" in last_text
+
+    @pytest.mark.anyio
+    async def test_output_rate_limit_pauses_and_recovers(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Telegram RetryAfter pauses output and reports recovery later."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        class RetryAfterError(Exception):
+            retry_after = 0.0
+
+        async def fail_retry(*args, **kwargs):
+            raise RetryAfterError()
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot.with_bridge_send_retry", fail_retry
+        )
+
+        sent = await bridge._send_output_message(session.id, 12345, "First")
+
+        assert sent is False
+        assert bridge._dropped_output_count_by_topic[12345] == 1
+        assert bridge._output_paused_until > 0
+
+        async def ok_retry(label, send, **kwargs):
+            return await send()
+
+        bridge._output_paused_until = 0
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot.with_bridge_send_retry", ok_retry
+        )
+
+        sent = await bridge._send_output_message(session.id, 12345, "Second")
+
+        assert sent is True
+        sent_text = mock_bot.send_message.await_args.kwargs["text"]
+        assert "Telegram flood control recovered" in sent_text
+        assert "Second" in sent_text
+
+    @pytest.mark.anyio
+    async def test_missing_topic_clears_telegram_binding(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleted Telegram topics detach the stale session binding."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        session = fresh_store.create_session("repo_test", "main")
+        session.platform = "telegram"
+        session.platform_thread_id = "12345"
+        fresh_store.update_session(session)
+
+        mock_app = MagicMock()
+        mock_app.bot = AsyncMock()
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        async def missing_thread(label, send, **kwargs):
+            raise Exception("Message thread not found")
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot.with_bridge_send_retry",
+            missing_thread,
+        )
+
+        sent = await bridge._send_output_message(session.id, 12345, "First")
+
+        updated = fresh_store.get_session(session.id)
+        assert sent is False
+        assert bridge._state.get_topic_for_session(session.id) is None
+        assert updated is not None
+        assert updated.platform is None
+        assert updated.platform_thread_id is None
+
+    @pytest.mark.anyio
     async def test_on_output_formats_tool_messages_for_telegram(
-        self, fresh_store: SessionStore
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Tool calls and tool output get distinct Telegram styling."""
         from tether.bridges.telegram.bot import TelegramBridge
 
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
         session = fresh_store.create_session("repo_test", "main")
         session.platform = "telegram"
         session.platform_thread_id = "12345"

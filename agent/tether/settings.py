@@ -442,6 +442,21 @@ class Settings:
         return _get_bool("TETHER_DEBUG_ATTACH_LOGS", default=True)
 
     @staticmethod
+    def telegram_output_max_messages() -> int:
+        """Maximum Telegram messages to send for one bridge output.
+
+        Env: TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES (default: 0, unlimited)
+        """
+        return int(
+            _get_bounded_float(
+                "TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES",
+                0.0,
+                minimum=0.0,
+                maximum=200.0,
+            )
+        )
+
+    @staticmethod
     def git_auto_checkpoint() -> bool:
         """Auto-commit dirty git worktrees after each completed turn.
 
