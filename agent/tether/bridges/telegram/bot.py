@@ -280,8 +280,24 @@ class TelegramBridge(UpstreamTelegramBridge):
 
         selected = pending_req.options[option_index]
         username = self._display_name(query.from_user)
-        await self._send_input_or_start_via_api(session_id=session_id, text=selected)
-        self.clear_pending_permission(session_id)
+        if request_id.startswith("pi_extui:"):
+            ok = await self._respond_to_permission(
+                session_id,
+                request_id,
+                allow=True,
+                message=selected,
+            )
+            if not ok:
+                await query.edit_message_text(
+                    text=f"{original_html}\n\n❌ Error: Failed to submit response",
+                    parse_mode="HTML",
+                )
+                return
+        else:
+            await self._send_input_or_start_via_api(
+                session_id=session_id, text=selected
+            )
+            self.clear_pending_permission(session_id)
         self._approval_html.pop(request_id, None)
         await query.edit_message_text(
             text=f"{original_html}\n\n✅ {selected} by {username}",
@@ -345,6 +361,9 @@ class TelegramBridge(UpstreamTelegramBridge):
             )
         self._app.add_handler(MessageHandler(filters.ALL, self._guard_update), group=-1)
         self._app.add_handler(CallbackQueryHandler(self._guard_update), group=-1)
+        self._app.add_handler(
+            CallbackQueryHandler(self._handle_callback_query, pattern=r"^choice:")
+        )
 
         self._app.add_handler(CommandHandler("sync", self._cmd_sync))
         self._app.add_handler(CommandHandler("compact", self._cmd_compact))

@@ -339,6 +339,40 @@ class TestTelegramBridgeIntegration:
 
     @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
     @pytest.mark.anyio
+    async def test_start_registers_choice_callback_handler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Compact choice callbacks are handled by the Telegram app."""
+        from telegram.ext import CallbackQueryHandler
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        async def fake_upstream_start(bridge) -> None:
+            bridge._app = MagicMock()
+            bridge._app.bot = AsyncMock()
+
+        monkeypatch.setattr(
+            "agent_tether.telegram.bot.TelegramBridge.start",
+            fake_upstream_start,
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+
+        await bridge.start()
+
+        handlers = [
+            call.args[0] for call in bridge._app.add_handler.call_args_list if call.args
+        ]
+        patterns = [
+            handler.pattern.pattern
+            for handler in handlers
+            if isinstance(handler, CallbackQueryHandler) and handler.pattern
+        ]
+        assert r"^choice:" in patterns
+
+    @pytest.mark.skipif(not HAS_TELEGRAM, reason="telegram library not installed")
+    @pytest.mark.anyio
     async def test_start_registers_local_telegram_command_menu(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -458,6 +492,119 @@ class TestTelegramBridgeIntegration:
         assert [button.text for button in buttons] == ["1. Yes", "2. No"]
         assert all(len(button.callback_data.encode()) <= 64 for button in buttons)
         assert all(button.callback_data.startswith("choice:") for button in buttons)
+
+    @pytest.mark.anyio
+    async def test_pi_extension_choice_callback_resolves_permission(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Pi extension choices resolve the waiting permission future."""
+        from agent_tether.base import BridgeCallbacks
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = BridgeCallbacks(
+            create_session=AsyncMock(),
+            send_input=AsyncMock(),
+            stop_session=AsyncMock(),
+            respond_to_permission=AsyncMock(return_value=True),
+            list_sessions=AsyncMock(),
+            get_usage=AsyncMock(),
+            check_directory=AsyncMock(),
+            list_external_sessions=AsyncMock(),
+            get_external_history=AsyncMock(),
+            attach_external=AsyncMock(),
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+            callbacks=callbacks,
+        )
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+        request = ApprovalRequest(
+            kind="choice",
+            request_id="pi_extui:confirm:abc",
+            title="kubectl",
+            description="Allow this kubectl command?",
+            options=["Yes", "No"],
+        )
+        bridge.set_pending_permission(session.id, request)
+        bridge._approval_html[request.request_id] = "approval html"
+        bridge._compact_approval_tokens = {"token123": request.request_id}
+
+        query = MagicMock()
+        query.data = "choice:token123:1"
+        query.message.message_thread_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.full_name = "Lars"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        await bridge._handle_callback_query(update, MagicMock())
+
+        callbacks.respond_to_permission.assert_awaited_once_with(
+            session.id,
+            request.request_id,
+            True,
+            "Yes",
+        )
+        callbacks.send_input.assert_not_awaited()
+        query.edit_message_text.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_non_extension_choice_callback_sends_input(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Normal choice prompts still send the selected option as input."""
+        from agent_tether.base import BridgeCallbacks
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        session = fresh_store.create_session("repo_test", "main")
+        callbacks = BridgeCallbacks(
+            create_session=AsyncMock(),
+            send_input=AsyncMock(),
+            stop_session=AsyncMock(),
+            respond_to_permission=AsyncMock(return_value=True),
+            list_sessions=AsyncMock(),
+            get_usage=AsyncMock(),
+            check_directory=AsyncMock(),
+            list_external_sessions=AsyncMock(),
+            get_external_history=AsyncMock(),
+            attach_external=AsyncMock(),
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+            callbacks=callbacks,
+        )
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+        request = ApprovalRequest(
+            kind="choice",
+            request_id="regular-choice",
+            title="Pick one",
+            description="Choose",
+            options=["A", "B"],
+        )
+        bridge.set_pending_permission(session.id, request)
+        bridge._approval_html[request.request_id] = "approval html"
+        bridge._compact_approval_tokens = {"token123": request.request_id}
+
+        query = MagicMock()
+        query.data = "choice:token123:2"
+        query.message.message_thread_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.full_name = "Lars"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        await bridge._handle_callback_query(update, MagicMock())
+
+        callbacks.send_input.assert_awaited_once_with(session.id, "B")
+        callbacks.respond_to_permission.assert_not_awaited()
+        query.edit_message_text.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_create_thread_creates_telegram_topic(
