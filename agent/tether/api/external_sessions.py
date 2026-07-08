@@ -19,6 +19,16 @@ from tether.discovery import (
     discover_external_sessions,
     get_external_session_detail,
 )
+from tether.external_session_watcher import external_session_watcher
+from tether.external_sync import (
+    external_runner_type_for_session,
+    format_replay,
+    get_bound_bridge,
+    get_pi_metadata,
+    relay_history_message_to_bridge,
+    replay_stored_history_to_bridge,
+    sync_external_session_delta,
+)
 from tether.git import has_git_repository, normalize_directory_path
 from tether.session_titles import build_auto_session_name
 from tether.models import (
@@ -29,229 +39,6 @@ from tether.store import store
 
 router = APIRouter(tags=["external-sessions"])
 logger = structlog.get_logger(__name__)
-
-_REPLAY_MESSAGES = 10
-_REPLAY_CONTENT_LIMIT = 300
-_REPLAY_THINKING_LIMIT = 150
-_REPLAY_TOTAL_LIMIT = 1900
-_FORCE_SYNC_REPLAY_LIMIT = 75
-_BASELINE_RECOVERY_REPLAY_LIMIT = 25
-
-
-def _external_runner_type_for_session(session) -> ExternalRunnerType:
-    """Infer the external runner type for an attached Tether session."""
-    runner_type = str(getattr(session, "runner_type", "") or "").strip().lower()
-    adapter = str(getattr(session, "adapter", "") or "").strip().lower()
-
-    if runner_type == "pi" or adapter == "pi_rpc":
-        return ExternalRunnerType.PI
-    if runner_type == "codex" or adapter == "codex_sdk_sidecar":
-        return ExternalRunnerType.CODEX
-    if runner_type == "opencode" or adapter == "opencode":
-        return ExternalRunnerType.OPENCODE
-    return ExternalRunnerType.CLAUDE_CODE
-
-
-def _get_pi_metadata(external_id: str) -> dict | None:
-    """Fetch model and thinking level for a pi session."""
-    try:
-        from agent_sessions.providers.pi import (
-            _find_session_file,
-            get_pi_session_model,
-            get_pi_session_thinking_level,
-        )
-
-        session_file = _find_session_file(external_id)
-        if not session_file:
-            return None
-        model_info = get_pi_session_model(session_file)
-        thinking_level = get_pi_session_thinking_level(session_file)
-        result: dict = {}
-        if model_info:
-            result["model"] = model_info[1]  # model_id, skip provider
-        if thinking_level:
-            result["thinking_level"] = thinking_level
-        return result or None
-    except Exception:
-        return None
-
-
-def _format_replay(messages: list, metadata: dict | None = None) -> str | None:
-    """Format the last N messages as a compact history replay string."""
-    recent = (
-        messages[-_REPLAY_MESSAGES:] if len(messages) > _REPLAY_MESSAGES else messages
-    )
-    if not recent:
-        return None
-
-    header = f"Recent history (last {len(recent)} messages)"
-    if metadata:
-        parts = []
-        if metadata.get("model"):
-            parts.append(metadata["model"])
-        if metadata.get("thinking_level"):
-            parts.append(f"thinking: {metadata['thinking_level']}")
-        if parts:
-            header += f" — {', '.join(parts)}"
-    lines: list[str] = [header + ":\n"]
-    for i, msg in enumerate(recent, 1):
-        role = (msg.role if hasattr(msg, "role") else msg.get("role", "")).lower()
-        prefix = (
-            "\U0001f464"
-            if role == "user"
-            else ("\U0001f916" if role == "assistant" else "?")
-        )
-        content = (
-            msg.content if hasattr(msg, "content") else msg.get("content") or ""
-        ) or ""
-        thinking = (
-            msg.thinking if hasattr(msg, "thinking") else msg.get("thinking") or ""
-        ) or ""
-        content = content.strip()
-        thinking = thinking.strip()
-        if content and len(content) > _REPLAY_CONTENT_LIMIT:
-            content = content[:_REPLAY_CONTENT_LIMIT] + "..."
-        if thinking and len(thinking) > _REPLAY_THINKING_LIMIT:
-            thinking = thinking[:_REPLAY_THINKING_LIMIT] + "..."
-        if content:
-            lines.append(f"{i}. {prefix}: {content}")
-        if thinking:
-            lines.append(f"   {prefix} (thinking): {thinking}")
-
-    text = "\n".join(lines)
-    if len(text) > _REPLAY_TOTAL_LIMIT:
-        text = text[: _REPLAY_TOTAL_LIMIT - 3] + "..."
-    return text or None
-
-
-def _format_history_user_text(text: str) -> str:
-    """Render imported user prompts clearly inside bridge threads."""
-    if "\n" in text:
-        return f"👤 User\n{text}"
-    return f"👤 User: {text}"
-
-
-def _get_bound_bridge(session) -> object | None:
-    """Return the active bridge for a platform-bound session, if available."""
-    platform = session.platform
-    if not platform:
-        return None
-
-    from tether.bridges.glue import bridge_manager
-
-    bridge = bridge_manager.get_bridge(platform)
-    if bridge is None:
-        logger.warning(
-            "Skipping history relay because bridge is unavailable",
-            session_id=session.id,
-            platform=platform,
-        )
-    return bridge
-
-
-async def _send_history_to_bridge(
-    *,
-    session,
-    bridge: object | None,
-    text: str,
-    metadata: dict,
-) -> None:
-    """Send one imported history chunk to the bound bridge thread."""
-    if bridge is None or not text.strip():
-        return
-
-    try:
-        await bridge.on_output(session.id, text, metadata=metadata)
-    except Exception:
-        logger.exception(
-            "Failed to relay external session history to bridge",
-            session_id=session.id,
-            platform=session.platform,
-            metadata=metadata,
-        )
-
-
-async def _relay_history_message_to_bridge(
-    *,
-    session,
-    bridge: object | None,
-    role: str,
-    content: str,
-    thinking: str | None = None,
-    is_final: bool = False,
-) -> None:
-    """Mirror one imported external-session message into the bridge thread."""
-    if role == "user":
-        await _send_history_to_bridge(
-            session=session,
-            bridge=bridge,
-            text=_format_history_user_text(content),
-            metadata={"is_history": True, "role": "user"},
-        )
-        return
-
-    if thinking:
-        await _send_history_to_bridge(
-            session=session,
-            bridge=bridge,
-            text=thinking,
-            metadata={
-                "is_history": True,
-                "role": "assistant",
-                "kind": "step",
-                "final": False,
-            },
-        )
-
-    if content:
-        kind = "final" if is_final else "step"
-        await _send_history_to_bridge(
-            session=session,
-            bridge=bridge,
-            text=content,
-            metadata={
-                "is_history": True,
-                "role": "assistant",
-                "kind": kind,
-                "final": is_final,
-            },
-        )
-
-
-async def _replay_stored_history_to_bridge(*, session, bridge: object | None) -> None:
-    """Replay already-emitted imported history into a newly created bridge thread."""
-    if bridge is None:
-        return
-
-    history_events = [
-        event
-        for event in store.read_event_log(session.id, since_seq=0)
-        if (event.get("data") or {}).get("is_history")
-        and event.get("type") in {"user_input", "output"}
-    ]
-
-    for event in history_events:
-        data = event.get("data") or {}
-        if event.get("type") == "user_input":
-            await _send_history_to_bridge(
-                session=session,
-                bridge=bridge,
-                text=_format_history_user_text(str(data.get("text") or "")),
-                metadata={"is_history": True, "role": "user"},
-            )
-            continue
-
-        await _send_history_to_bridge(
-            session=session,
-            bridge=bridge,
-            text=str(data.get("text") or ""),
-            metadata={
-                "is_history": True,
-                "role": "assistant",
-                "kind": data.get("kind"),
-                "final": bool(data.get("final")),
-            },
-        )
 
 
 @router.get("/external-sessions", response_model=list[ExternalSessionSummaryResponse])
@@ -428,8 +215,8 @@ async def attach_to_external_session(
             )
             # Handle platform binding if requested.
             # If the session is already bound to a different platform, refuse
-            # unless force=True is set in the payload (not yet exposed — for
-            # now just report the existing binding clearly).
+            # unless force=True is set in the payload. This is not exposed yet,
+            # so report the existing binding clearly for now.
             if (
                 payload.platform
                 and existing_session.platform
@@ -468,24 +255,26 @@ async def attach_to_external_session(
                     new_thread_id = thread_info.get("thread_id")
                     existing_session.platform_thread_id = new_thread_id
                     store.update_session(existing_session)
-                    actual_runner_type = _external_runner_type_for_session(existing_session)
+                    actual_runner_type = external_runner_type_for_session(
+                        existing_session
+                    )
                     detail = get_external_session_detail(
                         session_id=external_id,
                         runner_type=actual_runner_type,
                         limit=100,
                     )
                     if actual_runner_type == ExternalRunnerType.CODEX:
-                        await _replay_stored_history_to_bridge(
+                        await replay_stored_history_to_bridge(
                             session=existing_session,
-                            bridge=_get_bound_bridge(existing_session),
+                            bridge=get_bound_bridge(existing_session),
                         )
                     else:
                         pi_meta = (
-                            _get_pi_metadata(external_id)
+                            get_pi_metadata(external_id)
                             if actual_runner_type == ExternalRunnerType.PI
                             else None
                         )
-                        replay = _format_replay(
+                        replay = format_replay(
                             detail.messages if detail else [], metadata=pi_meta
                         )
                         if replay:
@@ -494,6 +283,13 @@ async def attach_to_external_session(
                             )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
+            if not existing_session.external_agent_id:
+                existing_session.external_agent_id = external_id
+                existing_session.external_agent_type = parsed_runner_type.value
+                existing_session.external_agent_name = parsed_runner_type.value
+                existing_session.external_agent_workspace = existing_session.directory
+                store.update_session(existing_session)
+
             # Subscribe bridge if platform is bound
             if existing_session.platform:
                 from tether.bridges.glue import bridge_subscriber
@@ -501,6 +297,7 @@ async def attach_to_external_session(
                 bridge_subscriber.subscribe(
                     existing_session.id, existing_session.platform
                 )
+                external_session_watcher.register(existing_session.id)
             # Return the existing session instead of creating a duplicate
             return SessionResponse.from_session(existing_session, store)
 
@@ -536,6 +333,11 @@ async def attach_to_external_session(
         session.adapter = "pi_rpc"
     else:
         session.runner_type = "claude-local"  # Default fallback
+
+    session.external_agent_id = external_id
+    session.external_agent_type = parsed_runner_type.value
+    session.external_agent_name = parsed_runner_type.value
+    session.external_agent_workspace = normalized_directory
 
     # Set session name from first prompt if available
     if detail.first_prompt:
@@ -585,7 +387,7 @@ async def attach_to_external_session(
         from tether.bridges.glue import bridge_subscriber
 
         bridge_subscriber.subscribe(session.id, session.platform)
-    history_bridge = _get_bound_bridge(session)
+    history_bridge = get_bound_bridge(session)
 
     await emit_state(session)
 
@@ -610,7 +412,7 @@ async def attach_to_external_session(
             is_final=is_final,
             is_history=True,
         )
-        await _relay_history_message_to_bridge(
+        await relay_history_message_to_bridge(
             session=session,
             bridge=history_bridge,
             role=msg.role,
@@ -622,6 +424,8 @@ async def attach_to_external_session(
     # Track how many messages have been synced (turn_count = user messages only)
     turn_count = sum(1 for m in detail.messages if m.role == "user")
     store.set_synced_message_count(session.id, len(detail.messages), turn_count)
+    if session.platform:
+        external_session_watcher.register(session.id)
 
     logger.info(
         "Attached to external session",
@@ -640,128 +444,6 @@ async def sync_external_session(
     force: bool = Query(False),
     _: None = Depends(require_token),
 ) -> SyncResult:
-    """Sync new messages from the attached external session.
-
-    This fetches the latest messages from the external Claude Code session
-    and emits any new messages that haven't been synced yet.
-
-    Returns:
-        Count of new messages synced.
-    """
+    """Sync new messages from the attached external session."""
     logger.info("Sync requested", session_id=session_id)
-
-    session = store.get_session(session_id)
-    if not session:
-        raise_http_error("NOT_FOUND", "Session not found", 404)
-
-    # Get the external session ID
-    external_id = store.get_runner_session_id(session_id)
-    if not external_id:
-        raise_http_error(
-            "INVALID_STATE",
-            "Session is not attached to an external session",
-            400,
-        )
-
-    runner_type = _external_runner_type_for_session(session)
-
-    # Fetch fresh history
-    detail = get_external_session_detail(
-        session_id=external_id,
-        runner_type=runner_type,
-        limit=500,
-    )
-    if not detail:
-        raise_http_error("NOT_FOUND", f"External session not found: {external_id}", 404)
-
-    # Get previously synced count
-    synced_count = store.get_synced_message_count(session_id)
-    messages = detail.messages
-
-    if force:
-        replay_count = min(len(messages), _FORCE_SYNC_REPLAY_LIMIT)
-        start_idx = max(0, len(messages) - replay_count)
-        logger.info(
-            "Force sync requested; replaying recent history window",
-            session_id=session_id,
-            synced_count=synced_count,
-            total_messages=len(messages),
-            replay_messages=replay_count,
-        )
-        new_messages = messages[start_idx:]
-        base_idx = start_idx
-    # If synced_count is 0, the in-memory count was likely lost (for example
-    # after a restart). Replay a small recent window so users can recover
-    # context with plain `!sync` instead of getting a confusing "up to date".
-    elif synced_count == 0:
-        replay_count = min(len(messages), _BASELINE_RECOVERY_REPLAY_LIMIT)
-        start_idx = max(0, len(messages) - replay_count)
-        logger.info(
-            "Sync baseline missing; replaying recent history window",
-            session_id=session_id,
-            total_messages=len(messages),
-            replay_messages=replay_count,
-        )
-        new_messages = messages[start_idx:]
-        base_idx = start_idx
-    else:
-        new_messages = messages[synced_count:]
-        base_idx = synced_count
-
-    if not new_messages:
-        logger.info("No new messages to sync", session_id=session_id)
-        return SyncResult(synced=0, total=len(messages))
-
-    if not force and synced_count == 0:
-        existing_history = [
-            event
-            for event in store.read_event_log(session_id, since_seq=0)
-            if (event.get("data") or {}).get("is_history")
-            and event.get("type") in {"user_input", "output"}
-        ]
-        if len(existing_history) >= len(messages):
-            turn_count = sum(1 for m in messages if m.role == "user")
-            store.set_synced_message_count(session_id, len(messages), turn_count)
-            return SyncResult(synced=len(new_messages), total=len(messages))
-
-    # Emit new messages
-    history_bridge = _get_bound_bridge(session)
-    for i, msg in enumerate(new_messages):
-        is_final = False
-        if msg.role == "assistant":
-            # Check if this is the last assistant message before a user message or end
-            next_idx = base_idx + i + 1
-            if next_idx >= len(messages) or messages[next_idx].role == "user":
-                is_final = True
-
-        await emit_history_message(
-            session,
-            role=msg.role,
-            content=msg.content,
-            thinking=msg.thinking,
-            timestamp=msg.timestamp,
-            is_final=is_final,
-            is_history=True,
-        )
-        await _relay_history_message_to_bridge(
-            session=session,
-            bridge=history_bridge,
-            role=msg.role,
-            content=msg.content,
-            thinking=msg.thinking,
-            is_final=is_final,
-        )
-
-    # Update synced count
-    turn_count = sum(1 for m in messages if m.role == "user")
-    store.set_synced_message_count(session_id, len(messages), turn_count)
-
-    logger.info(
-        "Synced external session",
-        session_id=session_id,
-        new_messages=len(new_messages),
-        turn_count=turn_count,
-        total_messages=len(messages),
-    )
-
-    return SyncResult(synced=len(new_messages), total=len(messages))
+    return await sync_external_session_delta(session_id, force=force, source="manual")

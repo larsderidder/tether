@@ -42,6 +42,7 @@ def temp_data_dir(tmp_path, monkeypatch) -> str:
     monkeypatch.setenv("TETHER_AGENT_DATA_DIR", data_dir)
     # Reset the db engine so it picks up the new data dir
     from tether.db import reset_engine, init_db
+
     reset_engine()
     init_db()
     return data_dir
@@ -64,7 +65,10 @@ def fresh_store(temp_data_dir, monkeypatch) -> Generator[SessionStore, None, Non
     import tether.api.events
     import tether.api.external_sessions
     import tether.api.git
+    import tether.external_session_watcher
+    import tether.external_sync
     import tether.api.status
+
     monkeypatch.setattr(tether.store, "store", new_store)
     monkeypatch.setattr(tether.api.state, "store", new_store)
     monkeypatch.setattr(tether.api.sessions, "store", new_store)
@@ -74,6 +78,8 @@ def fresh_store(temp_data_dir, monkeypatch) -> Generator[SessionStore, None, Non
     monkeypatch.setattr(tether.api.events, "store", new_store)
     monkeypatch.setattr(tether.api.external_sessions, "store", new_store)
     monkeypatch.setattr(tether.api.git, "store", new_store)
+    monkeypatch.setattr(tether.external_session_watcher, "store", new_store)
+    monkeypatch.setattr(tether.external_sync, "store", new_store)
     monkeypatch.setattr(tether.api.status, "store", new_store)
 
     # Bridge registrations are global process state; reset per test to avoid

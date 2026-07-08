@@ -28,6 +28,7 @@ from tether.middleware import (
     request_logging_middleware,
     validation_exception_handler,
 )
+from tether.external_session_watcher import external_session_watcher
 from tether.log_config import configure_logging
 from tether.maintenance import maintenance_loop
 from tether.settings import settings
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
         await ensure_opencode_sidecar_started()
     await _init_bridges()
     _subscribe_existing_sessions()
+    await external_session_watcher.start()
     maintenance_task = asyncio.create_task(maintenance_loop())
     log_ui_urls(port=settings.port())
     try:
@@ -189,7 +191,8 @@ async def _init_bridges() -> None:
 
 
 async def _shutdown_services() -> None:
-    """Stop bridges and managed sidecars."""
+    """Stop watchers, bridges, and managed sidecars."""
+    await external_session_watcher.stop()
     await _stop_bridges()
     if settings.opencode_sidecar_managed():
         from tether.runner.opencode_sidecar_manager import (

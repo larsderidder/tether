@@ -50,6 +50,7 @@ def get_session_info(session_id: str) -> dict | None:
         "id": session.id,
         "directory": session.directory,
         "adapter": session.adapter,
+        "model": session.model,
         "runner_type": session.runner_type,
         "state": session.state,
         "platform": session.platform,
@@ -61,6 +62,7 @@ async def on_session_bound(
     session_id: str, platform: str, thread_id: str | None
 ) -> None:
     """Callback: bind session to platform and start subscriber."""
+    from tether.external_session_watcher import external_session_watcher
     from tether.store import store
 
     db_session = store.get_session(session_id)
@@ -68,6 +70,7 @@ async def on_session_bound(
         db_session.platform = platform
         db_session.platform_thread_id = thread_id
         store.update_session(db_session)
+        external_session_watcher.register(session_id)
 
     bridge_subscriber.subscribe(session_id, platform)
 

@@ -1,0 +1,353 @@
+"""Tests for external session sync services."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from agent_sessions import RunnerType, SessionDetail, SessionMessage
+
+from tether.api.schemas import SyncResult
+from tether.external_session_watcher import ExternalSessionWatcher
+from tether.models import SessionState
+from tether.store import SessionStore
+
+
+class MockBridge:
+    """Minimal bridge that records imported history posts."""
+
+    def __init__(self) -> None:
+        """Create an empty bridge recorder."""
+        self.output_calls: list[dict] = []
+
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        """Record an output relay."""
+        self.output_calls.append(
+            {"session_id": session_id, "text": text, "metadata": metadata}
+        )
+
+
+def _detail(external_id: str, messages: list[SessionMessage]) -> SessionDetail:
+    """Build an external session detail fixture."""
+    return SessionDetail(
+        id=external_id,
+        runner_type=RunnerType.CODEX,
+        directory="/tmp/repo",
+        first_prompt=messages[0].content if messages else None,
+        last_prompt=None,
+        last_activity="2026-07-01T12:00:00Z",
+        message_count=len(messages),
+        is_running=False,
+        messages=messages,
+    )
+
+
+def _attached_session(
+    fresh_store: SessionStore, tmp_path: Path, *, platform: str | None = "mock"
+):
+    """Create a Tether session attached to an external session."""
+    workdir = tmp_path / "repo"
+    workdir.mkdir(exist_ok=True)
+    session = fresh_store.create_session(str(workdir), None)
+    session.state = SessionState.AWAITING_INPUT
+    session.runner_type = "codex"
+    session.adapter = "codex_sdk_sidecar"
+    session.directory = str(workdir)
+    session.platform = platform
+    fresh_store.update_session(session)
+    fresh_store.set_runner_session_id(session.id, "external-1")
+    return session
+
+
+@pytest.mark.anyio
+async def test_sync_external_session_delta_replays_only_new_messages(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The shared sync service preserves the API delta behavior."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Hello"),
+        SessionMessage(role="assistant", content="Hi there"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=1, total=2)
+    assert [call["text"] for call in bridge.output_calls] == ["Hi there"]
+    assert fresh_store.get_synced_message_count(session.id) == 2
+
+
+@pytest.mark.anyio
+async def test_watcher_initial_sync_uses_recent_lookback_only(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Watcher baseline recovery imports only recent messages."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(hours=2)).isoformat()
+    recent = (now - timedelta(minutes=10)).isoformat()
+    messages = [
+        SessionMessage(role="user", content="Old prompt", timestamp=old),
+        SessionMessage(role="assistant", content="Old answer", timestamp=old),
+        SessionMessage(role="user", content="Recent prompt", timestamp=recent),
+        SessionMessage(role="assistant", content="Recent answer", timestamp=recent),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(
+        session.id,
+        source="watcher",
+        initial_lookback_seconds=3600,
+    )
+
+    assert result == SyncResult(synced=2, total=4)
+    assert [call["text"] for call in bridge.output_calls] == [
+        "👤 User: Recent prompt",
+        "Recent answer",
+    ]
+    assert fresh_store.get_synced_message_count(session.id) == 4
+
+
+@pytest.mark.anyio
+async def test_watcher_initial_sync_advances_cursor_when_no_recent_messages(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Watcher baseline recovery skips old history and avoids retry loops."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    messages = [
+        SessionMessage(role="user", content="Old prompt", timestamp=old),
+        SessionMessage(role="assistant", content="Old answer", timestamp=old),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(
+        session.id,
+        source="watcher",
+        initial_lookback_seconds=3600,
+    )
+
+    assert result == SyncResult(synced=0, total=2)
+    assert bridge.output_calls == []
+    assert fresh_store.get_synced_message_count(session.id) == 2
+
+
+@pytest.mark.anyio
+async def test_watcher_syncs_platform_bound_external_sessions(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """The watcher syncs sessions that have both external ids and platforms."""
+    session = _attached_session(fresh_store, tmp_path)
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record watcher sync calls."""
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+
+    assert synced == [session.id]
+
+
+@pytest.mark.anyio
+async def test_watcher_skips_sessions_without_runner_session_id(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """The watcher ignores sessions that are not attached externally."""
+    session = fresh_store.create_session(str(tmp_path / "repo"), None)
+    session.platform = "mock"
+    fresh_store.update_session(session)
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record unexpected watcher sync calls."""
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+
+    assert synced == []
+
+
+@pytest.mark.anyio
+async def test_watcher_skips_unbound_sessions(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """The first watcher version only syncs bridge-bound sessions."""
+    session = _attached_session(fresh_store, tmp_path, platform=None)
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record unexpected watcher sync calls."""
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+
+    assert synced == []
+
+
+@pytest.mark.anyio
+async def test_watcher_skips_managed_runner_sessions(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """The watcher does not mirror Tether-owned runner sessions."""
+    session = _attached_session(fresh_store, tmp_path)
+    session.started_at = "2026-07-01T12:00:00Z"
+    fresh_store.update_session(session)
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record unexpected watcher sync calls."""
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+
+    assert synced == []
+
+
+@pytest.mark.anyio
+async def test_watcher_syncs_idle_attached_pi_with_live_process(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """Idle attached pi sessions are watched even while RPC stays connected."""
+    session = _attached_session(fresh_store, tmp_path)
+    session.runner_type = "pi"
+    session.adapter = "pi_rpc"
+    session.external_agent_id = "external-1"
+    session.external_agent_type = "pi"
+    fresh_store.update_session(session)
+    fresh_store.set_process(session.id, MagicMock())
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record watcher sync calls."""
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+
+    assert synced == [session.id]
+
+
+@pytest.mark.anyio
+async def test_watcher_skips_running_attached_pi_with_live_process(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """Running attached pi sessions wait until the turn is idle."""
+    session = _attached_session(fresh_store, tmp_path)
+    session.runner_type = "pi"
+    session.adapter = "pi_rpc"
+    session.external_agent_id = "external-1"
+    session.external_agent_type = "pi"
+    session.state = SessionState.RUNNING
+    fresh_store.update_session(session)
+    fresh_store.set_process(session.id, MagicMock())
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record unexpected watcher sync calls."""
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+
+    assert synced == []
+
+
+@pytest.mark.anyio
+async def test_watcher_errors_do_not_stop_future_syncs(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """A failed watcher sync does not prevent later passes."""
+    session = _attached_session(fresh_store, tmp_path)
+    attempts = 0
+    synced: list[str] = []
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Fail once, then record the next sync."""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("boom")
+        synced.append(session_id)
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session.id)
+
+    await watcher.sync_once()
+    await watcher.sync_once()
+
+    assert attempts == 2
+    assert synced == [session.id]

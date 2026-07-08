@@ -442,6 +442,40 @@ class Settings:
         return _get_bool("TETHER_DEBUG_ATTACH_LOGS", default=True)
 
     @staticmethod
+    def external_sync_watcher_enabled() -> bool:
+        """Enable polling sync for platform-bound external sessions.
+
+        Env: TETHER_EXTERNAL_SYNC_WATCHER_ENABLED (default: 1)
+        """
+        return _get_bool("TETHER_EXTERNAL_SYNC_WATCHER_ENABLED", default=True)
+
+    @staticmethod
+    def external_sync_interval_seconds() -> float:
+        """Polling interval for external session sync.
+
+        Env: TETHER_EXTERNAL_SYNC_INTERVAL_SECONDS (default: 3)
+        """
+        return _get_bounded_float(
+            "TETHER_EXTERNAL_SYNC_INTERVAL_SECONDS",
+            3.0,
+            minimum=1.0,
+            maximum=60.0,
+        )
+
+    @staticmethod
+    def external_sync_initial_lookback_seconds() -> float:
+        """Maximum initial watcher catch-up window when the cursor is missing.
+
+        Env: TETHER_EXTERNAL_SYNC_INITIAL_LOOKBACK_SECONDS (default: 3600)
+        """
+        return _get_bounded_float(
+            "TETHER_EXTERNAL_SYNC_INITIAL_LOOKBACK_SECONDS",
+            3600.0,
+            minimum=0.0,
+            maximum=86400.0,
+        )
+
+    @staticmethod
     def telegram_output_max_messages() -> int:
         """Maximum Telegram messages to send for one bridge output.
 

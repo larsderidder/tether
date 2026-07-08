@@ -52,6 +52,7 @@ from tether.bridges.glue import (
 from tether.bridges.image_io import images_from_payload
 from tether.diff import parse_git_diff
 from tether.discovery.running import is_claude_session_running
+from tether.external_session_watcher import external_session_watcher
 from tether.git import has_git_repository, normalize_directory_path
 from tether.models import SessionState
 from tether import workspace as _workspace
@@ -410,6 +411,7 @@ async def detach_session_platform(
         # the existing thread rather than creating a new one.
         session.platform = None
         store.update_session(session)
+        external_session_watcher.unregister(session_id)
         logger.info("Session detached from platform")
         return OkResponse()
 
@@ -436,6 +438,7 @@ async def delete_session(
             await bridge_subscriber.unsubscribe(session_id, platform=session.platform)
 
         store.delete_session(session_id)
+        external_session_watcher.unregister(session_id)
         remove_session_lock(session_id)
         logger.info("Session deleted")
         return OkResponse()
