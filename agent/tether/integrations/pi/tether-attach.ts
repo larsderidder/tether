@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -68,8 +68,8 @@ async function attachCurrentSession(
   ctx: ExtensionContext | ExtensionCommandContext,
   options: AttachOptions,
 ): Promise<string> {
-  const sessionFile = ctx.sessionManager.getSessionFile();
-  const sessionId = sessionFile ? readPiSessionId(sessionFile) : undefined;
+  flushCurrentSessionHeader(ctx);
+  const sessionId = getCurrentSessionId(ctx);
   const args = ["attach-current", "--runner-type", "pi", "--directory", ctx.cwd, "--json"];
 
   if (sessionId) {
@@ -104,6 +104,35 @@ function normalizePlatform(args: string): string {
     throw new Error("Usage: /tether [auto|none|telegram|slack|discord]");
   }
   return value;
+}
+
+function getCurrentSessionId(ctx: ExtensionContext | ExtensionCommandContext): string | undefined {
+  const sessionId = ctx.sessionManager.getSessionId();
+  if (sessionId) {
+    return sessionId;
+  }
+
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  return sessionFile ? readPiSessionId(sessionFile) : undefined;
+}
+
+function flushCurrentSessionHeader(ctx: ExtensionContext | ExtensionCommandContext): void {
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  if (!sessionFile || existsSync(sessionFile)) {
+    return;
+  }
+
+  const manager = ctx.sessionManager as unknown as {
+    _rewriteFile?: () => void;
+    flushed?: boolean;
+    isPersisted?: () => boolean;
+  };
+  if (manager.isPersisted?.() === false || typeof manager._rewriteFile !== "function") {
+    return;
+  }
+
+  manager._rewriteFile();
+  manager.flushed = true;
 }
 
 function readPiSessionId(sessionFile: string): string | undefined {

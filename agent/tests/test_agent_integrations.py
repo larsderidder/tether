@@ -25,7 +25,11 @@ def test_install_integrations_default_uses_detected_agents(
     results = install_integrations()
 
     assert [r.name for r in results] == ["pi"]
-    assert (tmp_path / ".pi" / "agent" / "extensions" / "tether-attach.ts").exists()
+    pi_helper = tmp_path / ".pi" / "agent" / "extensions" / "tether-attach.ts"
+    assert pi_helper.exists()
+    helper_text = pi_helper.read_text(encoding="utf-8")
+    assert "getSessionId()" in helper_text
+    assert "flushCurrentSessionHeader" in helper_text
     assert not (tmp_path / ".claude" / "commands" / "tether.md").exists()
 
 
