@@ -198,6 +198,23 @@ describe("createRouter", () => {
       );
       expect(getSession("test-session").approvalChoice).toBe(1);
     });
+
+    it("stores model from request", async () => {
+      const { deps, getSession } = createTestDeps();
+      const app = express();
+      app.use(express.json());
+      app.use(createRouter(deps));
+
+      await request(app)
+        .post("/sessions/start")
+        .send({
+          session_id: "test-session",
+          prompt: "hello",
+          model: "provider/model-1",
+        });
+
+      expect(getSession("test-session").model).toBe("provider/model-1");
+    });
   });
 
   describe("POST /sessions/input", () => {
@@ -277,6 +294,23 @@ describe("createRouter", () => {
       expect(callArgs[1]).toBe("input");
       expect(callArgs[2]).toBe(0);
       expect(callArgs[3]).toBeUndefined();
+    });
+
+    it("updates model from input request", async () => {
+      const { deps, getSession } = createTestDeps();
+      const app = express();
+      app.use(express.json());
+      app.use(createRouter(deps));
+
+      await request(app)
+        .post("/sessions/input")
+        .send({
+          session_id: "test-session",
+          text: "input",
+          model: "provider/model-2",
+        });
+
+      expect(getSession("test-session").model).toBe("provider/model-2");
     });
   });
 

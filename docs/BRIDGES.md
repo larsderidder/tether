@@ -87,6 +87,9 @@ Routes store events to bridge methods:
 | `!compact [instructions]` / `/compact [instructions]` | Request pi context compaction for the current session |
 | `!sync` / `/sync` | Pull new messages from an attached external session |
 | `!usage` / `/usage` | Show token usage and cost |
+| `!models` / `/models` | List configured models for the current session's adapter |
+| `!model` / `/model` | Show the current session model |
+| `!model <model>` / `/model <model>` | Switch the model for future turns in this session |
 | `!stop` / `/stop` | Interrupt the session |
 
 ## Bridge Git Commands

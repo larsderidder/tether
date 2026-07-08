@@ -63,6 +63,8 @@ class OpenCodeSidecarRunner:
 
         workdir = store.get_workdir(session_id)
         thread_id = store.get_runner_session_id(session_id)
+        session = store.get_session(session_id)
+        model = session.model if session and session.model else None
 
         if thread_id:
             logger.info(
@@ -81,6 +83,8 @@ class OpenCodeSidecarRunner:
             payload["thread_id"] = thread_id
         if images:
             payload["images"] = images
+        if model:
+            payload["model"] = model
 
         await self._post_json("/sessions/start", payload)
         self._ensure_stream(session_id)
@@ -94,8 +98,11 @@ class OpenCodeSidecarRunner:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         payload = {"session_id": session_id, "text": text}
+        session = store.get_session(session_id)
         if images:
             payload["images"] = images
+        if session and session.model:
+            payload["model"] = session.model
         await self._post_json("/sessions/input", payload)
         self._ensure_stream(session_id)
 
@@ -228,15 +235,13 @@ class OpenCodeSidecarRunner:
                     return True
 
                 if not line:
-                    logger.info(
-                        "OpenCode sidecar stream closed", session_id=session_id
-                    )
+                    logger.info("OpenCode sidecar stream closed", session_id=session_id)
                     return True
 
                 if not line.startswith("data: "):
                     continue
 
-                payload = line[len("data: "):].strip()
+                payload = line[len("data: ") :].strip()
                 try:
                     event = json.loads(payload)
                 except json.JSONDecodeError as exc:
@@ -305,9 +310,7 @@ class OpenCodeSidecarRunner:
             value = data.get("value")
             raw = data.get("raw", "")
             if key:
-                self._dispatch(
-                    self._events.on_metadata(session_id, key, value, raw)
-                )
+                self._dispatch(self._events.on_metadata(session_id, key, value, raw))
             return
 
         if event_type == "heartbeat":
@@ -355,15 +358,11 @@ class OpenCodeSidecarRunner:
             )
 
         try:
-            status, data = await asyncio.to_thread(
-                self._post_once, path, payload
-            )
+            status, data = await asyncio.to_thread(self._post_once, path, payload)
         except (ConnectionRefusedError, socket.timeout, OSError) as exc:
             if settings.opencode_sidecar_managed():
                 await ensure_opencode_sidecar_started()
-                status, data = await asyncio.to_thread(
-                    self._post_once, path, payload
-                )
+                status, data = await asyncio.to_thread(self._post_once, path, payload)
             else:
                 raise RunnerUnavailableError(
                     f"OpenCode sidecar is not reachable at {self._base_url} ({exc}). "

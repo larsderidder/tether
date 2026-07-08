@@ -101,6 +101,18 @@ COMMANDS: tuple[BridgeCommand, ...] = (
         frozenset({"telegram", "slack", "discord"}),
     ),
     BridgeCommand(
+        "models",
+        "",
+        "List configured models for this session",
+        frozenset({"telegram", "slack", "discord"}),
+    ),
+    BridgeCommand(
+        "model",
+        "[model]",
+        "Show or switch this session's model",
+        frozenset({"telegram", "slack", "discord"}),
+    ),
+    BridgeCommand(
         "rename",
         "<name>",
         "Rename this Discord thread",

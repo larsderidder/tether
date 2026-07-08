@@ -28,6 +28,11 @@ from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.model_api import (
+    format_model_info,
+    get_session_model,
+    set_session_model,
+)
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
     discord_message_key,
@@ -1400,12 +1405,64 @@ class DiscordBridge(UpstreamDiscordBridge):
                 return
             await self._cmd_compact(message, args)
             return
+        if cmd == "!models":
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._cmd_models(message)
+            return
+        if cmd == "!model":
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._cmd_model(message, args)
+            return
 
         await super()._dispatch_command(message, text)
 
     async def _cmd_help(self, message: Any) -> None:
         """Handle !help."""
         await message.channel.send(help_text("discord", prefix="!"))
+
+    async def _cmd_models(self, message: Any) -> None:
+        """List configured models for the current session."""
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        session_id = self._session_for_thread(channel_id or 0)
+        if not session_id:
+            await message.channel.send("Use this command inside a session thread.")
+            return
+        try:
+            await message.channel.send(
+                format_model_info(await get_session_model(session_id))
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to fetch Discord session model", session_id=session_id
+            )
+            await message.channel.send(f"Failed to fetch model: {exc}")
+
+    async def _cmd_model(self, message: Any, args: str) -> None:
+        """Show or change the model for the current session."""
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        session_id = self._session_for_thread(channel_id or 0)
+        if not session_id:
+            await message.channel.send("Use this command inside a session thread.")
+            return
+        try:
+            if args:
+                session = await set_session_model(session_id, args.strip())
+                await message.channel.send(
+                    f"✅ Model set to {session.get('model') or args.strip()}."
+                )
+            else:
+                await message.channel.send(
+                    format_model_info(await get_session_model(session_id))
+                )
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Discord session model", session_id=session_id
+            )
+            await message.channel.send(f"Failed to update model: {exc}")
 
     async def _cmd_compact(self, message: Any, args: str) -> None:
         """Compact the runner context for the current session."""

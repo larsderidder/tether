@@ -101,6 +101,8 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 | Env Var | Description |
 |---------|-------------|
 | `TETHER_DEFAULT_AGENT_ADAPTER` | Force adapter: `claude_subprocess`, `codex_sdk_sidecar`, `opencode`, `litellm`, `automation`, etc. |
+| `TETHER_<ADAPTER>_DEFAULT_MODEL` | Optional model assigned to new sessions for an adapter, such as `TETHER_PI_DEFAULT_MODEL` or `TETHER_CLAUDE_DEFAULT_MODEL` |
+| `TETHER_<ADAPTER>_MODELS` | Comma-separated model choices shown by bridge model commands, such as `TETHER_PI_MODELS` |
 | `ANTHROPIC_API_KEY` | API key for Claude (alternative to CLI OAuth) |
 | `TETHER_AGENT_CLAUDE_MODEL` | Model override (default: claude-sonnet-4-20250514) |
 | `TETHER_CODEX_SIDECAR_URL` | Sidecar URL (default: http://localhost:8788) |

@@ -26,6 +26,7 @@ Create session. Supports local directory sessions and cloned-repo sessions.
 {
   "directory": "/path/to/project",
   "adapter": "claude_auto",
+  "model": "claude-sonnet-4-20250514",
   "platform": "telegram"
 }
 ```
@@ -51,6 +52,7 @@ Create session. Supports local directory sessions and cloned-repo sessions.
 | `shallow` | `bool` | Shallow clone (`--depth 1`) |
 | `auto_branch` | `bool` | Create a `tether/<id>` working branch after clone |
 | `adapter` | `str?` | Runner adapter (see Runners doc) |
+| `model` | `str?` | Model captured on the session and passed to compatible runners. If omitted, the adapter default model is used when configured. |
 | `platform` | `str?` | `"telegram"`, `"slack"`, `"discord"` |
 
 **Response** includes `clone_url`, `clone_branch`, and `working_branch` fields.
@@ -102,6 +104,21 @@ Respond to a permission request.
 Returns aggregated token usage from metadata events.
 ```json
 {"input_tokens": 1000, "output_tokens": 500, "total_cost_usd": 0.012}
+```
+
+### `GET /api/models?adapter=pi_rpc`
+Returns model settings for an adapter.
+```json
+{"adapter": "pi_rpc", "model": "openai/gpt-5.1", "default_model": "openai/gpt-5.1", "available_models": ["openai/gpt-5.1"]}
+```
+
+### `GET /api/sessions/{id}/model`
+Returns active model settings for a session.
+
+### `PATCH /api/sessions/{id}/model`
+Changes the model used for future turns. Fails with 409 while the session is running.
+```json
+{"model": "anthropic/claude-sonnet-4-20250514"}
 ```
 
 ### `GET /api/sessions/{id}/diff`

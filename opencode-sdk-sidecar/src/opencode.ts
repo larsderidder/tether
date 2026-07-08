@@ -250,6 +250,13 @@ async function ensureOpencodeSession(
  * its message history. Finds the last assistant message and returns its
  * model info. Caches the result so we only query once per session.
  */
+function modelFromString(value: string | undefined): SessionModel | undefined {
+  const raw = String(value || "").trim();
+  const slash = raw.indexOf("/");
+  if (slash <= 0 || slash >= raw.length - 1) return undefined;
+  return { providerID: raw.slice(0, slash), modelID: raw.slice(slash + 1) };
+}
+
 async function discoverSessionModel(
   handle: OpencodeServerHandle,
   tetherId: string,
@@ -475,9 +482,11 @@ export async function runTurn(
       session.threadId ?? (await ensureOpencodeSession(handle, session.id, threadId));
     session.threadId = ocSessionId;
 
-    // Discover the model from the session's message history so we continue
-    // with the same model the session was started with.
-    const model = await discoverSessionModel(handle, session.id, ocSessionId);
+    // Prefer the Tether session model, otherwise continue with the model
+    // discovered from existing OpenCode history.
+    const model =
+      modelFromString(session.model) ||
+      (await discoverSessionModel(handle, session.id, ocSessionId));
 
     emitHeader(session, "OpenCode", { thread_id: ocSessionId });
 

@@ -27,6 +27,7 @@ class CreateSessionRequest(BaseModel):
     directory: str | None = None
     base_ref: str | None = None
     adapter: str | None = None
+    model: str | None = None
     # Clone-based workspace fields
     clone_url: str | None = None
     clone_branch: str | None = None
@@ -70,6 +71,21 @@ class RenameSessionRequest(BaseModel):
     """Request body for renaming a session."""
 
     name: str = Field(..., min_length=1, max_length=80)
+
+
+class UpdateModelRequest(BaseModel):
+    """Request body for changing a session model."""
+
+    model: str = Field(..., min_length=1, max_length=160)
+
+
+class ModelInfoResponse(BaseModel):
+    """Model settings for a session or adapter."""
+
+    adapter: str | None
+    model: str | None
+    default_model: str | None
+    available_models: list[str]
 
 
 class InputRequest(BaseModel):
@@ -147,6 +163,7 @@ class SessionResponse(BaseModel):
     has_pending_permission: bool
     approval_mode: int | None  # None = use global default, 0/1/2 = override
     adapter: str | None  # Adapter configured for this session
+    model: str | None  # Model configured for this session
     # External agent fields
     external_agent_name: str | None = None
     external_agent_type: str | None = None
@@ -180,6 +197,7 @@ class SessionResponse(BaseModel):
             > 0,
             approval_mode=session.approval_mode,
             adapter=session.adapter,
+            model=session.model,
             external_agent_name=session.external_agent_name,
             external_agent_type=session.external_agent_type,
             external_agent_icon=session.external_agent_icon,

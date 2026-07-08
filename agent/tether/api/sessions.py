@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import structlog
@@ -27,12 +27,14 @@ from tether.api.schemas import (
     CreateSessionRequest,
     DiffResponse,
     InputRequest,
+    ModelInfoResponse,
     OkResponse,
     PermissionResponseRequest,
     RenameSessionRequest,
     SessionResponse,
     StartSessionRequest,
     UpdateApprovalModeRequest,
+    UpdateModelRequest,
 )
 from tether.api.state import (
     maybe_set_session_name,
@@ -56,6 +58,7 @@ from tether import workspace as _workspace
 from tether.workspace import WorkspaceError
 from tether.git_ops import git_create_branch
 from tether.runner.base import RunnerUnavailableError
+from tether.settings import settings
 from tether.store import store
 
 router = APIRouter(tags=["sessions"])
@@ -153,6 +156,7 @@ async def create_session(
         clone_url=payload.clone_url,
         agent_name=payload.agent_name,
         platform=payload.platform,
+        model=payload.model,
     )
 
     # Validate: clone_url and directory are mutually exclusive
@@ -220,6 +224,13 @@ async def create_session(
             raise_http_error(
                 "VALIDATION_ERROR", f"Invalid adapter '{payload.adapter}': {e}", 422
             )
+
+    model = payload.model.strip() if payload.model else ""
+    if not model:
+        model = settings.adapter_default_model(payload.adapter or settings.adapter())
+    if model:
+        session.model = model
+        logger.info("Session model configured", model=session.model)
 
     # Populate external agent metadata if provided
     if payload.agent_name:
@@ -890,6 +901,73 @@ async def interrupt_session(
                 await emit_state(session)
             logger.info("Session interrupted")
             return SessionResponse.from_session(session, store)
+
+
+@router.get("/models", response_model=ModelInfoResponse)
+async def list_models(
+    adapter: str | None = None,
+    _: None = Depends(require_token),
+) -> ModelInfoResponse:
+    """Return configured model choices for an adapter."""
+    adapter_name = adapter or settings.adapter()
+    default_model = settings.adapter_default_model(adapter_name) or None
+    return ModelInfoResponse(
+        adapter=adapter_name,
+        model=default_model,
+        default_model=default_model,
+        available_models=settings.adapter_models(adapter_name),
+    )
+
+
+@router.get("/sessions/{session_id}/model", response_model=ModelInfoResponse)
+async def get_session_model(
+    session_id: str,
+    _: None = Depends(require_token),
+) -> ModelInfoResponse:
+    """Return the active model for a session."""
+    with _session_logging_context(session_id):
+        session = store.get_session(session_id)
+        if not session:
+            raise_http_error("NOT_FOUND", "Session not found", 404)
+        adapter = session.adapter or settings.adapter()
+        default_model = settings.adapter_default_model(adapter) or None
+        return ModelInfoResponse(
+            adapter=adapter,
+            model=session.model or default_model,
+            default_model=default_model,
+            available_models=settings.adapter_models(adapter),
+        )
+
+
+@router.patch("/sessions/{session_id}/model", response_model=SessionResponse)
+async def update_session_model(
+    session_id: str,
+    payload: UpdateModelRequest,
+    _: None = Depends(require_token),
+) -> SessionResponse:
+    """Update the model used for future turns in a session."""
+    with _session_logging_context(session_id):
+        session = store.get_session(session_id)
+        if not session:
+            raise_http_error("NOT_FOUND", "Session not found", 404)
+        if session.state in (SessionState.RUNNING, SessionState.INTERRUPTING):
+            raise_http_error(
+                "SESSION_BUSY",
+                "Cannot change model while the session is running",
+                409,
+            )
+        model = payload.model.strip()
+        if not model:
+            raise_http_error("VALIDATION_ERROR", "model must not be empty", 422)
+        session.model = model
+        store.update_session(session)
+        if (
+            session.adapter or ""
+        ).lower() == "pi_rpc" and session.state == SessionState.AWAITING_INPUT:
+            with suppress(Exception):
+                await get_api_runner(session.adapter).stop(session_id)
+        logger.info("Session model updated", model=session.model)
+        return SessionResponse.from_session(session, store)
 
 
 @router.get("/sessions/{session_id}/diff", response_model=DiffResponse)

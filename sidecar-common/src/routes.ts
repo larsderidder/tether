@@ -32,7 +32,7 @@ export function createRouter(deps: RoutesDeps): Router {
 
   // POST /sessions/start
   router.post("/sessions/start", async (req: Request, res: Response) => {
-    const { session_id, prompt, approval_choice, workdir, thread_id } = req.body || {};
+    const { session_id, prompt, approval_choice, workdir, thread_id, model } = req.body || {};
 
     if (!session_id) {
       return res.status(422).json({ error: "session_id is required" });
@@ -61,6 +61,7 @@ export function createRouter(deps: RoutesDeps): Router {
     }
 
     session.approvalChoice = Number(approval_choice) || 2;
+    if (model) session.model = String(model);
 
     if (prompt) {
       runTurn(session, String(prompt), session.approvalChoice, thread_id ? String(thread_id) : undefined).catch(
@@ -73,7 +74,7 @@ export function createRouter(deps: RoutesDeps): Router {
 
   // POST /sessions/input
   router.post("/sessions/input", (req: Request, res: Response) => {
-    const { session_id, text } = req.body || {};
+    const { session_id, text, model } = req.body || {};
 
     if (!session_id || !text) {
       return res.status(422).json({ error: "session_id and text are required" });
@@ -81,6 +82,7 @@ export function createRouter(deps: RoutesDeps): Router {
 
     const session = getSession(session_id);
     logger.info({ session_id }, "Input request");
+    if (model) session.model = String(model);
 
     if (session.running) {
       session.pendingInputs.push(String(text));

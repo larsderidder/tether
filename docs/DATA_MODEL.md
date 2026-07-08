@@ -29,6 +29,7 @@ The central entity. Represents one supervised agent run.
 | `workdir_managed` | `bool` | Whether Tether manages the workdir |
 | `approval_mode` | `int?` | `None` = global default, `0/1/2` = override |
 | `adapter` | `str?` | Runner adapter name (immutable after creation) |
+| `model` | `str?` | Model selected when the session was created |
 | `external_agent_id` | `str?` | External agent identifier |
 | `external_agent_name` | `str?` | e.g., "Claude Code" |
 | `external_agent_type` | `str?` | Agent type string |

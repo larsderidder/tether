@@ -67,7 +67,7 @@ function buildThreadOptions(session: SessionState, approvalChoice: number): Thre
 
   if (session.workdir) options.workingDirectory = session.workdir;
 
-  const model = settings.codexModel();
+  const model = session.model || settings.codexModel();
   if (model) options.model = model;
 
   const sandboxMode = settings.codexSandboxMode();

@@ -225,6 +225,57 @@ class Settings:
         value = _get("TETHER_DEFAULT_AGENT_ADAPTER") or _get("TETHER_AGENT_ADAPTER")
         return value.lower() if value else None
 
+    @staticmethod
+    def adapter_model_key(adapter: str | None) -> str:
+        """Return the environment key stem for an adapter's model settings."""
+        raw = str(adapter or "").strip().lower()
+        if raw in {"claude", "claude_auto", "claude_subprocess", "claude_api"}:
+            return "CLAUDE"
+        if raw in {"codex", "codex_sdk_sidecar"}:
+            return "CODEX"
+        if raw in {"pi", "pi_rpc"}:
+            return "PI"
+        if raw in {"opencode", "opencode_sdk_sidecar"}:
+            return "OPENCODE"
+        if raw == "litellm":
+            return "LITELLM"
+        return "".join(ch if ch.isalnum() else "_" for ch in raw.upper()).strip("_")
+
+    @staticmethod
+    def adapter_default_model(adapter: str | None) -> str:
+        """Default model for new sessions created with an adapter.
+
+        Env: TETHER_<ADAPTER>_DEFAULT_MODEL, with runner-specific legacy
+        settings used as fallbacks where they already exist.
+        """
+        key = Settings.adapter_model_key(adapter)
+        if key:
+            value = _get(f"TETHER_{key}_DEFAULT_MODEL")
+            if value:
+                return value
+        if key == "CLAUDE":
+            return Settings.claude_model()
+        if key == "CODEX":
+            return Settings.codex_sidecar_model()
+        if key == "LITELLM":
+            return Settings.litellm_model()
+        return ""
+
+    @staticmethod
+    def adapter_models(adapter: str | None) -> list[str]:
+        """Configured model choices for an adapter.
+
+        Env: TETHER_<ADAPTER>_MODELS, comma-separated.
+        """
+        key = Settings.adapter_model_key(adapter)
+        raw = _get(f"TETHER_{key}_MODELS") if key else ""
+        models = [item.strip() for item in raw.split(",") if item.strip()]
+        default = Settings.adapter_default_model(adapter)
+        if default:
+            models = [item for item in models if item != default]
+            models.insert(0, default)
+        return models
+
     # -------------------------------------------------------------------------
     # Logging Settings
     # -------------------------------------------------------------------------

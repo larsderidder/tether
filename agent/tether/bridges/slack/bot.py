@@ -15,6 +15,11 @@ from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.model_api import (
+    format_model_info,
+    get_session_model,
+    set_session_model,
+)
 from tether.bridges.rich_output import render_slack_messages
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
@@ -205,6 +210,12 @@ class SlackBridge(UpstreamSlackBridge):
         if cmd == "!compact":
             await self._cmd_compact(event, args)
             return
+        if cmd == "!models":
+            await self._cmd_models(event)
+            return
+        if cmd == "!model":
+            await self._cmd_model(event, args)
+            return
         await super()._dispatch_command(event, text)
 
     async def _cmd_compact(self, event: dict, args: str) -> None:
@@ -223,6 +234,52 @@ class SlackBridge(UpstreamSlackBridge):
         except Exception as exc:
             logger.exception("Failed to compact Slack session", session_id=session_id)
             await self._reply(event, f"Failed to compact session: {exc}")
+
+    async def _cmd_models(self, event: dict) -> None:
+        """List configured models for the current session."""
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
+            await self._reply(event, "Use this command inside a session thread.")
+            return
+        session_id = self._session_for_thread(thread_ts)
+        if not session_id:
+            await self._reply(event, "No session linked to this thread.")
+            return
+        try:
+            await self._reply(
+                event, format_model_info(await get_session_model(session_id))
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to fetch Slack session model", session_id=session_id
+            )
+            await self._reply(event, f"Failed to fetch model: {exc}")
+
+    async def _cmd_model(self, event: dict, args: str) -> None:
+        """Show or change the model for the current session."""
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
+            await self._reply(event, "Use this command inside a session thread.")
+            return
+        session_id = self._session_for_thread(thread_ts)
+        if not session_id:
+            await self._reply(event, "No session linked to this thread.")
+            return
+        try:
+            if args:
+                session = await set_session_model(session_id, args.strip())
+                await self._reply(
+                    event, f"✅ Model set to {session.get('model') or args.strip()}."
+                )
+            else:
+                await self._reply(
+                    event, format_model_info(await get_session_model(session_id))
+                )
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Slack session model", session_id=session_id
+            )
+            await self._reply(event, f"Failed to update model: {exc}")
 
     async def _cmd_help(self, event: dict) -> None:
         """Handle !help."""

@@ -73,6 +73,7 @@ class ClaudeSubprocessRunner:
 
         session = store.get_session(session_id)
         cwd = session.directory if session and session.directory else None
+        model = session.model if session and session.model else None
 
         # Prefer in-memory cache (updated on session expiry) over store
         resume = self._sdk_sessions.get(session_id)
@@ -82,7 +83,7 @@ class ClaudeSubprocessRunner:
                 self._sdk_sessions[session_id] = resume
 
         resume = self._maybe_drop_busy_resume(session_id, resume)
-        await self._spawn(session_id, prompt, cwd, permission_mode, resume)
+        await self._spawn(session_id, prompt, cwd, permission_mode, resume, model)
 
     async def send_input(
         self,
@@ -101,6 +102,7 @@ class ClaudeSubprocessRunner:
 
         session = store.get_session(session_id)
         cwd = session.directory if session and session.directory else None
+        model = session.model if session and session.model else None
 
         # If a process is still running, queue the input
         proc = self._processes.get(session_id)
@@ -121,7 +123,7 @@ class ClaudeSubprocessRunner:
 
         sdk_session_id = self._maybe_drop_busy_resume(session_id, sdk_session_id)
         await self._spawn(
-            session_id, text, cwd, permission_mode, resume=sdk_session_id
+            session_id, text, cwd, permission_mode, resume=sdk_session_id, model=model
         )
 
     async def stop(self, session_id: str) -> int | None:
@@ -135,7 +137,9 @@ class ClaudeSubprocessRunner:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                logger.warning("Subprocess did not exit in time, killing", session_id=session_id)
+                logger.warning(
+                    "Subprocess did not exit in time, killing", session_id=session_id
+                )
                 proc.kill()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=2.0)
@@ -178,10 +182,13 @@ class ClaudeSubprocessRunner:
         cwd: str | None,
         permission_mode: str,
         resume: str | None,
+        model: str | None = None,
     ) -> None:
         """Spawn a worker subprocess and start the reader task."""
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "tether.runner.claude_sdk_worker",
+            sys.executable,
+            "-m",
+            "tether.runner.claude_sdk_worker",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -196,6 +203,7 @@ class ClaudeSubprocessRunner:
             "permission_mode": permission_mode,
             "resume": resume,
             "system_prompt": SYSTEM_PROMPT,
+            "model": model,
         }
         self._write_cmd(proc, start_cmd)
 
@@ -248,7 +256,9 @@ class ClaudeSubprocessRunner:
             logger.info("Reader task cancelled", session_id=session_id)
         except Exception:
             logger.exception("Reader task failed", session_id=session_id)
-            await self._events.on_error(session_id, "SUBPROCESS_READER_ERROR", "Reader task crashed")
+            await self._events.on_error(
+                session_id, "SUBPROCESS_READER_ERROR", "Reader task crashed"
+            )
         finally:
             # Wait for process to exit
             try:
@@ -259,13 +269,19 @@ class ClaudeSubprocessRunner:
             # Read any remaining stderr for logging
             if proc.stderr:
                 try:
-                    stderr_data = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
+                    stderr_data = await asyncio.wait_for(
+                        proc.stderr.read(), timeout=2.0
+                    )
                     if stderr_data:
                         for line in stderr_data.decode(errors="replace").splitlines():
                             if line.strip():
-                                if any(s in line for s in _IGNORED_WORKER_STDERR_SUBSTRINGS):
+                                if any(
+                                    s in line for s in _IGNORED_WORKER_STDERR_SUBSTRINGS
+                                ):
                                     continue
-                                logger.debug("Worker stderr", session_id=session_id, line=line)
+                                logger.debug(
+                                    "Worker stderr", session_id=session_id, line=line
+                                )
                 except (asyncio.TimeoutError, Exception):
                     pass
 
@@ -334,7 +350,9 @@ class ClaudeSubprocessRunner:
             await self._events.on_error(session_id, code, message)
 
         elif etype == "stderr":
-            logger.debug("Worker stderr", session_id=session_id, line=event.get("line", ""))
+            logger.debug(
+                "Worker stderr", session_id=session_id, line=event.get("line", "")
+            )
 
     async def _on_init(self, session_id: str, event: dict) -> None:
         sdk_session_id = event.get("session_id")
@@ -399,7 +417,11 @@ class ClaudeSubprocessRunner:
             elif btype == "tool_use":
                 tool_info = f"[tool: {block.get('name', 'unknown')}]"
                 await self._events.on_output(
-                    session_id, "combined", f"{tool_info}\n", kind="step", is_final=False,
+                    session_id,
+                    "combined",
+                    f"{tool_info}\n",
+                    kind="step",
+                    is_final=False,
                 )
                 self._assistant_marker_needed[session_id] = True
 
@@ -408,7 +430,11 @@ class ClaudeSubprocessRunner:
                 truncated = content[:500] + "..." if len(content) > 500 else content
                 prefix = "[error] " if block.get("is_error") else "[result] "
                 await self._events.on_output(
-                    session_id, "combined", f"{prefix}{truncated}\n", kind="step", is_final=False,
+                    session_id,
+                    "combined",
+                    f"{prefix}{truncated}\n",
+                    kind="step",
+                    is_final=False,
                 )
                 self._assistant_marker_needed[session_id] = True
 
@@ -416,7 +442,11 @@ class ClaudeSubprocessRunner:
                 thinking = block.get("thinking", "")
                 if thinking:
                     await self._events.on_output(
-                        session_id, "combined", f"[thinking] {thinking}\n", kind="step", is_final=False,
+                        session_id,
+                        "combined",
+                        f"[thinking] {thinking}\n",
+                        kind="step",
+                        is_final=False,
                     )
                     self._assistant_marker_needed[session_id] = True
 
@@ -434,7 +464,10 @@ class ClaudeSubprocessRunner:
         cost = event.get("cost_usd")
         if cost is not None:
             await self._events.on_metadata(
-                session_id, "cost", cost, f"${cost:.4f}",
+                session_id,
+                "cost",
+                cost,
+                f"${cost:.4f}",
             )
 
         if event.get("is_error"):
@@ -463,7 +496,9 @@ class ClaudeSubprocessRunner:
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
 
-        store.add_pending_permission(session_id, request_id, tool_name, tool_input, future)
+        store.add_pending_permission(
+            session_id, request_id, tool_name, tool_input, future
+        )
 
         await self._events.on_permission_request(
             session_id,
@@ -500,11 +535,14 @@ class ClaudeSubprocessRunner:
                 )
                 return
 
-            self._write_cmd(proc, {
-                "cmd": "permission_response",
-                "request_id": request_id,
-                "behavior": behavior,
-            })
+            self._write_cmd(
+                proc,
+                {
+                    "cmd": "permission_response",
+                    "request_id": request_id,
+                    "behavior": behavior,
+                },
+            )
 
         asyncio.create_task(_wait_and_respond())
 
@@ -521,7 +559,9 @@ class ClaudeSubprocessRunner:
         else:
             return "default"
 
-    def _maybe_drop_busy_resume(self, session_id: str, resume: str | None) -> str | None:
+    def _maybe_drop_busy_resume(
+        self, session_id: str, resume: str | None
+    ) -> str | None:
         """If the Claude session is running in another process, don't resume it.
 
         Resuming a running Claude Code session can fail hard (depending on CLI/SDK

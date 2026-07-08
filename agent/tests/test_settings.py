@@ -147,6 +147,30 @@ class TestStringSettings:
         clean_env.setenv("TETHER_DEFAULT_AGENT_ADAPTER", "CLAUDE_SUBPROCESS")
         assert Settings.adapter() == "claude_subprocess"  # lowercased
 
+    def test_adapter_default_model(self, clean_env) -> None:
+        """Adapter model settings support adapter-specific defaults."""
+        assert (
+            Settings.adapter_default_model("claude_subprocess")
+            == "claude-sonnet-4-20250514"
+        )
+        assert Settings.adapter_default_model("pi_rpc") == ""
+
+        clean_env.setenv("TETHER_CLAUDE_DEFAULT_MODEL", "claude-opus")
+        clean_env.setenv("TETHER_PI_DEFAULT_MODEL", "openai/gpt-5.1")
+
+        assert Settings.adapter_default_model("claude_auto") == "claude-opus"
+        assert Settings.adapter_default_model("pi_rpc") == "openai/gpt-5.1"
+
+    def test_adapter_models(self, clean_env) -> None:
+        """Adapter model lists include the default model first."""
+        clean_env.setenv("TETHER_PI_DEFAULT_MODEL", "openai/gpt-5.1")
+        clean_env.setenv("TETHER_PI_MODELS", "anthropic/claude-sonnet,openai/gpt-5.1")
+
+        assert Settings.adapter_models("pi_rpc") == [
+            "openai/gpt-5.1",
+            "anthropic/claude-sonnet",
+        ]
+
     def test_log_level_default(self, clean_env) -> None:
         """Log level defaults to INFO."""
         assert Settings.log_level() == "INFO"

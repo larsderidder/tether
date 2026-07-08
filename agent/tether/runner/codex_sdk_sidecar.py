@@ -57,6 +57,8 @@ class SidecarRunner:
             self._loop = asyncio.get_running_loop()
         store.clear_stop_requested(session_id)
         workdir = store.get_workdir(session_id)
+        session = store.get_session(session_id)
+        model = session.model if session and session.model else None
 
         # Check if this is a resumed/attached session
         thread_id = store.get_runner_session_id(session_id)
@@ -79,6 +81,8 @@ class SidecarRunner:
             payload["thread_id"] = thread_id
         if images:
             payload["images"] = images
+        if model:
+            payload["model"] = model
 
         try:
             await self._post_json("/sessions/start", payload)
@@ -113,8 +117,11 @@ class SidecarRunner:
             store.add_pending_input(session_id, text)
             return
         payload = {"session_id": session_id, "text": text}
+        session = store.get_session(session_id)
         if images:
             payload["images"] = images
+        if session and session.model:
+            payload["model"] = session.model
         try:
             await self._post_json("/sessions/input", payload)
         except (RunnerUnavailableError, RuntimeError) as exc:
@@ -160,11 +167,13 @@ class SidecarRunner:
         """Run a single Codex turn directly via the local CLI."""
         thread_id = store.get_runner_session_id(session_id)
         workdir = store.get_workdir(session_id)
+        session = store.get_session(session_id)
         cmd = self._build_cli_command(
             prompt=prompt,
             approval_choice=approval_choice,
             workdir=workdir,
             thread_id=thread_id,
+            model=session.model if session and session.model else None,
         )
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -294,7 +303,9 @@ class SidecarRunner:
 
             if proc.stderr:
                 try:
-                    stderr_data = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
+                    stderr_data = await asyncio.wait_for(
+                        proc.stderr.read(), timeout=2.0
+                    )
                 except (asyncio.TimeoutError, Exception):
                     stderr_data = b""
                 if stderr_data:
@@ -332,10 +343,16 @@ class SidecarRunner:
     async def _handle_cli_event(self, session_id: str, event: dict[str, Any]) -> None:
         event_type = event.get("type")
         if event_type == "thread.started":
+            session = store.get_session(session_id)
             await self._events.on_header(
                 session_id,
                 title="Codex CLI",
-                model=settings.codex_sidecar_model() or None,
+                model=(
+                    session.model
+                    if session and session.model
+                    else settings.codex_sidecar_model()
+                )
+                or None,
                 provider="OpenAI (Codex CLI)",
                 sandbox=self._cli_sandbox_mode(),
                 approval=self._cli_approval_policy(self._approval_choice(session_id)),
@@ -408,9 +425,7 @@ class SidecarRunner:
             await self._events.on_metadata(
                 session_id, "output_tokens", output_tokens, str(output_tokens)
             )
-            await self._events.on_metadata(
-                session_id, "tokens_used", total, str(total)
-            )
+            await self._events.on_metadata(session_id, "tokens_used", total, str(total))
             return
 
         if event_type == "turn.failed":
@@ -443,15 +458,16 @@ class SidecarRunner:
         approval_choice: int,
         workdir: str | None,
         thread_id: str | None,
+        model: str | None = None,
     ) -> list[str]:
         del prompt
         cmd = [settings.codex_sidecar_codex_bin() or "codex"]
         if workdir:
             cmd.extend(["-C", workdir])
 
-        model = settings.codex_sidecar_model()
-        if model:
-            cmd.extend(["-m", model])
+        cli_model = model or settings.codex_sidecar_model()
+        if cli_model:
+            cmd.extend(["-m", cli_model])
 
         sandbox_mode = self._cli_sandbox_mode()
         approval_policy = self._cli_approval_policy(approval_choice)
@@ -538,7 +554,9 @@ class SidecarRunner:
             return
         if existing and existing.done():
             self._streams.pop(session_id, None)
-        self._streams[session_id] = asyncio.create_task(self._consume_stream(session_id))
+        self._streams[session_id] = asyncio.create_task(
+            self._consume_stream(session_id)
+        )
 
     async def _consume_stream(self, session_id: str) -> None:
         """Consume sidecar SSE events in a background thread.
@@ -584,7 +602,9 @@ class SidecarRunner:
             conn.request("GET", path, headers=headers)
             resp = conn.getresponse()
         except (socket.timeout, OSError) as exc:
-            logger.error("Sidecar connection failed", session_id=session_id, error=str(exc))
+            logger.error(
+                "Sidecar connection failed", session_id=session_id, error=str(exc)
+            )
             self._dispatch(
                 self._events.on_error(
                     session_id, "CONNECTION_ERROR", f"Sidecar connection failed: {exc}"
@@ -594,8 +614,17 @@ class SidecarRunner:
             return True
         if resp.status != 200:
             data = resp.read().decode("utf-8", errors="replace")
-            logger.error("Sidecar SSE failed", session_id=session_id, status=resp.status, body=data)
-            self._dispatch(self._events.on_error(session_id, "SIDECAR_ERROR", f"Sidecar returned {resp.status}"))
+            logger.error(
+                "Sidecar SSE failed",
+                session_id=session_id,
+                status=resp.status,
+                body=data,
+            )
+            self._dispatch(
+                self._events.on_error(
+                    session_id, "SIDECAR_ERROR", f"Sidecar returned {resp.status}"
+                )
+            )
             conn.close()
             return resp.status >= 500
         # Set per-read timeout on the socket (60s to allow for heartbeat intervals)
@@ -607,8 +636,16 @@ class SidecarRunner:
                 try:
                     line = resp.fp.readline().decode("utf-8", errors="replace")
                 except socket.timeout:
-                    logger.warning("Sidecar read timeout", session_id=session_id, timeout_s=read_timeout)
-                    self._dispatch(self._events.on_error(session_id, "READ_TIMEOUT", "Sidecar stream timed out"))
+                    logger.warning(
+                        "Sidecar read timeout",
+                        session_id=session_id,
+                        timeout_s=read_timeout,
+                    )
+                    self._dispatch(
+                        self._events.on_error(
+                            session_id, "READ_TIMEOUT", "Sidecar stream timed out"
+                        )
+                    )
                     return True
                 if not line:
                     # Empty line means connection closed
@@ -620,9 +657,18 @@ class SidecarRunner:
                 try:
                     event = json.loads(payload)
                 except json.JSONDecodeError as exc:
-                    logger.warning("Failed to parse SSE event", session_id=session_id, payload=payload[:200], error=str(exc))
+                    logger.warning(
+                        "Failed to parse SSE event",
+                        session_id=session_id,
+                        payload=payload[:200],
+                        error=str(exc),
+                    )
                     continue
-                logger.debug("Received sidecar event", session_id=session_id, event_type=event.get("type"))
+                logger.debug(
+                    "Received sidecar event",
+                    session_id=session_id,
+                    event_type=event.get("type"),
+                )
                 self._handle_event(session_id, event)
         finally:
             conn.close()
@@ -668,7 +714,9 @@ class SidecarRunner:
                     )
                 )
             else:
-                logger.warning("Sidecar output missing kind field", session_id=session_id)
+                logger.warning(
+                    "Sidecar output missing kind field", session_id=session_id
+                )
         elif event_type == "metadata":
             key = data.get("key")
             value = data.get("value")
@@ -692,7 +740,11 @@ class SidecarRunner:
             else:
                 self._dispatch(self._events.on_awaiting_input(session_id))
         else:
-            logger.debug("Unknown sidecar event type", session_id=session_id, event_type=event_type)
+            logger.debug(
+                "Unknown sidecar event type",
+                session_id=session_id,
+                event_type=event_type,
+            )
 
     def _dispatch(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Schedule an event callback on the agent's asyncio loop.

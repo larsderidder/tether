@@ -11,6 +11,7 @@ from sqlmodel import SQLModel, Field
 
 class SessionState(str, Enum):
     """Lifecycle states for a supervised session."""
+
     CREATED = "CREATED"
     RUNNING = "RUNNING"
     AWAITING_INPUT = "AWAITING_INPUT"
@@ -29,12 +30,14 @@ from agent_sessions import (  # noqa: F401, E402
 
 class RepoRef(BaseModel):
     """Reference to a repository target (path or URL)."""
+
     type: str
     value: str
 
 
 class ErrorDetail(BaseModel):
     """Structured error payload for API responses."""
+
     code: str
     message: str
     details: dict | None
@@ -42,6 +45,7 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     """Envelope for API error responses."""
+
     error: ErrorDetail
 
 
@@ -50,6 +54,7 @@ class ErrorResponse(BaseModel):
 
 class Session(SQLModel, table=True):
     """Session table and API model."""
+
     __tablename__ = "sessions"
 
     id: str = Field(primary_key=True)
@@ -73,6 +78,7 @@ class Session(SQLModel, table=True):
     workdir_managed: bool = False
     approval_mode: Optional[int] = None  # None = use global default, 0/1/2 = override
     adapter: Optional[str] = None  # Adapter selection (immutable after creation)
+    model: Optional[str] = None  # Model selection captured when the session is created
 
     # External agent fields
     external_agent_id: Optional[str] = None
@@ -102,6 +108,7 @@ class Session(SQLModel, table=True):
 
 class Message(SQLModel, table=True):
     """Message table and API model."""
+
     __tablename__ = "messages"
 
     id: str = Field(primary_key=True)

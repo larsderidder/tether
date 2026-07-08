@@ -69,15 +69,9 @@ class _StdinReader:
 
 async def _run(start_cmd: dict) -> None:
     from claude_agent_sdk import (
-        AssistantMessage,
         ClaudeAgentOptions,
         HookMatcher,
         ResultMessage,
-        SystemMessage,
-        TextBlock,
-        ThinkingBlock,
-        ToolResultBlock,
-        ToolUseBlock,
         query,
     )
 
@@ -86,6 +80,7 @@ async def _run(start_cmd: dict) -> None:
     permission_mode = start_cmd.get("permission_mode", "default")
     resume = start_cmd.get("resume")
     system_prompt = start_cmd.get("system_prompt")
+    model = start_cmd.get("model")
 
     # Shared state
     stop_requested = False
@@ -129,7 +124,12 @@ async def _run(start_cmd: dict) -> None:
     async def _heartbeat() -> None:
         while True:
             await asyncio.sleep(5.0)
-            _write_event({"event": "heartbeat", "elapsed_s": round(time.monotonic() - start_time, 1)})
+            _write_event(
+                {
+                    "event": "heartbeat",
+                    "elapsed_s": round(time.monotonic() - start_time, 1),
+                }
+            )
 
     heartbeat_task = asyncio.create_task(_heartbeat())
 
@@ -153,12 +153,14 @@ async def _run(start_cmd: dict) -> None:
         fut: asyncio.Future = loop.create_future()
         pending_permissions[request_id] = fut
 
-        _write_event({
-            "event": "permission_request",
-            "request_id": request_id,
-            "tool_name": tool_name,
-            "tool_input": tool_input,
-        })
+        _write_event(
+            {
+                "event": "permission_request",
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            }
+        )
 
         try:
             behavior = await asyncio.wait_for(fut, timeout=300.0)
@@ -208,6 +210,7 @@ async def _run(start_cmd: dict) -> None:
         system_prompt=system_prompt or "",
         stderr=stderr_handler,
         hooks=hooks,
+        model=model or None,
     )
 
     # Keep stdin open for hook control protocol
@@ -265,38 +268,40 @@ def _handle_message(message) -> None:
         AssistantMessage,
         ResultMessage,
         SystemMessage,
-        TextBlock,
-        ThinkingBlock,
-        ToolResultBlock,
-        ToolUseBlock,
     )
 
     if isinstance(message, SystemMessage):
         if message.subtype == "init":
             data = message.data
-            _write_event({
-                "event": "init",
-                "session_id": data.get("session_id"),
-                "model": data.get("model"),
-                "version": data.get("claude_code_version"),
-            })
+            _write_event(
+                {
+                    "event": "init",
+                    "session_id": data.get("session_id"),
+                    "model": data.get("model"),
+                    "version": data.get("claude_code_version"),
+                }
+            )
     elif isinstance(message, AssistantMessage):
         if message.error:
-            _write_event({"event": "error", "code": "ASSISTANT_ERROR", "message": message.error})
+            _write_event(
+                {"event": "error", "code": "ASSISTANT_ERROR", "message": message.error}
+            )
             return
         blocks = _serialize_blocks(message.content)
         if blocks:
             _write_event({"event": "output", "blocks": blocks})
     elif isinstance(message, ResultMessage):
         usage = message.usage or {}
-        _write_event({
-            "event": "result",
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "cost_usd": message.total_cost_usd,
-            "is_error": message.is_error,
-            "error_text": message.result if message.is_error else None,
-        })
+        _write_event(
+            {
+                "event": "result",
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "cost_usd": message.total_cost_usd,
+                "is_error": message.is_error,
+                "error_text": message.result if message.is_error else None,
+            }
+        )
 
 
 def _serialize_blocks(content: list) -> list[dict]:
@@ -313,19 +318,23 @@ def _serialize_blocks(content: list) -> list[dict]:
         if isinstance(block, TextBlock):
             blocks.append({"type": "text", "text": block.text})
         elif isinstance(block, ToolUseBlock):
-            blocks.append({
-                "type": "tool_use",
-                "name": block.name,
-                "id": block.id,
-                "input": block.input if isinstance(block.input, dict) else {},
-            })
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "name": block.name,
+                    "id": block.id,
+                    "input": block.input if isinstance(block.input, dict) else {},
+                }
+            )
         elif isinstance(block, ToolResultBlock):
             c = block.content
-            blocks.append({
-                "type": "tool_result",
-                "content": c if isinstance(c, str) else str(c),
-                "is_error": block.is_error,
-            })
+            blocks.append(
+                {
+                    "type": "tool_result",
+                    "content": c if isinstance(c, str) else str(c),
+                    "is_error": block.is_error,
+                }
+            )
         elif isinstance(block, ThinkingBlock):
             if block.thinking:
                 blocks.append({"type": "thinking", "thinking": block.thinking})
@@ -341,7 +350,9 @@ def main() -> None:
     """Read a start command from stdin and run the query."""
     start_cmd = _read_line_sync()
     if not start_cmd or start_cmd.get("cmd") != "start":
-        _write_event({"event": "error", "code": "BAD_START", "message": "Expected start command"})
+        _write_event(
+            {"event": "error", "code": "BAD_START", "message": "Expected start command"}
+        )
         sys.exit(1)
 
     # Manual event loop management instead of asyncio.run() to suppress

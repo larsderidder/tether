@@ -148,10 +148,11 @@ class PiRpcRunner:
 
         session = store.get_session(session_id)
         cwd = session.directory if session and session.directory else None
+        model = session.model if session and session.model else None
 
         session_file = await self._resolve_session_file(session_id)
 
-        await self._spawn(session_id, cwd, session_file)
+        await self._spawn(session_id, cwd, session_file, model=model)
         await self._send_prompt(session_id, prompt, images=images)
 
     async def send_input(
@@ -168,11 +169,12 @@ class PiRpcRunner:
             # No running process — need to respawn
             session = store.get_session(session_id)
             cwd = session.directory if session and session.directory else None
+            model = session.model if session and session.model else None
 
             session_file = await self._resolve_session_file(session_id)
 
             store.clear_stop_requested(session_id)
-            await self._spawn(session_id, cwd, session_file)
+            await self._spawn(session_id, cwd, session_file, model=model)
             await self._send_prompt(session_id, text, images=images)
             return
 
@@ -236,8 +238,9 @@ class PiRpcRunner:
                 session_id,
                 enforce_size_limit=False,
             )
+            model = session.model if session and session.model else None
             store.clear_stop_requested(session_id)
-            await self._spawn(session_id, cwd, session_file)
+            await self._spawn(session_id, cwd, session_file, model=model)
             proc = self._processes.get(session_id)
 
         if not proc or proc.returncode is not None:
@@ -308,6 +311,7 @@ class PiRpcRunner:
         session_id: str,
         cwd: str | None,
         session_file: str | None,
+        model: str | None = None,
     ) -> None:
         """Spawn a ``pi --mode rpc`` subprocess."""
         pi_bin = self._get_pi_binary()
@@ -317,19 +321,20 @@ class PiRpcRunner:
             args.extend(["--session", session_file])
             # Pass the session's model explicitly so pi uses it regardless of
             # any scoped models (--models / enabledModels) configured in the
-            # user's pi settings.  Without this, pi's buildSessionOptions picks
+            # user's pi settings. Without this, pi's buildSessionOptions picks
             # the first scoped model as the default, overriding the session's
             # model before sdk.js gets a chance to restore it.
             session_model = get_pi_session_model(Path(session_file))
-            if session_model:
+            if session_model and not model:
                 provider, model_id = session_model
-                args.extend(["--model", f"{provider}/{model_id}"])
-                logger.info(
-                    "Passing session model to pi",
-                    session_id=session_id,
-                    provider=provider,
-                    model_id=model_id,
-                )
+                model = f"{provider}/{model_id}"
+        if model:
+            args.extend(["--model", model])
+            logger.info(
+                "Passing configured model to pi",
+                session_id=session_id,
+                model=model,
+            )
 
         logger.info(
             "Spawning pi process",

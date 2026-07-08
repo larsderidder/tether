@@ -66,6 +66,36 @@ class TestSessionsEndpoints:
         assert session["directory"] == str(test_dir)
 
     @pytest.mark.anyio
+    async def test_create_session_with_model(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Create session stores and returns the requested model."""
+        response = await api_client.post(
+            "/api/sessions", json={"repo_id": "test_repo", "model": "claude-opus"}
+        )
+
+        assert response.status_code == 201
+        assert response.json()["model"] == "claude-opus"
+
+    @pytest.mark.anyio
+    async def test_session_model_endpoints(self, api_client: httpx.AsyncClient) -> None:
+        """Session model endpoints show and update the active model."""
+        create_resp = await api_client.post(
+            "/api/sessions", json={"repo_id": "test_repo", "model": "model-a"}
+        )
+        session_id = create_resp.json()["id"]
+
+        get_resp = await api_client.get(f"/api/sessions/{session_id}/model")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["model"] == "model-a"
+
+        patch_resp = await api_client.patch(
+            f"/api/sessions/{session_id}/model", json={"model": "model-b"}
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["model"] == "model-b"
+
+    @pytest.mark.anyio
     async def test_create_session_invalid_directory(
         self, api_client: httpx.AsyncClient
     ) -> None:

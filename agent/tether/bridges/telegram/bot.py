@@ -50,6 +50,11 @@ from tether.bridges.media_io import (
     store_bridge_media_file,
     supported_media_type,
 )
+from tether.bridges.model_api import (
+    format_model_info,
+    get_session_model,
+    set_session_model,
+)
 from tether.bridges.rich_output import render_telegram_messages
 from tether.bridges.retry import with_bridge_send_retry
 from tether.bridges.telegram.formatting import markdown_to_telegram_html
@@ -336,6 +341,8 @@ class TelegramBridge(UpstreamTelegramBridge):
 
         self._app.add_handler(CommandHandler("sync", self._cmd_sync))
         self._app.add_handler(CommandHandler("compact", self._cmd_compact))
+        self._app.add_handler(CommandHandler("models", self._cmd_models))
+        self._app.add_handler(CommandHandler("model", self._cmd_model))
         await self._register_command_menu()
         self._app.add_handler(
             MessageHandler(
@@ -582,6 +589,57 @@ class TelegramBridge(UpstreamTelegramBridge):
                 "Failed to compact Telegram session", session_id=session_id
             )
             await message.reply_text(f"Failed to compact session: {exc}")
+
+    async def _cmd_models(self, update: Any, context: Any) -> None:
+        """Handle /models in a session topic."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+        session_id = self._session_id_for_topic_message(message)
+        if not getattr(message, "message_thread_id", None):
+            await message.reply_text("Use this command inside a session topic.")
+            return
+        if not session_id:
+            await message.reply_text("No session linked to this topic.")
+            return
+        try:
+            await message.reply_text(
+                format_model_info(await get_session_model(session_id))
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to fetch Telegram session model", session_id=session_id
+            )
+            await message.reply_text(f"Failed to fetch model: {exc}")
+
+    async def _cmd_model(self, update: Any, context: Any) -> None:
+        """Handle /model in a session topic."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+        session_id = self._session_id_for_topic_message(message)
+        if not getattr(message, "message_thread_id", None):
+            await message.reply_text("Use this command inside a session topic.")
+            return
+        if not session_id:
+            await message.reply_text("No session linked to this topic.")
+            return
+        model = " ".join(getattr(context, "args", []) or []).strip()
+        try:
+            if model:
+                session = await set_session_model(session_id, model)
+                await message.reply_text(
+                    f"✅ Model set to {session.get('model') or model}."
+                )
+            else:
+                await message.reply_text(
+                    format_model_info(await get_session_model(session_id))
+                )
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Telegram session model", session_id=session_id
+            )
+            await message.reply_text(f"Failed to update model: {exc}")
 
     async def _cmd_help(self, update: Any, context: Any) -> None:
         """Handle /help."""

@@ -43,6 +43,9 @@ export type SessionState<T = unknown> = {
   /** Working directory for this session. */
   workdir?: string;
 
+  /** Model override supplied by the Tether session. */
+  model?: string;
+
   /** True if this sidecar created the workdir and should clean it up. */
   workdirManaged?: boolean;
 

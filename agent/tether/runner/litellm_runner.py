@@ -37,17 +37,21 @@ class LiteLLMRunner(ApiRunnerBase):
     # Abstract method implementations
     # ------------------------------------------------------------------
 
+    def _session_model(self, session_id: str) -> str:
+        """Return the model configured for a session, or the runner default."""
+        session = store.get_session(session_id)
+        return session.model if session and session.model else self._model
+
     async def _emit_header(self, session_id: str) -> None:
+        model = self._session_model(session_id)
         await self._events.on_header(
             session_id,
-            title=self._model,
-            model=self._model,
+            title=model,
+            model=model,
             provider="LiteLLM",
         )
 
-    async def _call_api(
-        self, session_id: str, messages: list[dict]
-    ) -> dict | None:
+    async def _call_api(self, session_id: str, messages: list[dict]) -> dict | None:
         import litellm
 
         try:
@@ -64,7 +68,7 @@ class LiteLLMRunner(ApiRunnerBase):
             tool_calls_by_index: dict[int, dict] = {}
 
             response = await litellm.acompletion(
-                model=self._model,
+                model=self._session_model(session_id),
                 messages=oai_messages,
                 tools=TOOLS_OPENAI,
                 stream=True,
@@ -138,12 +142,14 @@ class LiteLLMRunner(ApiRunnerBase):
                     )
                     tool_input = {}
 
-                content_blocks.append({
-                    "type": "tool_use",
-                    "id": tc["id"] or f"call_{uuid.uuid4().hex[:12]}",
-                    "name": tc["name"],
-                    "input": tool_input,
-                })
+                content_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc["id"] or f"call_{uuid.uuid4().hex[:12]}",
+                        "name": tc["name"],
+                        "input": tool_input,
+                    }
+                )
 
             # If we got tool calls, the stop reason should reflect that
             if tool_calls_by_index and stop_reason != "end_turn":
@@ -219,11 +225,13 @@ class LiteLLMRunner(ApiRunnerBase):
                         # Tool results → separate "tool" role messages
                         for block in content:
                             if block.get("type") == "tool_result":
-                                oai.append({
-                                    "role": "tool",
-                                    "tool_call_id": block.get("tool_use_id", ""),
-                                    "content": block.get("content", ""),
-                                })
+                                oai.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": block.get("tool_use_id", ""),
+                                        "content": block.get("content", ""),
+                                    }
+                                )
                         continue
 
                 # Regular user message
@@ -240,16 +248,16 @@ class LiteLLMRunner(ApiRunnerBase):
                         if block.get("type") == "text":
                             text_parts.append(block.get("text", ""))
                         elif block.get("type") == "tool_use":
-                            tool_calls.append({
-                                "id": block.get("id", ""),
-                                "type": "function",
-                                "function": {
-                                    "name": block.get("name", ""),
-                                    "arguments": json.dumps(
-                                        block.get("input", {})
-                                    ),
-                                },
-                            })
+                            tool_calls.append(
+                                {
+                                    "id": block.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": block.get("name", ""),
+                                        "arguments": json.dumps(block.get("input", {})),
+                                    },
+                                }
+                            )
 
                 entry: dict[str, Any] = {"role": "assistant"}
                 combined_text = "".join(text_parts)
