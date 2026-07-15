@@ -121,6 +121,12 @@ The `pi_rpc` adapter can request manual pi compaction through `POST /api/session
 
 Compaction is lossy for active model context but does not shrink pi's JSONL history file. Large session files may still be too big to resume with a provider even after compaction.
 
+## Pi External Session Sync
+
+Attached pi sessions keep the RPC process alive while idle. Tether advances the external history cursor after live RPC turns and the external-session watcher keeps polling idle pi sessions, so messages produced after background subagents finish can still be forwarded to bridges.
+
+Fresh Tether-owned pi RPC sessions are started with an initial `Tether: ` session name prefix so they are recognizable in pi's own resume picker. Tether does not continuously reapply the prefix, avoiding fights with pi-side auto-title extensions.
+
 ## Key Files
 
 - `agent/tether/runner/base.py` — Protocol definitions

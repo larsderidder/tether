@@ -66,6 +66,7 @@ logger = structlog.get_logger(__name__)
 _TELEGRAM_MEDIA_GROUP_DEBOUNCE_S = 0.7
 _TELEGRAM_OUTPUT_MIN_INTERVAL_S = 1.25
 _TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S = 30.0
+_TELEGRAM_OUTPUT_SEND_ATTEMPTS = 20
 
 
 @dataclass
@@ -109,7 +110,6 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._allowed_user_ids = settings.telegram_allowed_user_ids()
         self._output_paused_until = 0.0
         self._last_output_send_at = 0.0
-        self._dropped_output_count_by_topic: dict[int, int] = {}
 
     @staticmethod
     def _update_user_id(update: Any) -> int | None:
@@ -1003,7 +1003,6 @@ class TelegramBridge(UpstreamTelegramBridge):
     def _drop_missing_topic_binding(self, session_id: str, topic_id: int) -> None:
         """Forget a Telegram binding after its forum topic was deleted."""
         self._state.remove_session(session_id)
-        self._dropped_output_count_by_topic.pop(topic_id, None)
         try:
             from tether.external_session_watcher import external_session_watcher
             from tether.store import store
@@ -1027,68 +1026,61 @@ class TelegramBridge(UpstreamTelegramBridge):
         """Send one Telegram output message with flood-limit recovery."""
 
         loop = asyncio.get_running_loop()
-        now = loop.time()
-        if now < self._output_paused_until:
-            self._dropped_output_count_by_topic[topic_id] = (
-                self._dropped_output_count_by_topic.get(topic_id, 0) + 1
-            )
-            logger.warning(
-                "Suppressed Telegram output during flood-control cooldown",
-                session_id=session_id,
-                topic_id=topic_id,
-                cooldown_remaining_s=round(self._output_paused_until - now, 2),
-            )
-            return False
-
-        dropped = self._dropped_output_count_by_topic.pop(topic_id, 0)
-        if dropped:
-            message = (
-                "⚠️ <b>Telegram flood control recovered</b>\n"
-                f"Suppressed {dropped} output message(s) while Telegram was rate limiting this bridge.\n\n"
-                f"{message}"
-            )
-
-        delay_s = _TELEGRAM_OUTPUT_MIN_INTERVAL_S - (now - self._last_output_send_at)
-        if self._last_output_send_at and delay_s > 0:
-            await asyncio.sleep(delay_s)
-
-        try:
-            await with_bridge_send_retry(
-                "telegram.output",
-                lambda: self._app.bot.send_message(
-                    chat_id=self._forum_group_id,
-                    message_thread_id=topic_id,
-                    text=message,
-                    parse_mode="HTML",
-                ),
-                max_delay_s=60.0,
-            )
-            self._last_output_send_at = loop.time()
-            return True
-        except Exception as exc:
-            if self._is_missing_thread_error(exc):
+        for attempt in range(1, _TELEGRAM_OUTPUT_SEND_ATTEMPTS + 1):
+            now = loop.time()
+            if now < self._output_paused_until:
+                pause_s = self._output_paused_until - now
                 logger.warning(
-                    "Telegram topic is gone; clearing session binding",
-                    session_id=session_id,
-                    topic_id=topic_id,
-                )
-                self._drop_missing_topic_binding(session_id, topic_id)
-                return False
-            retry_after = bridge_retry_after_s(exc)
-            if retry_after is not None:
-                pause_s = max(retry_after, _TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S)
-                self._output_paused_until = loop.time() + pause_s
-                self._dropped_output_count_by_topic[topic_id] = (
-                    self._dropped_output_count_by_topic.get(topic_id, 0) + 1
-                )
-                logger.warning(
-                    "Telegram flood control detected; pausing bridge output",
+                    "Telegram flood control active; delaying output",
                     session_id=session_id,
                     topic_id=topic_id,
                     pause_s=round(pause_s, 2),
+                    attempt=attempt,
                 )
-                return False
-            raise
+                await asyncio.sleep(pause_s)
+
+            delay_s = _TELEGRAM_OUTPUT_MIN_INTERVAL_S - (
+                loop.time() - self._last_output_send_at
+            )
+            if self._last_output_send_at and delay_s > 0:
+                await asyncio.sleep(delay_s)
+
+            try:
+                await with_bridge_send_retry(
+                    "telegram.output",
+                    lambda: self._app.bot.send_message(
+                        chat_id=self._forum_group_id,
+                        message_thread_id=topic_id,
+                        text=message,
+                        parse_mode="HTML",
+                    ),
+                    max_delay_s=60.0,
+                )
+                self._last_output_send_at = loop.time()
+                return True
+            except Exception as exc:
+                if self._is_missing_thread_error(exc):
+                    logger.warning(
+                        "Telegram topic is gone; clearing session binding",
+                        session_id=session_id,
+                        topic_id=topic_id,
+                    )
+                    self._drop_missing_topic_binding(session_id, topic_id)
+                    return False
+                retry_after = bridge_retry_after_s(exc)
+                if retry_after is None:
+                    raise
+                pause_s = max(retry_after, _TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S)
+                self._output_paused_until = loop.time() + pause_s
+                logger.warning(
+                    "Telegram flood control detected; retrying output later",
+                    session_id=session_id,
+                    topic_id=topic_id,
+                    pause_s=round(pause_s, 2),
+                    attempt=attempt,
+                )
+
+        raise RuntimeError("Telegram flood control did not recover in time")
 
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None

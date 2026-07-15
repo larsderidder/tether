@@ -32,11 +32,16 @@ class MockBridge:
         )
 
 
-def _detail(external_id: str, messages: list[SessionMessage]) -> SessionDetail:
+def _detail(
+    external_id: str,
+    messages: list[SessionMessage],
+    *,
+    runner_type: RunnerType = RunnerType.CODEX,
+) -> SessionDetail:
     """Build an external session detail fixture."""
     return SessionDetail(
         id=external_id,
-        runner_type=RunnerType.CODEX,
+        runner_type=runner_type,
         directory="/tmp/repo",
         first_prompt=messages[0].content if messages else None,
         last_prompt=None,
@@ -94,6 +99,63 @@ async def test_sync_external_session_delta_replays_only_new_messages(
     assert result == SyncResult(synced=1, total=2)
     assert [call["text"] for call in bridge.output_calls] == ["Hi there"]
     assert fresh_store.get_synced_message_count(session.id) == 2
+
+
+@pytest.mark.anyio
+async def test_sync_recovers_only_messages_after_live_event_log(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Managed pi sessions recover missed messages without replaying old output."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.runner_type = "pi"
+    session.adapter = "pi_rpc"
+    fresh_store.update_session(session)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+    await fresh_store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": "2026-07-15T04:38:59Z",
+            "seq": fresh_store.next_seq(session.id),
+            "type": "output",
+            "data": {"text": "already shown", "final": False},
+        },
+    )
+
+    messages = [
+        SessionMessage(
+            role="user",
+            content="Prompt",
+            timestamp="2026-07-15T04:30:00Z",
+        ),
+        SessionMessage(
+            role="assistant",
+            content="Old answer",
+            timestamp="2026-07-15T04:38:00Z",
+        ),
+        SessionMessage(
+            role="assistant",
+            content="Recovered final answer",
+            timestamp="2026-07-15T04:39:01Z",
+        ),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages, runner_type=RunnerType.PI),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=1, total=3)
+    assert [call["text"] for call in bridge.output_calls] == ["Recovered final answer"]
+    assert fresh_store.get_synced_message_count(session.id) == 3
 
 
 @pytest.mark.anyio
@@ -268,16 +330,14 @@ async def test_watcher_skips_managed_runner_sessions(
 
 
 @pytest.mark.anyio
-async def test_watcher_syncs_idle_attached_pi_with_live_process(
+async def test_watcher_syncs_idle_pi_rpc_with_live_process(
     fresh_store: SessionStore,
     tmp_path: Path,
 ) -> None:
-    """Idle attached pi sessions are watched even while RPC stays connected."""
+    """Idle pi RPC sessions are watched even while RPC stays connected."""
     session = _attached_session(fresh_store, tmp_path)
     session.runner_type = "pi"
     session.adapter = "pi_rpc"
-    session.external_agent_id = "external-1"
-    session.external_agent_type = "pi"
     fresh_store.update_session(session)
     fresh_store.set_process(session.id, MagicMock())
     synced: list[str] = []

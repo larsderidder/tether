@@ -7,6 +7,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from agent_sessions import RunnerType, SessionDetail, SessionMessage
 
 from tether.models import SessionState
 from tether.runner.base import RunnerUnavailableError
@@ -16,6 +17,7 @@ from tether.runner.pi_rpc import (
     _TOOL_OUTPUT_MAX_CHARS,
     _TOOL_OUTPUT_MAX_LINES,
     _find_pi_binary,
+    _tether_session_name,
 )
 
 
@@ -137,6 +139,13 @@ def test_find_pi_binary() -> None:
     assert result is None or "pi" in result
 
 
+def test_tether_session_name_adds_prefix_once() -> None:
+    """Tether-owned pi sessions get a recognizable initial name."""
+    assert _tether_session_name("demo task") == "Tether: demo task"
+    assert _tether_session_name("Tether: demo task") == "Tether: demo task"
+    assert _tether_session_name("") is None
+
+
 @pytest.mark.anyio
 async def test_send_prompt_includes_images() -> None:
     """Pi RPC prompts include validated image payloads."""
@@ -206,6 +215,40 @@ async def test_spawn_fresh_session_is_persistent(monkeypatch) -> None:
     assert "--no-session" not in captured["args"]
     assert captured["args"] == ("/bin/echo", "--mode", "rpc")
     runner._cleanup("sess1")
+
+
+@pytest.mark.anyio
+async def test_spawn_fresh_session_passes_tether_name(monkeypatch, fresh_store) -> None:
+    """Fresh Tether-owned pi sessions are named for pi's resume picker."""
+    monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+    runner = PiRpcRunner(FakeRunnerEvents())
+    runner._pi_binary = "/bin/echo"
+    session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+    session.name = "demo task"
+    fresh_store.update_session(session)
+    proc = MagicMock()
+    proc.stdin = FakeStdin()
+    proc.stdout = MagicMock()
+    proc.stderr = MagicMock()
+    proc.returncode = None
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    await runner._spawn(session.id, "/tmp", None)
+
+    assert captured["args"] == (
+        "/bin/echo",
+        "--mode",
+        "rpc",
+        "--name",
+        "Tether: demo task",
+    )
+    runner._cleanup(session.id)
 
 
 @pytest.mark.anyio
@@ -574,6 +617,100 @@ class TestPiRpcEventHandling:
         final_outputs = [o for o in events.outputs if o["is_final"] is True]
         assert len(final_outputs) == 1
         assert final_outputs[0]["text"] == "Final answer"
+
+    @pytest.mark.anyio
+    async def test_agent_end_advances_external_sync_cursor(
+        self, runner_and_events, fresh_store, monkeypatch
+    ):
+        """Live attached pi turns advance the history cursor after final output."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+        monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session.runner_type = "pi"
+        session.adapter = "pi_rpc"
+        session.external_agent_id = "pi-external"
+        session.external_agent_type = "pi"
+        fresh_store.update_session(session)
+        fresh_store.set_runner_session_id(session.id, "pi-external")
+        fresh_store.set_synced_message_count(session.id, 1, 1)
+        detail = SessionDetail(
+            id="pi-external",
+            runner_type=RunnerType.PI,
+            directory="/tmp/test",
+            first_prompt="hi",
+            last_activity="2026-07-08T07:00:00Z",
+            message_count=3,
+            is_running=False,
+            messages=[
+                SessionMessage(role="user", content="hi"),
+                SessionMessage(role="assistant", content="old"),
+                SessionMessage(role="assistant", content="Final answer"),
+            ],
+        )
+        monkeypatch.setattr(
+            "tether.runner.pi_rpc.get_pi_session_detail", lambda *_: detail
+        )
+
+        await runner._handle_event(session.id, proc, {"type": "agent_start"})
+        await runner._handle_event(
+            session.id,
+            proc,
+            {
+                "type": "agent_end",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Final answer"}],
+                    }
+                ],
+            },
+        )
+
+        assert fresh_store.get_synced_message_count(session.id) == 3
+        assert events.awaiting_input_count == 1
+
+    @pytest.mark.anyio
+    async def test_agent_end_without_text_does_not_advance_external_sync_cursor(
+        self, runner_and_events, fresh_store, monkeypatch
+    ):
+        """Missing RPC final text leaves file-history sync able to recover it."""
+        runner, _events = runner_and_events
+        proc = MagicMock()
+        monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session.runner_type = "pi"
+        session.adapter = "pi_rpc"
+        session.external_agent_id = "pi-external"
+        session.external_agent_type = "pi"
+        fresh_store.update_session(session)
+        fresh_store.set_runner_session_id(session.id, "pi-external")
+        fresh_store.set_synced_message_count(session.id, 1, 1)
+        detail = SessionDetail(
+            id="pi-external",
+            runner_type=RunnerType.PI,
+            directory="/tmp/test",
+            first_prompt="hi",
+            last_activity="2026-07-08T07:00:00Z",
+            message_count=2,
+            is_running=False,
+            messages=[
+                SessionMessage(role="user", content="hi"),
+                SessionMessage(role="assistant", content="Recoverable answer"),
+            ],
+        )
+        monkeypatch.setattr(
+            "tether.runner.pi_rpc.get_pi_session_detail", lambda *_: detail
+        )
+
+        await runner._handle_event(session.id, proc, {"type": "agent_start"})
+        await runner._handle_event(
+            session.id,
+            proc,
+            {"type": "agent_end", "messages": []},
+        )
+
+        assert fresh_store.get_synced_message_count(session.id) == 1
 
     @pytest.mark.anyio
     async def test_agent_end_emits_clean_final_after_streaming_tokens(

@@ -19,7 +19,11 @@ from pathlib import Path
 
 import structlog
 
-from tether.discovery.pi_sessions import _find_session_file, get_pi_session_model
+from tether.discovery.pi_sessions import (
+    _find_session_file,
+    get_pi_session_detail,
+    get_pi_session_model,
+)
 from tether.models import SessionState
 from tether.runner.base import RunnerEvents, RunnerUnavailableError
 from tether.settings import settings
@@ -33,6 +37,8 @@ _PI_RPC_STREAM_LIMIT_BYTES = 100 * 1024 * 1024
 _PI_RESUME_MAX_SESSION_FILE_BYTES = 150 * 1024 * 1024
 _TOOL_OUTPUT_MAX_CHARS = 1200
 _TOOL_OUTPUT_MAX_LINES = 80
+_TETHER_SESSION_NAME_PREFIX = "Tether: "
+_TETHER_SESSION_NAME_MAX = 80
 
 # Pi tool calls that should trigger permission requests in Tether
 _PERMISSION_TOOLS = {"bash", "write", "edit"}
@@ -76,6 +82,16 @@ def _bridge_segment(
     if label:
         segment["label"] = label
     return [segment]
+
+
+def _tether_session_name(name: str | None) -> str | None:
+    """Return an initial pi session name that identifies Tether-owned sessions."""
+    cleaned = " ".join(str(name or "").split())
+    if not cleaned:
+        return None
+    if cleaned.casefold().startswith(_TETHER_SESSION_NAME_PREFIX.casefold()):
+        return cleaned[:_TETHER_SESSION_NAME_MAX]
+    return f"{_TETHER_SESSION_NAME_PREFIX}{cleaned}"[:_TETHER_SESSION_NAME_MAX]
 
 
 def _find_pi_binary() -> str | None:
@@ -317,6 +333,13 @@ class PiRpcRunner:
         pi_bin = self._get_pi_binary()
 
         args = [pi_bin, "--mode", "rpc"]
+        if not session_file:
+            session = store.get_session(session_id)
+            session_name = _tether_session_name(
+                getattr(session, "name", None) if session else None
+            )
+            if session_name:
+                args.extend(["--name", session_name])
         if session_file:
             args.extend(["--session", session_file])
             # Pass the session's model explicitly so pi uses it regardless of
@@ -597,215 +620,268 @@ class PiRpcRunner:
             return
 
         # -- Agent lifecycle --
+        if etype in {"agent_start", "agent_end"}:
+            await self._handle_agent_lifecycle_event(session_id, event)
+            return
+
+        # -- Streaming text --
+        elif etype == "message_update":
+            await self._handle_message_update(session_id, event)
+            return
+
+        # -- Tool execution --
+        elif etype in {
+            "tool_execution_start",
+            "tool_execution_update",
+            "tool_execution_end",
+        }:
+            await self._handle_tool_execution_event(session_id, event)
+            return
+
+        # -- Compaction --
+        elif etype in {
+            "auto_compaction_start",
+            "compaction_start",
+            "auto_compaction_end",
+            "compaction_end",
+        }:
+            await self._handle_compaction_event(session_id, event)
+            return
+
+        # -- Retry --
+        elif etype in {"auto_retry_start", "auto_retry_end"}:
+            await self._handle_retry_event(session_id, event)
+            return
+
+        # -- Extension UI requests --
+        elif etype == "extension_ui_request":
+            await self._handle_extension_ui_request(session_id, event)
+
+    async def _handle_agent_lifecycle_event(self, session_id: str, event: dict) -> None:
+        """Handle agent start and end events from pi."""
+        etype = event.get("type")
         if etype == "agent_start":
             self._is_streaming[session_id] = True
             self._streamed_text[session_id] = False
             self._assistant_marker_needed[session_id] = False
             self._thinking_marker_needed[session_id] = True
             self._at_line_start[session_id] = True
+            return
 
-        elif etype == "agent_end":
-            self._is_streaming.pop(session_id, False)
-            self._streamed_text.pop(session_id, False)
-            # Always pass pi's accumulated final text through the final-output
-            # path.  Bridge subscribers discard buffered prose tokens when the
-            # output_final event arrives, so this avoids duplicate chat output
-            # while preserving clean Markdown and list formatting.
-            messages = event.get("messages", [])
-            for msg in messages:
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    content = msg.get("content", [])
-                    for block in content if isinstance(content, list) else []:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            if text:
-                                prefix = ""
-                                if self._assistant_marker_needed.get(session_id):
-                                    lead = (
-                                        ""
-                                        if self._at_line_start.get(session_id, True)
-                                        else "\n"
-                                    )
-                                    prefix = f"{lead}[assistant] "
-                                await self._emit_output(
-                                    session_id,
-                                    "combined",
-                                    f"{prefix}{text}",
-                                    kind="final",
-                                    is_final=True,
-                                    bridge_segments=_bridge_segment("assistant", text),
-                                )
-                                self._assistant_marker_needed[session_id] = False
-                                self._thinking_marker_needed[session_id] = True
-            # Agent finished its turn; signal waiting for input.
-            # The pi process stays alive between turns, so the finally
-            # block in _read_events won't fire until the process exits.
-            await self._events.on_awaiting_input(session_id)
+        if etype != "agent_end":
+            return
 
-        # -- Streaming text --
-        elif etype == "message_update":
-            delta_event = event.get("assistantMessageEvent", {})
-            delta_type = delta_event.get("type")
+        self._is_streaming.pop(session_id, False)
+        self._streamed_text.pop(session_id, False)
+        emitted_final = await self._emit_agent_final_messages(session_id, event)
+        if emitted_final:
+            await self._advance_external_sync_cursor(session_id)
 
-            if delta_type == "text_delta":
-                delta = delta_event.get("delta", "")
-                if delta:
-                    self._streamed_text[session_id] = True
-                    prefix = ""
-                    if self._assistant_marker_needed.get(session_id):
-                        lead = "" if self._at_line_start.get(session_id, True) else "\n"
-                        prefix = f"{lead}[assistant] "
-                    await self._emit_output(
-                        session_id,
-                        "combined",
-                        f"{prefix}{delta}",
-                        kind="step",
-                        is_final=False,
-                        bridge_segments=_bridge_segment("assistant", delta),
-                    )
-                    self._assistant_marker_needed[session_id] = False
-                    self._thinking_marker_needed[session_id] = True
+        # The pi process stays alive between turns, so _read_events will not
+        # signal completion until the process exits.
+        await self._events.on_awaiting_input(session_id)
 
-            elif delta_type == "thinking_delta":
-                delta = delta_event.get("delta", "")
-                if delta:
-                    prefix = ""
-                    if self._thinking_marker_needed.get(session_id, True):
-                        lead = "" if self._at_line_start.get(session_id, True) else "\n"
-                        prefix = f"{lead}[thinking] "
-                    await self._emit_output(
-                        session_id,
-                        "combined",
-                        f"{prefix}{delta}",
-                        kind="step",
-                        is_final=False,
-                        bridge_segments=_bridge_segment("thinking", delta),
-                    )
-                    self._assistant_marker_needed[session_id] = True
-                    self._thinking_marker_needed[session_id] = False
-
-            elif delta_type == "done":
-                # Message complete — the agent_end event will carry the final text
-                pass
-
-            elif delta_type == "error":
-                reason = delta_event.get("reason", "unknown")
-                await self._events.on_error(
-                    session_id, "PI_STREAM_ERROR", f"Stream error: {reason}"
-                )
-
-        # -- Tool execution --
-        elif etype == "tool_execution_start":
-            tool_name = event.get("toolName", "unknown")
-            args = event.get("args", {})
-
-            await self._emit_output(
-                session_id,
-                "combined",
-                f"[tool: {tool_name}]\n",
-                kind="step",
-                is_final=False,
-                bridge_segments=_bridge_segment(
-                    "tool_call",
-                    json.dumps(args, ensure_ascii=False) if args else "",
-                    str(tool_name),
-                ),
-            )
-            self._assistant_marker_needed[session_id] = True
-
-            # For write/edit/bash, emit permission request
-            if tool_name in _PERMISSION_TOOLS:
-                request_id = event.get("toolCallId", f"pi_{uuid.uuid4().hex[:12]}")
-
-                loop = asyncio.get_running_loop()
-                future: asyncio.Future = loop.create_future()
-
-                # NOTE: Pi auto-approves tools by default (like the TUI does).
-                # The requiresApproval flag is informational only.
-                # We auto-resolve immediately without showing UI prompts.
-                store.add_pending_permission(
-                    session_id, request_id, tool_name, args, future
-                )
-
-                # Auto-resolve immediately (don't emit permission_request to UI)
-                store.resolve_pending_permission(
-                    session_id, request_id, {"behavior": "allow"}
-                )
-
-                # Emit resolved event for logging/tracking
-                await self._events.on_permission_resolved(
-                    session_id,
-                    request_id=request_id,
-                    resolved_by="auto",
-                    allowed=True,
-                )
-
-        elif etype == "tool_execution_update":
-            # Track that this tool streamed partial output so we can
-            # skip the duplicate in tool_execution_end.
-            tool_name = event.get("toolName", "unknown")
-            partial = event.get("partialResult", {})
-            content = partial.get("content", [])
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text", "")
-                    if text:
-                        self._tool_had_updates.setdefault(session_id, set()).add(
-                            event.get("toolCallId", "")
-                        )
-                        truncated = _truncate_tool_output(text)
-                        await self._events.on_output(
-                            session_id,
-                            "combined",
-                            f"[{tool_name}] {truncated}\n",
-                            kind="step",
-                            is_final=False,
-                            bridge_segments=_bridge_segment(
-                                "tool_output",
-                                truncated,
-                                str(tool_name),
-                            ),
-                        )
-                        self._assistant_marker_needed[session_id] = True
-
-        elif etype == "tool_execution_end":
-            tool_call_id = event.get("toolCallId", "")
-            already_streamed = tool_call_id in self._tool_had_updates.get(
-                session_id, set()
-            )
-            # Clean up tracking
-            if session_id in self._tool_had_updates:
-                self._tool_had_updates[session_id].discard(tool_call_id)
-
-            tool_name = event.get("toolName", "unknown")
-            is_error = event.get("isError", False)
-            result = event.get("result", {})
-            content = result.get("content", [])
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-            text = "\n".join(text_parts)
-
-            if text and (is_error or not already_streamed):
-                truncated = _truncate_tool_output(text)
-                prefix = "[error] " if is_error else "[result] "
+    async def _emit_agent_final_messages(self, session_id: str, event: dict) -> bool:
+        """Emit assistant text blocks from an agent_end event."""
+        messages = event.get("messages", [])
+        emitted_final = False
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+                text = block.get("text", "")
+                if not text:
+                    continue
+                prefix = ""
+                if self._assistant_marker_needed.get(session_id):
+                    lead = "" if self._at_line_start.get(session_id, True) else "\n"
+                    prefix = f"{lead}[assistant] "
                 await self._emit_output(
                     session_id,
                     "combined",
-                    f"{prefix}{truncated}\n",
-                    kind="step",
-                    is_final=False,
-                    bridge_segments=_bridge_segment(
-                        "tool_error" if is_error else "tool_result",
-                        truncated,
-                        str(tool_name),
-                    ),
+                    f"{prefix}{text}",
+                    kind="final",
+                    is_final=True,
+                    bridge_segments=_bridge_segment("assistant", text),
                 )
-                self._assistant_marker_needed[session_id] = True
+                self._assistant_marker_needed[session_id] = False
+                self._thinking_marker_needed[session_id] = True
+                emitted_final = True
+        return emitted_final
 
-        # -- Compaction --
-        elif etype in {"auto_compaction_start", "compaction_start"}:
+    async def _handle_message_update(self, session_id: str, event: dict) -> None:
+        """Handle streaming assistant message deltas from pi."""
+        delta_event = event.get("assistantMessageEvent", {})
+        delta_type = delta_event.get("type")
+
+        if delta_type == "text_delta":
+            await self._handle_text_delta(session_id, delta_event)
+        elif delta_type == "thinking_delta":
+            await self._handle_thinking_delta(session_id, delta_event)
+        elif delta_type == "done":
+            return
+        elif delta_type == "error":
+            reason = delta_event.get("reason", "unknown")
+            await self._events.on_error(
+                session_id, "PI_STREAM_ERROR", f"Stream error: {reason}"
+            )
+
+    async def _handle_text_delta(self, session_id: str, delta_event: dict) -> None:
+        """Emit an assistant text delta."""
+        delta = delta_event.get("delta", "")
+        if not delta:
+            return
+        self._streamed_text[session_id] = True
+        prefix = ""
+        if self._assistant_marker_needed.get(session_id):
+            lead = "" if self._at_line_start.get(session_id, True) else "\n"
+            prefix = f"{lead}[assistant] "
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"{prefix}{delta}",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment("assistant", delta),
+        )
+        self._assistant_marker_needed[session_id] = False
+        self._thinking_marker_needed[session_id] = True
+
+    async def _handle_thinking_delta(self, session_id: str, delta_event: dict) -> None:
+        """Emit a thinking delta."""
+        delta = delta_event.get("delta", "")
+        if not delta:
+            return
+        prefix = ""
+        if self._thinking_marker_needed.get(session_id, True):
+            lead = "" if self._at_line_start.get(session_id, True) else "\n"
+            prefix = f"{lead}[thinking] "
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"{prefix}{delta}",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment("thinking", delta),
+        )
+        self._assistant_marker_needed[session_id] = True
+        self._thinking_marker_needed[session_id] = False
+
+    async def _handle_tool_execution_event(self, session_id: str, event: dict) -> None:
+        """Handle tool start, streamed output, and completion events."""
+        etype = event.get("type")
+        if etype == "tool_execution_start":
+            await self._handle_tool_execution_start(session_id, event)
+        elif etype == "tool_execution_update":
+            await self._handle_tool_execution_update(session_id, event)
+        elif etype == "tool_execution_end":
+            await self._handle_tool_execution_end(session_id, event)
+
+    async def _handle_tool_execution_start(self, session_id: str, event: dict) -> None:
+        """Emit a tool call and auto-resolve pi tool permissions."""
+        tool_name = event.get("toolName", "unknown")
+        args = event.get("args", {})
+
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"[tool: {tool_name}]\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment(
+                "tool_call",
+                json.dumps(args, ensure_ascii=False) if args else "",
+                str(tool_name),
+            ),
+        )
+        self._assistant_marker_needed[session_id] = True
+
+        if tool_name not in _PERMISSION_TOOLS:
+            return
+
+        request_id = event.get("toolCallId", f"pi_{uuid.uuid4().hex[:12]}")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        store.add_pending_permission(session_id, request_id, tool_name, args, future)
+        store.resolve_pending_permission(session_id, request_id, {"behavior": "allow"})
+        await self._events.on_permission_resolved(
+            session_id,
+            request_id=request_id,
+            resolved_by="auto",
+            allowed=True,
+        )
+
+    async def _handle_tool_execution_update(self, session_id: str, event: dict) -> None:
+        """Emit streamed tool output without updating line-start state."""
+        tool_name = event.get("toolName", "unknown")
+        partial = event.get("partialResult", {})
+        content = partial.get("content", [])
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                if text:
+                    self._tool_had_updates.setdefault(session_id, set()).add(
+                        event.get("toolCallId", "")
+                    )
+                    truncated = _truncate_tool_output(text)
+                    await self._events.on_output(
+                        session_id,
+                        "combined",
+                        f"[{tool_name}] {truncated}\n",
+                        kind="step",
+                        is_final=False,
+                        bridge_segments=_bridge_segment(
+                            "tool_output",
+                            truncated,
+                            str(tool_name),
+                        ),
+                    )
+                    self._assistant_marker_needed[session_id] = True
+
+    async def _handle_tool_execution_end(self, session_id: str, event: dict) -> None:
+        """Emit final tool result output when pi did not stream it already."""
+        tool_call_id = event.get("toolCallId", "")
+        already_streamed = tool_call_id in self._tool_had_updates.get(session_id, set())
+        if session_id in self._tool_had_updates:
+            self._tool_had_updates[session_id].discard(tool_call_id)
+
+        tool_name = event.get("toolName", "unknown")
+        is_error = event.get("isError", False)
+        result = event.get("result", {})
+        content = result.get("content", [])
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+        text = "\n".join(text_parts)
+
+        if not text or (already_streamed and not is_error):
+            return
+
+        truncated = _truncate_tool_output(text)
+        prefix = "[error] " if is_error else "[result] "
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"{prefix}{truncated}\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment(
+                "tool_error" if is_error else "tool_result",
+                truncated,
+                str(tool_name),
+            ),
+        )
+        self._assistant_marker_needed[session_id] = True
+
+    async def _handle_compaction_event(self, session_id: str, event: dict) -> None:
+        """Emit bridge status for pi compaction events."""
+        etype = event.get("type")
+        if etype in {"auto_compaction_start", "compaction_start"}:
             await self._emit_output(
                 session_id,
                 "combined",
@@ -814,38 +890,40 @@ class PiRpcRunner:
                 is_final=False,
                 bridge_segments=_bridge_segment("status", "compacting context..."),
             )
+            return
 
-        elif etype in {"auto_compaction_end", "compaction_end"}:
-            result = event.get("result")
-            if result:
-                tokens_before = result.get("tokensBefore", 0)
-                await self._emit_output(
-                    session_id,
-                    "combined",
-                    f"[compaction done, was {tokens_before} tokens]\n",
-                    kind="step",
-                    is_final=False,
-                    bridge_segments=_bridge_segment(
-                        "status",
-                        f"compaction done, was {tokens_before} tokens",
-                    ),
-                )
-            elif event.get("errorMessage"):
-                message = str(event.get("errorMessage"))
-                await self._emit_output(
-                    session_id,
-                    "combined",
-                    f"[compaction failed: {message}]\n",
-                    kind="step",
-                    is_final=False,
-                    bridge_segments=_bridge_segment(
-                        "status",
-                        f"compaction failed: {message}",
-                    ),
-                )
+        result = event.get("result")
+        if result:
+            tokens_before = result.get("tokensBefore", 0)
+            await self._emit_output(
+                session_id,
+                "combined",
+                f"[compaction done, was {tokens_before} tokens]\n",
+                kind="step",
+                is_final=False,
+                bridge_segments=_bridge_segment(
+                    "status",
+                    f"compaction done, was {tokens_before} tokens",
+                ),
+            )
+        elif event.get("errorMessage"):
+            message = str(event.get("errorMessage"))
+            await self._emit_output(
+                session_id,
+                "combined",
+                f"[compaction failed: {message}]\n",
+                kind="step",
+                is_final=False,
+                bridge_segments=_bridge_segment(
+                    "status",
+                    f"compaction failed: {message}",
+                ),
+            )
 
-        # -- Retry --
-        elif etype == "auto_retry_start":
+    async def _handle_retry_event(self, session_id: str, event: dict) -> None:
+        """Emit retry status or errors."""
+        etype = event.get("type")
+        if etype == "auto_retry_start":
             attempt = event.get("attempt", 0)
             max_attempts = event.get("maxAttempts", 0)
             delay_ms = event.get("delayMs", 0)
@@ -860,30 +938,67 @@ class PiRpcRunner:
                     f"retry {attempt}/{max_attempts}, waiting {delay_ms}ms",
                 ),
             )
+            return
 
-        elif etype == "auto_retry_end":
-            success = event.get("success", False)
-            if not success:
-                self._is_streaming.pop(session_id, False)
-                self._streamed_text.pop(session_id, False)
-                error = event.get("finalError", "Unknown")
-                message = f"Retry failed: {error}"
-                session = store.get_session(session_id)
-                if session and session.state == SessionState.AWAITING_INPUT:
-                    await self._emit_output(
-                        session_id,
-                        "combined",
-                        f"[notify] {message}\n",
-                        kind="step",
-                        is_final=False,
-                        bridge_segments=_bridge_segment("status", message),
-                    )
-                    return
-                await self._events.on_error(session_id, "PI_RETRY_FAILED", message)
+        success = event.get("success", False)
+        if success:
+            return
 
-        # -- Extension UI requests --
-        elif etype == "extension_ui_request":
-            await self._handle_extension_ui_request(session_id, event)
+        self._is_streaming.pop(session_id, False)
+        self._streamed_text.pop(session_id, False)
+        error = event.get("finalError", "Unknown")
+        message = f"Retry failed: {error}"
+        session = store.get_session(session_id)
+        if session and session.state == SessionState.AWAITING_INPUT:
+            await self._emit_output(
+                session_id,
+                "combined",
+                f"[notify] {message}\n",
+                kind="step",
+                is_final=False,
+                bridge_segments=_bridge_segment("status", message),
+            )
+            return
+        await self._events.on_error(session_id, "PI_RETRY_FAILED", message)
+
+    async def _advance_external_sync_cursor(self, session_id: str) -> None:
+        """Advance the history cursor for a live attached pi session."""
+
+        session = store.get_session(session_id)
+        if not session:
+            return
+        adapter = str(getattr(session, "adapter", "") or "").lower()
+        runner_type = str(getattr(session, "runner_type", "") or "").lower()
+        external_type = str(getattr(session, "external_agent_type", "") or "").lower()
+        if external_type and external_type != "pi":
+            return
+        if adapter != "pi_rpc" and runner_type != "pi" and external_type != "pi":
+            return
+        external_id = store.get_runner_session_id(session_id)
+        if not external_id:
+            return
+
+        try:
+            detail = await asyncio.to_thread(
+                get_pi_session_detail,
+                external_id,
+                500,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to advance pi external sync cursor",
+                session_id=session_id,
+                external_id=external_id,
+            )
+            return
+        if not detail:
+            return
+
+        message_count = len(detail.messages)
+        if message_count < store.get_synced_message_count(session_id):
+            return
+        turn_count = sum(1 for message in detail.messages if message.role == "user")
+        store.set_synced_message_count(session_id, message_count, turn_count)
 
     async def _handle_extension_ui_request(self, session_id: str, event: dict) -> None:
         """Forward pi extension UI requests to Tether bridge prompts."""

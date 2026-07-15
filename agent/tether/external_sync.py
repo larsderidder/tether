@@ -62,6 +62,32 @@ def _messages_within_lookback(
     return [], len(messages)
 
 
+def _event_log_recovery_timestamp(session_id: str) -> datetime | None:
+    """Return the latest transcript timestamp when live output exists."""
+    latest: datetime | None = None
+    has_live_transcript = False
+    for event in store.read_event_log(session_id, since_seq=0):
+        if event.get("type") not in {"user_input", "output", "output_final"}:
+            continue
+        if not (event.get("data") or {}).get("is_history"):
+            has_live_transcript = True
+        timestamp = _parse_timestamp(event.get("ts"))
+        if timestamp and (latest is None or timestamp > latest):
+            latest = timestamp
+    if not has_live_transcript:
+        return None
+    return latest
+
+
+def _messages_after_timestamp(messages: list, after: datetime) -> tuple[list, int]:
+    """Return messages whose provider timestamp is newer than after."""
+    for index, message in enumerate(messages):
+        timestamp = _parse_timestamp(getattr(message, "timestamp", None))
+        if timestamp and timestamp > after:
+            return messages[index:], index
+    return [], len(messages)
+
+
 def external_runner_type_for_session(session) -> ExternalRunnerType:
     """Infer the external runner type for an attached Tether session."""
     runner_type = str(getattr(session, "runner_type", "") or "").strip().lower()
@@ -306,6 +332,23 @@ async def sync_external_session_delta(
         )
         new_messages = messages[start_idx:]
         base_idx = start_idx
+    elif synced_count == 0 and (
+        event_log_timestamp := _event_log_recovery_timestamp(session_id)
+    ):
+        new_messages, base_idx = _messages_after_timestamp(
+            messages, event_log_timestamp
+        )
+        if not new_messages:
+            turn_count = sum(1 for m in messages if m.role == "user")
+            store.set_synced_message_count(session_id, len(messages), turn_count)
+        logger.info(
+            "Sync baseline missing; recovering after live event log",
+            session_id=session_id,
+            source=source,
+            total_messages=len(messages),
+            replay_messages=len(new_messages),
+            event_log_timestamp=event_log_timestamp.isoformat(),
+        )
     elif synced_count == 0 and initial_lookback_seconds is not None:
         new_messages, base_idx = _messages_within_lookback(
             messages,

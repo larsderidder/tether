@@ -5,17 +5,20 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import structlog
 
-from tether.api.schemas import SyncResult
 from tether.models import SessionState
 from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
 
-SyncFunction = Callable[[str], Awaitable[SyncResult]]
+if TYPE_CHECKING:
+    from tether.api.schemas import SyncResult
+
+SyncFunction = Callable[[str], Awaitable["SyncResult"]]
 
 
 class ExternalSessionWatcher:
@@ -104,7 +107,7 @@ class ExternalSessionWatcher:
         return sorted(self._session_ids & discovered)
 
     def _is_watchable_external(self, session: object) -> bool:
-        """Return true for bridge-bound sessions attached to external agents."""
+        """Return true for bridge-bound sessions with external history to poll."""
         if not getattr(session, "runner_session_id", None):
             return False
         if not getattr(session, "platform", None):
@@ -115,8 +118,10 @@ class ExternalSessionWatcher:
         }:
             return False
         has_process = store.get_process(getattr(session, "id", "")) is not None
-        if has_process and not self._is_idle_external_pi_session(session):
+        if has_process and not self._is_pi_session(session):
             return False
+        if self._is_pi_session(session):
+            return True
         if getattr(session, "external_agent_id", None):
             return True
         if getattr(session, "external_agent_type", None):
@@ -125,10 +130,8 @@ class ExternalSessionWatcher:
             return True
         return self._has_imported_history(str(getattr(session, "id", "")))
 
-    def _is_idle_external_pi_session(self, session: object) -> bool:
-        """Return true for attached pi sessions that may receive idle updates."""
-        if not getattr(session, "external_agent_id", None):
-            return False
+    def _is_pi_session(self, session: object) -> bool:
+        """Return true for pi sessions whose JSONL history can be polled."""
         external_type = str(getattr(session, "external_agent_type", "") or "").lower()
         adapter = str(getattr(session, "adapter", "") or "").lower()
         runner_type = str(getattr(session, "runner_type", "") or "").lower()

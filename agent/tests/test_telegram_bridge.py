@@ -159,14 +159,17 @@ class TestTelegramBridgeIntegration:
         assert "final-tail" in last_text
 
     @pytest.mark.anyio
-    async def test_output_rate_limit_pauses_and_recovers(
+    async def test_output_rate_limit_retries_without_dropping(
         self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Telegram RetryAfter pauses output and reports recovery later."""
+        """Telegram RetryAfter delays and retries the same output message."""
         from tether.bridges.telegram.bot import TelegramBridge
 
         monkeypatch.setattr(
             "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S", 0
         )
         session = fresh_store.create_session("repo_test", "main")
 
@@ -184,33 +187,25 @@ class TestTelegramBridgeIntegration:
         class RetryAfterError(Exception):
             retry_after = 0.0
 
-        async def fail_retry(*args, **kwargs):
-            raise RetryAfterError()
+        attempts = 0
+
+        async def retry_once(label, send, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RetryAfterError()
+            return await send()
 
         monkeypatch.setattr(
-            "tether.bridges.telegram.bot.with_bridge_send_retry", fail_retry
+            "tether.bridges.telegram.bot.with_bridge_send_retry", retry_once
         )
 
         sent = await bridge._send_output_message(session.id, 12345, "First")
 
-        assert sent is False
-        assert bridge._dropped_output_count_by_topic[12345] == 1
-        assert bridge._output_paused_until > 0
-
-        async def ok_retry(label, send, **kwargs):
-            return await send()
-
-        bridge._output_paused_until = 0
-        monkeypatch.setattr(
-            "tether.bridges.telegram.bot.with_bridge_send_retry", ok_retry
-        )
-
-        sent = await bridge._send_output_message(session.id, 12345, "Second")
-
         assert sent is True
+        assert attempts == 2
         sent_text = mock_bot.send_message.await_args.kwargs["text"]
-        assert "Telegram flood control recovered" in sent_text
-        assert "Second" in sent_text
+        assert sent_text == "First"
 
     @pytest.mark.anyio
     async def test_missing_topic_clears_telegram_binding(
