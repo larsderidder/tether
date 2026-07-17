@@ -372,6 +372,27 @@ class TestRichOutputFormatting:
         assert "🔧 <b>Tool activity</b>" in messages[0]
         assert "📥 <b>Tool output</b> <code>bash</code>" in messages[0]
 
+    def test_stream_batch_renders_as_one_readable_telegram_message(self) -> None:
+        messages = render_telegram_messages(
+            "fallback",
+            metadata={
+                "stream_batch": True,
+                "bridge_segments": [
+                    {"kind": "thinking", "text": "Planning secure setup"},
+                    {"kind": "tool_call", "label": "bash", "text": "pwd"},
+                    {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+                    {"kind": "assistant", "text": "Final interim note"},
+                ],
+            },
+        )
+
+        assert len(messages) == 1
+        assert "💭 <i>Planning secure setup</i>" in messages[0]
+        assert "🔧 <b>Tool call</b> <code>bash</code>" in messages[0]
+        assert "📥 <b>Tool output</b> <code>bash</code>" in messages[0]
+        assert "Final interim note" in messages[0]
+        assert "[thinking]" not in messages[0]
+
     def test_tool_activity_bundle_can_keep_separate_messages(self, monkeypatch) -> None:
         monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES", "0")
 
@@ -477,3 +498,32 @@ class TestRichOutputFormatting:
         table = "```markdown\n| A | B |\n|---|---|\n| 1 | 2 |\n```"
 
         assert render_discord_messages(table) == [table]
+
+    def test_render_telegram_messages_converts_tables_to_mobile_cards(self) -> None:
+        messages = render_telegram_messages(
+            "Benchmark:\n\n"
+            "| Card | Price | Verdict |\n"
+            "|---|---:|---|\n"
+            "| **Item A** | €10 | **Keep** |\n"
+            "| [Item B](https://example.com) | €12 | Maybe |\n"
+            "\nDone."
+        )
+
+        assert messages == [
+            "Benchmark:\n\n"
+            "<b>Card:</b> <b>Item A</b>\n"
+            "• <b>Price:</b> €10\n"
+            "• <b>Verdict:</b> <b>Keep</b>\n"
+            "\n"
+            '<b>Card:</b> <a href="https://example.com">Item B</a>\n'
+            "• <b>Price:</b> €12\n"
+            "• <b>Verdict:</b> Maybe\n"
+            "\nDone."
+        ]
+
+    def test_render_telegram_messages_keeps_tables_inside_code_blocks(self) -> None:
+        table = "```markdown\n| A | B |\n|---|---|\n| 1 | 2 |\n```"
+
+        assert render_telegram_messages(table) == [
+            "<pre>| A | B |\n|---|---|\n| 1 | 2 |</pre>"
+        ]
