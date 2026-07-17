@@ -159,6 +159,42 @@ class TestTelegramBridgeIntegration:
         assert "final-tail" in last_text
 
     @pytest.mark.anyio
+    async def test_stream_batch_sends_single_telegram_message(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Buffered stream batches are not split into one Telegram message per segment."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        session = fresh_store.create_session("repo_test", "main")
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        await bridge.on_output(
+            session.id,
+            "[tool: bash] pwd\n[result] /tmp/demo",
+            metadata={
+                "stream_batch": True,
+                "bridge_segments": [
+                    {"kind": "tool_call", "label": "bash", "text": "pwd"},
+                    {"kind": "tool_result", "label": "bash", "text": "/tmp/demo"},
+                ],
+            },
+        )
+
+        assert mock_bot.send_message.await_count == 1
+
+    @pytest.mark.anyio
     async def test_output_rate_limit_retries_without_dropping(
         self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:

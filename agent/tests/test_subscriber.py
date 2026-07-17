@@ -433,7 +433,8 @@ class TestEventRouting:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tool telemetry is buffered briefly and then sent as one bridge message."""
-        monkeypatch.setattr("tether.bridges.subscriber._TOOL_FLUSH_DELAY_S", 0.01)
+        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "0")
+        monkeypatch.setattr("tether.bridges.subscriber._OUTPUT_FLUSH_DELAY_S", 0.01)
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -457,7 +458,7 @@ class TestEventRouting:
         await sub.unsubscribe(session.id)
 
         assert len(fake_bridge.output_calls) == 1
-        assert fake_bridge.output_calls[0]["metadata"]["tool_activity"] is True
+        assert fake_bridge.output_calls[0]["metadata"]["stream_batch"] is True
         assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
             {"kind": "tool_output", "label": "bash", "text": "pwd"},
             {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
@@ -519,8 +520,9 @@ class TestEventRouting:
         fake_bridge: FakeBridge,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Tool telemetry flushes periodically while more tool output arrives."""
-        monkeypatch.setattr("tether.bridges.subscriber._TOOL_FLUSH_DELAY_S", 0.02)
+        """Tool telemetry flushes once per interval while more output arrives."""
+        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "0")
+        monkeypatch.setattr("tether.bridges.subscriber._OUTPUT_FLUSH_DELAY_S", 0.02)
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -606,6 +608,37 @@ class TestEventRouting:
             {"kind": "tool_output", "label": "bash", "text": "pwd"},
             {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
         ]
+
+    @pytest.mark.anyio
+    async def test_streaming_prose_flushes_after_delay(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-final assistant prose is periodically delivered to bridges."""
+        monkeypatch.setattr("tether.bridges.subscriber._OUTPUT_FLUSH_DELAY_S", 0)
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "partial update",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "assistant", "text": "partial update"}
+                    ],
+                },
+            },
+        )
+        await sub.unsubscribe(session.id)
+        assert [call["text"] for call in fake_bridge.output_calls] == ["partial update"]
 
     @pytest.mark.anyio
     async def test_output_final_replaces_buffered_streaming_prose(

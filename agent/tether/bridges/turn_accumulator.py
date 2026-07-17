@@ -154,7 +154,9 @@ class BridgeTurnAccumulator:
         segments = [segment for item in items for segment in item.bridge_segments]
         if not text.strip() and not segments:
             return None
-        metadata = {"bridge_segments": segments} if segments else None
+        metadata = (
+            {"bridge_segments": segments, "stream_batch": True} if segments else None
+        )
         return BridgeFlush(text=text, metadata=metadata)
 
     def final_output(

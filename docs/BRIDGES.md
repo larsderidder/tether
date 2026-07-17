@@ -42,8 +42,8 @@ Shared helpers (in base class):
 ## BridgeSubscriber (`agent/tether/bridges/subscriber.py`)
 
 Routes store events to bridge methods:
-- `output` with assistant or thinking `bridge_segments` → buffered until final output
-- `output` with tool `bridge_segments` → buffered and sent as bundled tool activity on a configurable periodic timer
+- `output` with assistant or thinking `bridge_segments` → buffered and sent after the configurable quiet period, then replaced by final output when the turn completes
+- `output` with tool `bridge_segments` → buffered and sent as bundled tool activity after the configurable quiet period
 - `output` with `final=True` → skipped because `output_final` carries the final blob
 - `output_final` → flushes any pending tool bundle first, then sends the final assistant message once
 - `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY=1` disables periodic tool flushes and keeps tool telemetry bundled until final output, permission prompts, or turn end
@@ -140,7 +140,8 @@ Stored in base class as in-memory dicts:
 | `DISCORD_AUTO_PAIR_USER_IDS` | Comma-separated Discord user IDs to seed into the paired-user set at launch |
 | `TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS` | Max characters shown inline for tool output across bridges (default: 800, range: 100-1800) |
 | `TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES` | Max lines shown inline for tool output across bridges (default: 6, range: 1-50) |
-| `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS` | Seconds to buffer tool activity before periodic bridge delivery (default: 5, range: 0-300) |
+| `TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS` | Seconds to buffer non-final bridge output after the latest event before delivery (default: 2, range: 0-300) |
+| `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS` | Seconds to buffer tool activity after the latest tool event before delivery (default: 5, range: 0-300) |
 | `TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES` | Render a buffered tool activity bundle as one platform message when possible (default: 1) |
 | `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY` | Disable periodic tool activity delivery and flush the whole bundle just before final output, permission prompts, or turn end (default: 0) |
 | `TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES` | Optional cap for one Telegram output batch. Default `0` sends all chunks slowly. When capped, Tether keeps the final chunk visible. |

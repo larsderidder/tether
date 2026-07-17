@@ -87,6 +87,10 @@ class TestIntSettings:
         assert Settings.pi_tool_output_max_lines() == 80
         assert Settings.bridge_tool_output_inline_chars() == 800
         assert Settings.bridge_tool_output_inline_lines() == 6
+        assert Settings.bridge_output_flush_delay_seconds() == 2.0
+        assert Settings.bridge_tool_activity_flush_delay_seconds() == 5.0
+        assert Settings.bridge_tool_activity_combine_messages() is True
+        assert Settings.bridge_tool_activity_flush_on_final_only() is False
 
     def test_tool_output_limits_can_be_configured(self, clean_env) -> None:
         """Tool output truncation limits can be configured."""
@@ -95,12 +99,20 @@ class TestIntSettings:
         clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "120")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS", "700")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES", "5")
+        clean_env.setenv("TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS", "30")
+        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS", "2.5")
+        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES", "0")
+        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "1")
 
         assert Settings.pi_resume_max_session_file_bytes() == 209715200
         assert Settings.pi_tool_output_max_chars() == 2400
         assert Settings.pi_tool_output_max_lines() == 120
         assert Settings.bridge_tool_output_inline_chars() == 700
         assert Settings.bridge_tool_output_inline_lines() == 5
+        assert Settings.bridge_output_flush_delay_seconds() == 30.0
+        assert Settings.bridge_tool_activity_flush_delay_seconds() == 2.5
+        assert Settings.bridge_tool_activity_combine_messages() is False
+        assert Settings.bridge_tool_activity_flush_on_final_only() is True
 
     def test_tool_output_limits_are_bounded(self, clean_env) -> None:
         """Tool output truncation limits are clamped to safe ranges."""
@@ -109,12 +121,16 @@ class TestIntSettings:
         clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "1")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS", "999999")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES", "999999")
+        clean_env.setenv("TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS", "999999")
+        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS", "999999")
 
         assert Settings.pi_resume_max_session_file_bytes() == 10 * 1024 * 1024
         assert Settings.pi_tool_output_max_chars() == 200
         assert Settings.pi_tool_output_max_lines() == 5
         assert Settings.bridge_tool_output_inline_chars() == 1800
         assert Settings.bridge_tool_output_inline_lines() == 50
+        assert Settings.bridge_output_flush_delay_seconds() == 300.0
+        assert Settings.bridge_tool_activity_flush_delay_seconds() == 300.0
 
 
 class TestStringSettings:

@@ -102,6 +102,40 @@ async def test_sync_external_session_delta_replays_only_new_messages(
 
 
 @pytest.mark.anyio
+async def test_sync_flushes_buffered_tui_activity_before_final(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """External TUI activity is buffered, but final output is immediate."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    monkeypatch.setattr(external_sync, "_HISTORY_FLUSH_DELAY_S", 30.0)
+    session = _attached_session(fresh_store, tmp_path)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Prompt"),
+        SessionMessage(role="assistant", content="Working..."),
+        SessionMessage(role="assistant", content="Done"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=2, total=3)
+    assert [call["text"] for call in bridge.output_calls] == ["Working...", "Done"]
+    assert bridge.output_calls[-1]["metadata"]["final"] is True
+
+
+@pytest.mark.anyio
 async def test_sync_recovers_only_messages_after_live_event_log(
     fresh_store: SessionStore,
     tmp_path: Path,

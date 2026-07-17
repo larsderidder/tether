@@ -9,13 +9,13 @@ from typing import Any
 import structlog
 from agent_tether.base import ApprovalRequest
 from agent_tether.manager import BridgeManager
-from agent_tether.subscriber import _OUTPUT_FLUSH_DELAY_S, _OUTPUT_FLUSH_MAX_CHARS
 
 from tether.bridges.turn_accumulator import BridgeTurnAccumulator, TOOL_SEGMENT_KINDS
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
 
+_OUTPUT_FLUSH_DELAY_S = settings.bridge_output_flush_delay_seconds()
 _TOOL_FLUSH_DELAY_S = settings.bridge_tool_activity_flush_delay_seconds()
 
 
@@ -93,10 +93,6 @@ class BridgeSubscriber:
     ) -> None:
         """Add text and optional structured bridge segments to the output buffer."""
         self._turns.buffer_stream(session_id, text, bridge_segments)
-
-    def _buffer_size(self, session_id: str) -> int:
-        """Return the total character count in the output buffer."""
-        return self._turns.buffered_size(session_id)
 
     @staticmethod
     def _is_automation_message(
@@ -197,12 +193,8 @@ class BridgeSubscriber:
 
     async def _schedule_flush(self, session_id: str, bridge: object) -> None:
         """Schedule a delayed flush of buffered output."""
-        existing = self._output_flush_tasks.pop(session_id, None)
+        existing = self._output_flush_tasks.get(session_id)
         if existing and not existing.done():
-            existing.cancel()
-
-        if self._buffer_size(session_id) >= _OUTPUT_FLUSH_MAX_CHARS:
-            await self._flush_output(session_id, bridge)
             return
 
         async def _delayed_flush() -> None:
@@ -284,9 +276,11 @@ class BridgeSubscriber:
                             if self._is_automation_message(bridge_segments):
                                 await self._flush_output(session_id, bridge)
                             elif self._is_streaming_prose(bridge_segments):
-                                continue
+                                await self._schedule_flush(session_id, bridge)
                             elif self._is_tool_activity(bridge_segments):
-                                await self._schedule_tool_flush(session_id, bridge)
+                                if settings.bridge_tool_activity_flush_on_final_only():
+                                    continue
+                                await self._schedule_flush(session_id, bridge)
                             else:
                                 await self._schedule_flush(session_id, bridge)
 

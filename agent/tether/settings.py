@@ -166,6 +166,19 @@ class Settings:
         )
 
     @staticmethod
+    def bridge_output_flush_delay_seconds() -> float:
+        """Seconds to buffer non-final bridge output before sending.
+
+        Env: TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS (default: 2)
+        """
+        return _get_bounded_float(
+            "TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS",
+            2.0,
+            minimum=0.0,
+            maximum=300.0,
+        )
+
+    @staticmethod
     def bridge_tool_activity_flush_delay_seconds() -> float:
         """Seconds to buffer bridge tool activity before sending a bundle.
 

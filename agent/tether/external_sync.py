@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -11,6 +12,7 @@ from tether.api.errors import raise_http_error
 from tether.api.schemas import SyncResult
 from tether.discovery import get_external_session_detail
 from tether.models import ExternalRunnerType
+from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
@@ -21,6 +23,9 @@ _REPLAY_THINKING_LIMIT = 150
 _REPLAY_TOTAL_LIMIT = 1900
 _FORCE_SYNC_REPLAY_LIMIT = 75
 _BASELINE_RECOVERY_REPLAY_LIMIT = 25
+_HISTORY_FLUSH_DELAY_S = settings.bridge_output_flush_delay_seconds()
+_HISTORY_BUFFERS: dict[str, list[str]] = {}
+_HISTORY_FLUSH_TASKS: dict[str, asyncio.Task] = {}
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -195,7 +200,42 @@ def get_bound_bridge(session) -> object | None:
     return bridge
 
 
-async def send_history_to_bridge(
+async def _flush_history_buffer(session, bridge: object | None) -> None:
+    """Send buffered non-final external history to the bound bridge."""
+    task = _HISTORY_FLUSH_TASKS.pop(session.id, None)
+    if task and not task.done() and task is not asyncio.current_task():
+        task.cancel()
+
+    chunks = _HISTORY_BUFFERS.pop(session.id, [])
+    text = "\n\n".join(chunk for chunk in chunks if chunk.strip()).strip()
+    if not text:
+        return
+
+    await _send_history_immediately(
+        session=session,
+        bridge=bridge,
+        text=text,
+        metadata={"is_history": True, "role": "assistant", "kind": "step"},
+    )
+
+
+async def _schedule_history_flush(session, bridge: object | None) -> None:
+    """Schedule a delayed flush for buffered external history."""
+    existing = _HISTORY_FLUSH_TASKS.get(session.id)
+    if existing and not existing.done():
+        return
+
+    async def _delayed_flush() -> None:
+        try:
+            await asyncio.sleep(_HISTORY_FLUSH_DELAY_S)
+        except asyncio.CancelledError:
+            return
+        await _flush_history_buffer(session, bridge)
+
+    _HISTORY_FLUSH_TASKS[session.id] = asyncio.create_task(_delayed_flush())
+
+
+async def _send_history_immediately(
     *,
     session,
     bridge: object | None,
@@ -215,6 +255,48 @@ async def send_history_to_bridge(
             platform=session.platform,
             metadata=metadata,
         )
+
+
+async def send_history_to_bridge(
+    *,
+    session,
+    bridge: object | None,
+    text: str,
+    metadata: dict,
+) -> None:
+    """Send or buffer one imported history chunk to the bound bridge thread."""
+    if bridge is None or not text.strip():
+        return
+
+    is_final = bool(metadata.get("final") or metadata.get("is_final"))
+    is_bufferable_history = (
+        bool(metadata.get("is_history"))
+        and metadata.get("role") == "assistant"
+        and not is_final
+        and not metadata.get("replay")
+    )
+
+    if is_final:
+        await _flush_history_buffer(session, bridge)
+        await _send_history_immediately(
+            session=session,
+            bridge=bridge,
+            text=text,
+            metadata=metadata,
+        )
+        return
+
+    if not is_bufferable_history:
+        await _send_history_immediately(
+            session=session,
+            bridge=bridge,
+            text=text,
+            metadata=metadata,
+        )
+        return
+
+    _HISTORY_BUFFERS.setdefault(session.id, []).append(text)
+    await _schedule_history_flush(session, bridge)
 
 
 async def relay_history_message_to_bridge(
@@ -270,7 +352,7 @@ async def replay_stored_history_to_bridge(*, session, bridge: object | None) -> 
                 session=session,
                 bridge=bridge,
                 text=format_history_user_text(str(data.get("text") or "")),
-                metadata={"is_history": True, "role": "user"},
+                metadata={"is_history": True, "role": "user", "replay": True},
             )
             continue
 
@@ -283,6 +365,7 @@ async def replay_stored_history_to_bridge(*, session, bridge: object | None) -> 
                 "role": "assistant",
                 "kind": data.get("kind"),
                 "final": bool(data.get("final")),
+                "replay": True,
             },
         )
 
