@@ -89,8 +89,11 @@ class TelegramBridge(UpstreamTelegramBridge):
     def _agent_to_adapter(raw: str) -> str | None:
         """Map user-friendly agent names to local adapter names."""
 
-        if (raw or "").strip().lower() in {"automation", "script"}:
+        normalized = (raw or "").strip().lower()
+        if normalized in {"automation", "script"}:
             return "automation"
+        if normalized in {"pi", "pi_rpc"}:
+            return "pi_rpc"
         return UpstreamTelegramBridge._agent_to_adapter(raw)
 
     @staticmethod

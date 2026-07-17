@@ -35,6 +35,13 @@ class TestTelegramBridgeIntegration:
         )
         assert bridge is not None
 
+    def test_agent_aliases_include_pi(self) -> None:
+        """Telegram /new accepts Tether's local pi adapter alias."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        assert TelegramBridge._agent_to_adapter("pi") == "pi_rpc"
+        assert TelegramBridge._agent_to_adapter("pi_rpc") == "pi_rpc"
+
     @pytest.mark.anyio
     async def test_rename_thread_updates_telegram_topic(self) -> None:
         """rename_thread updates the Telegram forum topic name."""
