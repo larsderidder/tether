@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 import io
-import mimetypes
 import os
 import re
 import socket
@@ -24,10 +23,8 @@ from agent_tether.discord.bot import DiscordConfig as UpstreamDiscordConfig
 from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
-from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
-from tether.bridges.debug_attachments import build_error_debug_bundle
 from tether.bridges.model_api import (
     format_model_info,
     get_session_model,
@@ -38,20 +35,8 @@ from tether.bridges.dedupe import (
     discord_message_key,
     is_obvious_discord_bot_loop,
 )
-from tether.bridges.image_io import (
-    MAX_IMAGE_BYTES,
-    MAX_IMAGES_PER_MESSAGE,
-    make_bridge_image,
-)
-from tether.bridges.media_io import (
-    MAX_MEDIA_BYTES,
-    MAX_MEDIA_FILES_PER_MESSAGE,
-    BridgeMediaFile,
-    append_media_file_references,
-    download_with_media_policy,
-    store_bridge_media_file,
-    supported_media_type,
-)
+from tether.bridges.discord.media import DiscordMediaHandler
+from tether.bridges.media_io import BridgeMediaFile, append_media_file_references
 from tether.bridges.rich_output import render_discord_message_objects
 from tether.bridges.retry import with_bridge_send_retry
 from tether.bridges.reaction_shortcuts import (
@@ -174,7 +159,13 @@ class DiscordBridge(UpstreamDiscordBridge):
         )
         self._reaction_shortcuts_completed: set[int] = set()
         self._reaction_shortcuts_in_progress: set[int] = set()
-        self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
+        self._media = DiscordMediaHandler(
+            get_client=lambda: self._client,
+            hydrate_thread_binding=self._hydrate_thread_binding,
+            should_send_error_status=self._should_send_error_status,
+            send_plain_error_status=self._send_upstream_error_status,
+            error_attachment_delay_s=_ERROR_ATTACHMENT_DELAY_S,
+        )
         self._starter_states: dict[str, _DiscordStarterState] = {}
         self._starter_refresh_tasks: dict[str, asyncio.Task] = {}
         self._dashboard_message: Any | None = None
@@ -183,6 +174,15 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._message_dedupe = ShortLivedMessageDedupe()
         self._message_expansions: dict[int, _DiscordExpansion] = {}
         self._apply_auto_pair_users()
+
+    async def _send_upstream_error_status(
+        self,
+        session_id: str,
+        metadata: dict | None,
+    ) -> None:
+        """Send the upstream plain Discord error status."""
+
+        await super().on_status_change(session_id, "error", metadata=metadata)
 
     @staticmethod
     def _parse_thread_id(raw_thread_id: object) -> int | None:
@@ -788,62 +788,13 @@ class DiscordBridge(UpstreamDiscordBridge):
     async def _message_image_attachments(self, message: Any) -> list[Any]:
         """Return direct, replied-to, and forwarded Discord attachments."""
 
-        attachments = list(getattr(message, "attachments", []) or [])
-        attachments.extend(self._forwarded_message_attachments(message))
-        reference = getattr(message, "reference", None)
-        resolved = getattr(reference, "resolved", None)
-        if resolved is not None:
-            attachments.extend(list(getattr(resolved, "attachments", []) or []))
-            return attachments
-
-        message_id = getattr(reference, "message_id", None)
-        fetch_message = getattr(
-            getattr(message, "channel", None), "fetch_message", None
-        )
-        if message_id and fetch_message is not None:
-            try:
-                fetched = await fetch_message(message_id)
-            except Exception:
-                logger.debug(
-                    "Failed to hydrate Discord referenced message for images",
-                    message_id=message_id,
-                    exc_info=True,
-                )
-            else:
-                attachments.extend(list(getattr(fetched, "attachments", []) or []))
-        return attachments
+        return await self._media.message_attachments(message)
 
     @staticmethod
     def _forwarded_message_attachments(message: Any) -> list[Any]:
         """Return attachments from Discord forwarded message snapshots."""
 
-        raw_data = getattr(message, "rawData", None)
-        candidates = [
-            getattr(raw_data, "message_snapshots", None),
-            getattr(message, "message_snapshots", None),
-            getattr(message, "messageSnapshots", None),
-        ]
-        snapshots = next(
-            (candidate for candidate in candidates if isinstance(candidate, list)),
-            [],
-        )
-
-        attachments: list[Any] = []
-        for snapshot in snapshots:
-            snapshot_message = None
-            if isinstance(snapshot, dict):
-                snapshot_message = snapshot.get("message")
-            else:
-                snapshot_message = getattr(snapshot, "message", None)
-            if isinstance(snapshot_message, dict):
-                snapshot_attachments = snapshot_message.get("attachments") or []
-            else:
-                snapshot_attachments = (
-                    getattr(snapshot_message, "attachments", []) or []
-                )
-            if isinstance(snapshot_attachments, list):
-                attachments.extend(snapshot_attachments)
-        return attachments
+        return DiscordMediaHandler.forwarded_message_attachments(message)
 
     async def _collect_message_media(
         self,
@@ -854,101 +805,16 @@ class DiscordBridge(UpstreamDiscordBridge):
     ) -> tuple[list[dict[str, str]], list[BridgeMediaFile]]:
         """Download and validate supported Discord attachments."""
 
-        images: list[dict[str, str]] = []
-        files: list[BridgeMediaFile] = []
-        for attachment in await self._message_image_attachments(message):
-            filename = getattr(attachment, "filename", None)
-            content_type = getattr(attachment, "content_type", None)
-            guessed_type = mimetypes.guess_type(str(filename or ""))[0] or ""
-            content_type_text = str(content_type or guessed_type or "").lower()
-            generic_type = content_type_text in {
-                "",
-                "application/octet-stream",
-                "binary/octet-stream",
-            }
-            effective_type = content_type_text
-            if generic_type and guessed_type:
-                effective_type = guessed_type.lower()
-            size = int(getattr(attachment, "size", 0) or 0)
-            if size <= 0:
-                continue
-            if effective_type.startswith("image/") or generic_type:
-                if len(images) >= MAX_IMAGES_PER_MESSAGE:
-                    await message.channel.send(
-                        f"⚠️ Skipped image: maximum {MAX_IMAGES_PER_MESSAGE} images per message."
-                    )
-                    continue
-                if size > MAX_IMAGE_BYTES:
-                    await message.channel.send(
-                        f"⚠️ Skipped image: image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
-                    )
-                    continue
-                try:
-                    data = await download_with_media_policy(
-                        attachment.read,
-                        platform="discord",
-                        url=getattr(attachment, "url", None)
-                        or getattr(attachment, "proxy_url", None),
-                    )
-                    image = make_bridge_image(
-                        data,
-                        declared_mime_type=effective_type,
-                        filename=filename,
-                    )
-                except ValueError as exc:
-                    if effective_type.startswith("image/"):
-                        await message.channel.send(f"⚠️ Skipped image: {exc}")
-                    continue
-                except Exception:
-                    logger.exception("Failed to read Discord image attachment")
-                    await message.channel.send("⚠️ Failed to read an image attachment.")
-                    continue
-                images.append(image.as_api_payload())
-                continue
-
-            if not collect_files or not supported_media_type(effective_type):
-                continue
-            if len(files) >= MAX_MEDIA_FILES_PER_MESSAGE:
-                await message.channel.send(
-                    f"⚠️ Skipped attachment: maximum {MAX_MEDIA_FILES_PER_MESSAGE} files per message."
-                )
-                continue
-            if size > MAX_MEDIA_BYTES:
-                await message.channel.send(
-                    f"⚠️ Skipped attachment: file is larger than {MAX_MEDIA_BYTES // (1024 * 1024)} MB"
-                )
-                continue
-            try:
-                data = await download_with_media_policy(
-                    attachment.read,
-                    platform="discord",
-                    url=getattr(attachment, "url", None)
-                    or getattr(attachment, "proxy_url", None),
-                )
-                files.append(
-                    store_bridge_media_file(
-                        session_id=session_id,
-                        data=data,
-                        filename=filename,
-                        mime_type=effective_type,
-                    )
-                )
-            except ValueError as exc:
-                await message.channel.send(f"⚠️ Skipped attachment: {exc}")
-            except Exception:
-                logger.exception("Failed to read Discord media attachment")
-                await message.channel.send("⚠️ Failed to read an attachment.")
-        return images, files
+        return await self._media.collect_message_media(
+            message,
+            session_id,
+            collect_files=collect_files,
+        )
 
     async def _collect_message_images(self, message: Any) -> list[dict[str, str]]:
         """Download and validate supported Discord image attachments."""
 
-        images, _ = await self._collect_message_media(
-            message,
-            "unknown",
-            collect_files=False,
-        )
-        return images
+        return await self._media.collect_message_images(message)
 
     async def _forward_input(self, message: Any, session_id: str, text: str) -> None:
         images, files = await self._collect_message_media(message, session_id)
@@ -1054,11 +920,9 @@ class DiscordBridge(UpstreamDiscordBridge):
         await self._sync_starter_message(session_id)
 
     async def _cancel_pending_error_attachment_task(self, session_id: str) -> None:
-        task = self._pending_error_attachment_tasks.pop(session_id, None)
-        if task and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        """Cancel a pending delayed error diagnostic upload."""
+
+        await self._media.cancel_pending_error_attachment_task(session_id)
 
     async def _send_requested_output_attachments(
         self,
@@ -1066,175 +930,33 @@ class DiscordBridge(UpstreamDiscordBridge):
         *,
         metadata: dict | None = None,
     ) -> None:
-        if not self._client:
-            return
+        """Upload output attachments requested by runner metadata."""
 
-        attachments = attachments_from_metadata(metadata)
-        if not attachments:
-            return
-
-        thread_id = self._hydrate_thread_binding(session_id)
-        if not thread_id:
-            return
-
-        thread = self._client.get_channel(thread_id)
-        if thread is None:
-            try:
-                thread = await self._client.fetch_channel(thread_id)
-            except Exception:
-                logger.warning(
-                    "Failed to fetch Discord thread for output attachments",
-                    session_id=session_id,
-                    thread_id=thread_id,
-                )
-                return
-
-        failures: list[str] = []
-        try:
-            import discord
-        except ImportError:
-            logger.error("discord.py not installed for output attachment upload")
-            return
-
-        files = []
-        for attachment in attachments:
-            try:
-                files.append(
-                    discord.File(
-                        str(attachment.path),
-                        filename=attachment.filename,
-                        description=attachment.caption,
-                    )
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to prepare Discord output attachment",
-                    session_id=session_id,
-                    attachment_path=str(attachment.path),
-                )
-                failures.append(attachment.filename)
-
-        if files:
-            try:
-                await with_bridge_send_retry(
-                    "discord.output_attachments",
-                    lambda: thread.send(files=files),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to upload Discord output attachments",
-                    session_id=session_id,
-                )
-                failures.extend(
-                    attachment.filename
-                    for attachment in attachments
-                    if attachment.filename not in failures
-                )
-
-        if failures:
-            try:
-                await with_bridge_send_retry(
-                    "discord.attachment_failure_notice",
-                    lambda: thread.send(
-                        "Attachment upload failed: " + ", ".join(sorted(set(failures)))
-                    ),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to send Discord attachment failure notice",
-                    session_id=session_id,
-                )
+        await self._media.send_requested_output_attachments(
+            session_id,
+            metadata=metadata,
+        )
 
     async def _send_error_attachment_bundle(
         self,
         session_id: str,
         metadata: dict | None = None,
     ) -> bool:
-        if not self._client:
-            return False
+        """Upload an error diagnostic bundle to the Discord thread."""
 
-        thread_id = self._hydrate_thread_binding(session_id)
-        if not thread_id:
-            return False
-
-        if not self._should_send_error_status(session_id):
-            return True
-
-        thread = self._client.get_channel(thread_id)
-        if thread is None:
-            try:
-                thread = await self._client.fetch_channel(thread_id)
-            except Exception:
-                logger.warning(
-                    "Failed to fetch Discord thread for error bundle",
-                    session_id=session_id,
-                    thread_id=thread_id,
-                )
-                return False
-
-        bundle = build_error_debug_bundle(session_id, metadata=metadata)
-        try:
-            import discord
-
-            files = [
-                discord.File(
-                    io.BytesIO(attachment.content.encode("utf-8")),
-                    filename=attachment.filename,
-                    description=attachment.title or attachment.filename,
-                )
-                for attachment in bundle.attachments
-            ]
-            await with_bridge_send_retry(
-                "discord.error_bundle",
-                lambda: thread.send(bundle.message, files=files),
-            )
-        except Exception:
-            logger.exception(
-                "Failed to send Discord error attachment bundle",
-                session_id=session_id,
-            )
-            try:
-                await with_bridge_send_retry(
-                    "discord.error_fallback",
-                    lambda: thread.send("❌ Status: error"),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to send Discord fallback error status",
-                    session_id=session_id,
-                )
-        return True
+        return await self._media.send_error_attachment_bundle(
+            session_id,
+            metadata=metadata,
+        )
 
     def _schedule_error_attachment_bundle(
         self,
         session_id: str,
         metadata: dict | None = None,
     ) -> None:
-        existing = self._pending_error_attachment_tasks.pop(session_id, None)
-        if existing and not existing.done():
-            existing.cancel()
+        """Schedule a delayed error diagnostic upload."""
 
-        async def _delayed_send() -> None:
-            try:
-                await asyncio.sleep(_ERROR_ATTACHMENT_DELAY_S)
-                handled = await self._send_error_attachment_bundle(
-                    session_id,
-                    metadata=metadata,
-                )
-                if not handled:
-                    await super(DiscordBridge, self).on_status_change(
-                        session_id,
-                        "error",
-                        metadata=metadata,
-                    )
-            except asyncio.CancelledError:
-                return
-            finally:
-                self._pending_error_attachment_tasks.pop(session_id, None)
-
-        self._pending_error_attachment_tasks[session_id] = asyncio.create_task(
-            _delayed_send()
-        )
+        self._media.schedule_error_attachment_bundle(session_id, metadata=metadata)
 
     async def start(self) -> None:
         """Initialize and start Discord client."""
@@ -1353,17 +1075,7 @@ class DiscordBridge(UpstreamDiscordBridge):
     def _message_has_media(self, message: Any) -> bool:
         """Return true when a Discord message may carry bridgeable media."""
 
-        if getattr(message, "attachments", None):
-            return True
-        if self._forwarded_message_attachments(message):
-            return True
-        reference = getattr(message, "reference", None)
-        if reference is None:
-            return False
-        resolved = getattr(reference, "resolved", None)
-        if resolved is not None and getattr(resolved, "attachments", None):
-            return True
-        return bool(getattr(reference, "message_id", None))
+        return self._media.message_has_media(message)
 
     def _should_ignore_inbound_message(self, message: Any) -> bool:
         """Suppress duplicate Discord deliveries and obvious bot loops."""
