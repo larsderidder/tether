@@ -19,6 +19,12 @@ const createSession = (overrides: Partial<Session> = {}): Session => ({
   directory: null,
   directory_has_git: false,
   message_count: 0,
+  has_pending_permission: false,
+  approval_mode: null,
+  bridge_verbosity: null,
+  effective_bridge_verbosity: 'minimal',
+  bridge_buffer_max_seconds: null,
+  effective_bridge_buffer_max_seconds: null,
   ...overrides,
 });
 

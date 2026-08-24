@@ -242,14 +242,16 @@ async def _create_session(**kwargs) -> dict:
             body["directory"] = resolved["directory"]
         if resolved.get("adapter"):
             body["adapter"] = resolved["adapter"]
+        if resolved.get("model"):
+            body["model"] = resolved["model"]
         if resolved.get("approval_mode") is not None:
             body["approval_mode"] = resolved["approval_mode"]
         # Preserve platform / session_name from original kwargs
         for key in ("platform", "session_name"):
             if key in kwargs:
                 body[key] = kwargs[key]
-        # Explicit kwargs override template values for clone/adapter fields
-        for key in ("adapter", "clone_branch", "auto_branch", "shallow"):
+        # Explicit kwargs override template values for clone/adapter/model fields
+        for key in ("adapter", "model", "clone_branch", "auto_branch", "shallow"):
             if kwargs.get(key) is not None:
                 body[key] = kwargs[key]
         kwargs = body
@@ -303,10 +305,18 @@ async def _send_input(
             # bridge handlers can relay it to the user instead of crashing.
             raise RuntimeError(message or f"Agent request failed ({status})") from e
 
+    from tether.store import store
+
+    start_payload = {"prompt": text, "images": images or []}
+    session = store.get_session(session_id)
+    if session and session.approval_mode is not None:
+        # ASVS 8.2.1: preserve the explicit bridge session authorization policy.
+        start_payload["approval_choice"] = session.approval_mode
+
     async with httpx.AsyncClient() as client:
         r = await client.post(
             f"http://localhost:{settings.port()}/api/sessions/{session_id}/start",
-            json={"prompt": text, "images": images or []},
+            json=start_payload,
             headers=_api_headers(),
             timeout=30.0,
         )

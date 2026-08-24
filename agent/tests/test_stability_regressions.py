@@ -20,16 +20,24 @@ class LegacyThreadBridge:
         self.outputs: list[dict] = []
 
     async def create_thread(self, session_id: str, session_name: str) -> dict:
-        self.thread_calls.append({"session_id": session_id, "session_name": session_name})
+        self.thread_calls.append(
+            {"session_id": session_id, "session_name": session_name}
+        )
         return {"thread_id": f"legacy_{session_id}", "platform": "legacy"}
 
-    async def on_output(self, session_id: str, text: str, metadata: dict | None = None) -> None:
-        self.outputs.append({"session_id": session_id, "text": text, "metadata": metadata})
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        self.outputs.append(
+            {"session_id": session_id, "text": text, "metadata": metadata}
+        )
 
     async def on_approval_request(self, session_id: str, request) -> None:
         return None
 
-    async def on_status_change(self, session_id: str, status: str, metadata: dict | None = None) -> None:
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
         return None
 
 
@@ -73,7 +81,9 @@ async def test_attach_external_platform_binding_supports_legacy_bridge_signature
     import tether.api.external_sessions as external_sessions
 
     detail = SimpleNamespace(first_prompt="Test prompt", messages=[])
-    monkeypatch.setattr(external_sessions, "get_external_session_detail", lambda **kwargs: detail)
+    monkeypatch.setattr(
+        external_sessions, "get_external_session_detail", lambda **kwargs: detail
+    )
 
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
@@ -114,8 +124,18 @@ async def test_attach_existing_external_session_replays_with_actual_runner_type(
     detail = SimpleNamespace(
         first_prompt="Test prompt",
         messages=[
-            Message(role="user", content="hello", thinking=None, timestamp="2026-04-10T10:00:00Z"),
-            Message(role="assistant", content="world", thinking=None, timestamp="2026-04-10T10:00:01Z"),
+            Message(
+                role="user",
+                content="hello",
+                thinking=None,
+                timestamp="2026-04-10T10:00:00Z",
+            ),
+            Message(
+                role="assistant",
+                content="world",
+                thinking=None,
+                timestamp="2026-04-10T10:00:01Z",
+            ),
         ],
     )
     runner_types: list[ExternalRunnerType] = []
@@ -132,7 +152,7 @@ async def test_attach_existing_external_session_replays_with_actual_runner_type(
     )
     monkeypatch.setattr(
         external_sessions,
-        "_get_pi_metadata",
+        "get_pi_metadata",
         lambda external_id: {"model": "gpt-5.4"},
     )
 
@@ -173,6 +193,7 @@ async def test_force_sync_replays_recent_history_even_with_existing_baseline(
 ) -> None:
     """Force sync should replay recent history instead of only new messages."""
     import tether.api.external_sessions as external_sessions
+    import tether.external_sync as external_sync
 
     class Message(SimpleNamespace):
         pass
@@ -180,13 +201,33 @@ async def test_force_sync_replays_recent_history_even_with_existing_baseline(
     detail = SimpleNamespace(
         first_prompt="Test prompt",
         messages=[
-            Message(role="user", content="hello", thinking=None, timestamp="2026-04-10T10:00:00Z"),
-            Message(role="assistant", content="world", thinking=None, timestamp="2026-04-10T10:00:01Z"),
-            Message(role="user", content="again", thinking=None, timestamp="2026-04-10T10:00:02Z"),
+            Message(
+                role="user",
+                content="hello",
+                thinking=None,
+                timestamp="2026-04-10T10:00:00Z",
+            ),
+            Message(
+                role="assistant",
+                content="world",
+                thinking=None,
+                timestamp="2026-04-10T10:00:01Z",
+            ),
+            Message(
+                role="user",
+                content="again",
+                thinking=None,
+                timestamp="2026-04-10T10:00:02Z",
+            ),
         ],
     )
     monkeypatch.setattr(
         external_sessions,
+        "get_external_session_detail",
+        lambda **kwargs: detail,
+    )
+    monkeypatch.setattr(
+        external_sync,
         "get_external_session_detail",
         lambda **kwargs: detail,
     )
@@ -234,7 +275,9 @@ async def test_start_runner_error_moves_session_to_error_state(
         runner_type="test-runner",
         start=AsyncMock(side_effect=RuntimeError("boom")),
     )
-    monkeypatch.setattr("tether.api.sessions.get_api_runner", lambda adapter: mock_runner)
+    monkeypatch.setattr(
+        "tether.api.sessions.get_api_runner", lambda adapter: mock_runner
+    )
 
     start_response = await api_client.post(
         f"/api/sessions/{session_id}/start",

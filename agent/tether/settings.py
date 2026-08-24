@@ -13,7 +13,10 @@ Usage:
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
+import json
 import os
+from pathlib import Path
 
 
 def _get(name: str, default: str = "") -> str:
@@ -51,6 +54,26 @@ def _get_float(name: str, default: float = 0.0) -> float:
         return default
 
 
+def _load_pi_settings() -> dict:
+    """Load pi settings for pi_rpc model defaults."""
+    path = Path.home() / ".pi" / "agent" / "settings.json"
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _qualify_model(provider: str, model: str) -> str:
+    """Qualify a model id with its provider when needed."""
+    model = model.strip()
+    provider = provider.strip()
+    if not model or "/" in model or not provider:
+        return model
+    return f"{provider}/{model}"
+
+
 def _get_bounded_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     """Get an integer environment variable clamped to a safe range."""
     value = _get_int(name, default)
@@ -66,6 +89,24 @@ def _get_bounded_float(
 ) -> float:
     """Get a float environment variable clamped to a safe range."""
     value = _get_float(name, default)
+    if value < minimum:
+        return minimum
+    if value > maximum:
+        return maximum
+    return value
+
+
+def _get_optional_bounded_float(
+    name: str, *, minimum: float, maximum: float
+) -> float | None:
+    """Get an optional float environment variable clamped to a safe range."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
     if value < minimum:
         return minimum
     if value > maximum:
@@ -166,27 +207,24 @@ class Settings:
         )
 
     @staticmethod
-    def bridge_output_flush_delay_seconds() -> float:
-        """Seconds to buffer non-final bridge output before sending.
+    def bridge_verbosity() -> str:
+        """Default non-final bridge output detail level.
 
-        Env: TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS (default: 2)
+        Env: TETHER_BRIDGE_VERBOSITY (default: minimal)
         """
-        return _get_bounded_float(
-            "TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS",
-            2.0,
-            minimum=0.0,
-            maximum=300.0,
-        )
+        value = _get("TETHER_BRIDGE_VERBOSITY", "minimal").lower()
+        if value not in {"none", "minimal", "medium", "high"}:
+            return "minimal"
+        return value
 
     @staticmethod
-    def bridge_tool_activity_flush_delay_seconds() -> float:
-        """Seconds to buffer bridge tool activity before sending a bundle.
+    def bridge_buffer_max_seconds() -> float | None:
+        """Maximum seconds to buffer bridge activity before interim delivery.
 
-        Env: TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS (default: 5)
+        Env: TETHER_BRIDGE_BUFFER_MAX_SECONDS (default: unset, final-only)
         """
-        return _get_bounded_float(
-            "TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS",
-            5.0,
+        return _get_optional_bounded_float(
+            "TETHER_BRIDGE_BUFFER_MAX_SECONDS",
             minimum=0.0,
             maximum=300.0,
         )
@@ -200,17 +238,6 @@ class Settings:
         return _get_bool(
             "TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES",
             default=True,
-        )
-
-    @staticmethod
-    def bridge_tool_activity_flush_on_final_only() -> bool:
-        """Keep bridge tool activity buffered until final output or turn end.
-
-        Env: TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY (default: 0)
-        """
-        return _get_bool(
-            "TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY",
-            default=False,
         )
 
     # -------------------------------------------------------------------------
@@ -313,6 +340,60 @@ class Settings:
         return "".join(ch if ch.isalnum() else "_" for ch in raw.upper()).strip("_")
 
     @staticmethod
+    def pi_settings_default_model() -> str:
+        """Return the provider-qualified default model from pi settings."""
+        data = _load_pi_settings()
+        model = str(data.get("defaultModel") or "").strip()
+        provider = str(data.get("defaultProvider") or "").strip()
+        return _qualify_model(provider, model)
+
+    @staticmethod
+    def pi_settings_models() -> list[str]:
+        """Return provider-qualified enabled models from pi settings."""
+        data = _load_pi_settings()
+        raw_models = data.get("enabledModels")
+        if not isinstance(raw_models, list):
+            return []
+        models: list[str] = []
+        for raw in raw_models:
+            model = str(raw or "").strip()
+            if model and model not in models:
+                models.append(model)
+        return models
+
+    @staticmethod
+    def adapter_blocked_models(adapter: str | None) -> list[str]:
+        """Model denylist patterns for an adapter.
+
+        Env: TETHER_<ADAPTER>_BLOCKED_MODELS or TETHER_<ADAPTER>_MODEL_BLACKLIST,
+        comma-separated.
+        Patterns use shell-style wildcards.
+        """
+        key = Settings.adapter_model_key(adapter)
+        if not key:
+            return []
+        raw = _get(f"TETHER_{key}_BLOCKED_MODELS") or _get(
+            f"TETHER_{key}_MODEL_BLACKLIST"
+        )
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    @staticmethod
+    def is_adapter_model_blocked(adapter: str | None, model: str | None) -> bool:
+        """Return whether a model is denied for an adapter."""
+        candidate = (model or "").strip()
+        if not candidate:
+            return False
+        candidate_lower = candidate.lower()
+        for pattern in Settings.adapter_blocked_models(adapter):
+            pattern_lower = pattern.lower()
+            if (
+                fnmatchcase(candidate_lower, pattern_lower)
+                or pattern_lower in candidate_lower
+            ):
+                return True
+        return False
+
+    @staticmethod
     def adapter_default_model(adapter: str | None) -> str:
         """Default model for new sessions created with an adapter.
 
@@ -323,14 +404,20 @@ class Settings:
         if key:
             value = _get(f"TETHER_{key}_DEFAULT_MODEL")
             if value:
+                if Settings.is_adapter_model_blocked(adapter, value):
+                    return ""
                 return value
         if key == "CLAUDE":
-            return Settings.claude_model()
-        if key == "CODEX":
-            return Settings.codex_sidecar_model()
-        if key == "LITELLM":
-            return Settings.litellm_model()
-        return ""
+            value = Settings.claude_model()
+        elif key == "CODEX":
+            value = Settings.codex_sidecar_model()
+        elif key == "PI":
+            value = Settings.pi_settings_default_model()
+        elif key == "LITELLM":
+            value = Settings.litellm_model()
+        else:
+            value = ""
+        return "" if Settings.is_adapter_model_blocked(adapter, value) else value
 
     @staticmethod
     def adapter_models(adapter: str | None) -> list[str]:
@@ -341,11 +428,39 @@ class Settings:
         key = Settings.adapter_model_key(adapter)
         raw = _get(f"TETHER_{key}_MODELS") if key else ""
         models = [item.strip() for item in raw.split(",") if item.strip()]
+        if not models and key == "PI":
+            models = Settings.pi_settings_models()
+        models = [
+            item
+            for item in models
+            if not Settings.is_adapter_model_blocked(adapter, item)
+        ]
         default = Settings.adapter_default_model(adapter)
         if default:
             models = [item for item in models if item != default]
             models.insert(0, default)
         return models
+
+    @staticmethod
+    def normalize_adapter_model(adapter: str | None, model: str | None) -> str:
+        """Expand bare model ids to an adapter's configured provider-qualified model."""
+        candidate = str(model or "").strip()
+        if not candidate or "/" in candidate:
+            return candidate
+        models = Settings.adapter_models(adapter)
+        if candidate in models:
+            return candidate
+        default = Settings.adapter_default_model(adapter)
+        if default and default.rsplit("/", 1)[-1].lower() == candidate.lower():
+            return default
+        matches = [
+            item
+            for item in models
+            if item.rsplit("/", 1)[-1].lower() == candidate.lower()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return candidate
 
     # -------------------------------------------------------------------------
     # Logging Settings

@@ -162,6 +162,7 @@ async def test_send_prompt_includes_images() -> None:
         "type": "prompt",
         "message": "describe this",
         "images": images,
+        "streamingBehavior": "followUp",
     }
 
 
@@ -713,6 +714,268 @@ class TestPiRpcEventHandling:
         assert fresh_store.get_synced_message_count(session.id) == 1
 
     @pytest.mark.anyio
+    async def test_agent_end_error_is_reported_and_advances_external_sync_cursor(
+        self, runner_and_events, fresh_store, monkeypatch
+    ):
+        """Pi turn errors are surfaced and do not replay the live prompt as history."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+        monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session.runner_type = "pi"
+        session.adapter = "pi_rpc"
+        session.external_agent_id = "pi-external"
+        session.external_agent_type = "pi"
+        fresh_store.update_session(session)
+        fresh_store.set_runner_session_id(session.id, "pi-external")
+        fresh_store.set_synced_message_count(session.id, 1, 1)
+        detail = SessionDetail(
+            id="pi-external",
+            runner_type=RunnerType.PI,
+            directory="/tmp/test",
+            first_prompt="hi",
+            last_activity="2026-07-08T07:00:00Z",
+            message_count=3,
+            is_running=False,
+            messages=[
+                SessionMessage(role="user", content="hi"),
+                SessionMessage(role="user", content="follow-up"),
+                SessionMessage(role="assistant", content=""),
+            ],
+        )
+        monkeypatch.setattr(
+            "tether.runner.pi_rpc.get_pi_session_detail", lambda *_: detail
+        )
+
+        await runner._handle_event(session.id, proc, {"type": "agent_start"})
+        await runner._handle_event(
+            session.id,
+            proc,
+            {
+                "type": "agent_end",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": "No tool call found for function call output.",
+                    }
+                ],
+            },
+        )
+
+        assert fresh_store.get_synced_message_count(session.id) == 3
+        assert fresh_store.get_runner_session_id(session.id) is None
+        assert events.errors == [
+            {
+                "session_id": session.id,
+                "code": "PI_AGENT_ERROR",
+                "message": "No tool call found for function call output.",
+            }
+        ]
+        assert any(
+            "next input will start a fresh pi context" in o["text"]
+            for o in events.outputs
+        )
+        assert events.awaiting_input_count == 0
+
+    @pytest.mark.anyio
+    async def test_agent_end_transient_error_waits_for_pi_retry(
+        self, runner_and_events
+    ):
+        """A retryable Pi attempt must not terminate the Tether session."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event("sess1", proc, {"type": "agent_start"})
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "agent_end",
+                "willRetry": True,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": "WebSocket error",
+                    }
+                ],
+            },
+        )
+
+        assert events.errors == []
+        assert events.awaiting_input_count == 0
+
+    @pytest.mark.anyio
+    async def test_retry_final_is_delivered_after_transient_error(
+        self, fresh_store, monkeypatch
+    ):
+        """A successful retry finalizes the original Tether turn."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+        runner = PiRpcRunner(ApiRunnerEvents())
+        proc = MagicMock()
+
+        await runner._handle_event(session.id, proc, {"type": "agent_start"})
+        await runner._handle_event(
+            session.id,
+            proc,
+            {
+                "type": "agent_end",
+                "willRetry": True,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": "WebSocket error",
+                    }
+                ],
+            },
+        )
+        assert fresh_store.get_session(session.id).state == SessionState.RUNNING
+
+        await runner._handle_event(session.id, proc, {"type": "agent_start"})
+        await runner._handle_event(
+            session.id,
+            proc,
+            {
+                "type": "agent_end",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Recovered answer"}],
+                        "stopReason": "stop",
+                    }
+                ],
+            },
+        )
+
+        assert fresh_store.get_session(session.id).state == SessionState.AWAITING_INPUT
+        output_finals = [
+            event
+            for event in fresh_store.read_event_log(session.id)
+            if event["type"] == "output_final"
+        ]
+        assert output_finals[-1]["data"]["text"] == "Recovered answer"
+
+    @pytest.mark.anyio
+    async def test_agent_end_context_overflow_waits_for_auto_compaction(
+        self, runner_and_events
+    ):
+        """A context overflow remains recoverable while Pi can compact and retry."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "response",
+                "command": "get_state",
+                "success": True,
+                "data": {
+                    "model": {
+                        "id": "gpt-5.5",
+                        "name": "GPT-5.5",
+                        "provider": "openai-codex",
+                        "contextWindow": 272000,
+                    },
+                    "autoCompactionEnabled": True,
+                },
+            },
+        )
+        await runner._handle_event("sess1", proc, {"type": "agent_start"})
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "agent_end",
+                "willRetry": False,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": (
+                            "Codex error: Your input exceeds the context window of "
+                            "this model."
+                        ),
+                    }
+                ],
+            },
+        )
+
+        assert events.errors == []
+        assert events.awaiting_input_count == 0
+
+    @pytest.mark.anyio
+    async def test_turn_end_warns_once_when_context_usage_is_high(
+        self, runner_and_events
+    ):
+        """High context use is surfaced once until compaction resets it."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "response",
+                "command": "get_state",
+                "success": True,
+                "data": {
+                    "model": {
+                        "id": "gpt-5.5",
+                        "name": "GPT-5.5",
+                        "provider": "openai-codex",
+                        "contextWindow": 272000,
+                    },
+                    "autoCompactionEnabled": True,
+                },
+            },
+        )
+        turn_end = {
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "usage": {"totalTokens": 224000},
+            },
+            "toolResults": [],
+        }
+
+        await runner._handle_event("sess1", proc, turn_end)
+        await runner._handle_event("sess1", proc, turn_end)
+
+        warnings = [
+            output for output in events.outputs if "context is" in output["text"]
+        ]
+        assert len(warnings) == 1
+        assert "82%" in warnings[0]["text"]
+        assert warnings[0]["bridge_segments"][0]["kind"] == "warning"
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "auto_compaction_end",
+                "result": {"tokensBefore": 224000},
+            },
+        )
+        await runner._handle_event("sess1", proc, turn_end)
+
+        warnings = [
+            output for output in events.outputs if "context is" in output["text"]
+        ]
+        assert len(warnings) == 2
+
+    @pytest.mark.anyio
     async def test_agent_end_emits_clean_final_after_streaming_tokens(
         self, runner_and_events
     ):
@@ -782,7 +1045,8 @@ class TestPiRpcEventHandling:
         assert any("Claude Sonnet 4" in h["title"] for h in events.headers)
 
     @pytest.mark.anyio
-    async def test_handle_stream_error(self, runner_and_events):
+    async def test_handle_stream_error_waits_for_agent_end(self, runner_and_events):
+        """Stream errors wait for agent_end, which carries Pi's retry decision."""
         runner, events = runner_and_events
         proc = MagicMock()
 
@@ -795,8 +1059,7 @@ class TestPiRpcEventHandling:
         }
         await runner._handle_event("sess1", proc, event)
 
-        assert len(events.errors) == 1
-        assert "aborted" in events.errors[0]["message"]
+        assert events.errors == []
 
     @pytest.mark.anyio
     async def test_handle_auto_compaction(self, runner_and_events):
@@ -837,6 +1100,32 @@ class TestPiRpcEventHandling:
 
         assert any("compacting" in o["text"] for o in events.outputs)
         assert any("42" in o["text"] for o in events.outputs)
+
+    @pytest.mark.anyio
+    async def test_failed_overflow_compaction_marks_turn_as_error(
+        self, runner_and_events
+    ):
+        """A failed recovery becomes terminal when Pi will not retry."""
+        runner, events = runner_and_events
+        proc = MagicMock()
+
+        await runner._handle_event(
+            "sess1",
+            proc,
+            {
+                "type": "auto_compaction_end",
+                "errorMessage": "summary request failed",
+                "willRetry": False,
+            },
+        )
+
+        assert events.errors == [
+            {
+                "session_id": "sess1",
+                "code": "PI_COMPACTION_FAILED",
+                "message": "Context recovery failed: summary request failed",
+            }
+        ]
 
     @pytest.mark.anyio
     async def test_compact_writes_rpc_command(self, runner_and_events):
@@ -942,6 +1231,30 @@ class TestPiRpcEventHandling:
         await runner._handle_event("sess1", proc, event)
 
         assert any("Extension loaded!" in o["text"] for o in events.outputs)
+
+    @pytest.mark.anyio
+    async def test_status_extension_requests_are_ignored(self, runner_and_events):
+        """Pi extension status updates are local UI noise, not approval prompts."""
+        runner, events = runner_and_events
+        proc = FakeProcess()
+        runner._processes["sess1"] = proc
+
+        for method in ("setStatus", "setWidget"):
+            await runner._handle_event(
+                "sess1",
+                proc,
+                {
+                    "type": "extension_ui_request",
+                    "id": f"uuid-{method}",
+                    "method": method,
+                    "message": "busy",
+                },
+            )
+
+        assert events.outputs == []
+        assert events.permissions == []
+        assert events.permission_resolved == []
+        assert proc.stdin.writes == []
 
     @pytest.mark.anyio
     async def test_text_delta_after_toolish_output_gets_assistant_marker(

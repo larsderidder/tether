@@ -134,6 +134,11 @@ def render_markdown_messages(
                 RenderedBridgeMessage(chunk)
                 for chunk in _chunk_plain(f"ℹ️ {segment.text}", limit)
             )
+        elif segment.kind == "warning":
+            messages.extend(
+                RenderedBridgeMessage(chunk)
+                for chunk in _chunk_plain(f"⚠️ {segment.text}", limit)
+            )
         else:
             messages.extend(
                 RenderedBridgeMessage(chunk)
@@ -252,6 +257,8 @@ def _render_telegram_stream_batch(
             )
         elif segment.kind == "status":
             parts.append(f"ℹ️ {html.escape(segment.text)}")
+        elif segment.kind == "warning":
+            parts.append(f"⚠️ {html.escape(segment.text)}")
         else:
             parts.append(html.escape(segment.text))
 
@@ -329,6 +336,9 @@ def render_telegram_messages(
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         elif segment.kind == "status":
             rendered = f"ℹ️ {html.escape(segment.text)}"
+            messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
+        elif segment.kind == "warning":
+            rendered = f"⚠️ {html.escape(segment.text)}"
             messages.extend(_chunk_plain(rendered, _TELEGRAM_LIMIT))
         else:
             rendered = html.escape(segment.text)

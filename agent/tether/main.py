@@ -179,7 +179,9 @@ async def _init_bridges() -> None:
                         channel_name=bridge._control_channel_name,
                     )
                 else:
-                    pairing_code = settings.discord_pairing_code() or bridge._pairing_code
+                    pairing_code = (
+                        settings.discord_pairing_code() or bridge._pairing_code
+                    )
                     logger.info(
                         "Discord bridge started. Run !setup in your Discord channel to configure it.",
                         code=pairing_code,

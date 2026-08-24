@@ -228,6 +228,10 @@ async def attach_to_external_session(
                     f"Detach it first or use --bridge {existing_session.platform} to reuse the existing thread.",
                     409,
                 )
+            if payload.platform and existing_session.approval_mode is None:
+                # ASVS 8.2.1 and 8.3.1: remote bridges attach with least privilege.
+                existing_session.approval_mode = 0
+                store.update_session(existing_session)
             if payload.platform and existing_session.platform != payload.platform:
                 existing_session.platform = payload.platform
                 store.update_session(existing_session)
@@ -350,6 +354,8 @@ async def attach_to_external_session(
     # Platform binding: create messaging thread if requested
     if payload.platform:
         session.platform = payload.platform
+        # ASVS 8.2.1 and 8.3.1: remote bridges attach with least privilege.
+        session.approval_mode = 0
         store.update_session(session)
         try:
             from tether.bridges.glue import (

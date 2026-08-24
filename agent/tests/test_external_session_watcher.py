@@ -102,6 +102,41 @@ async def test_sync_external_session_delta_replays_only_new_messages(
 
 
 @pytest.mark.anyio
+async def test_sync_initializes_migrated_cursor_without_replay(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Existing sessions establish a durable baseline without duplicate messages."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.synced_message_count = None
+    session.synced_turn_count = None
+    fresh_store.update_session(session)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Hello"),
+        SessionMessage(role="assistant", content="Already delivered"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=0, total=2)
+    assert bridge.output_calls == []
+    assert fresh_store.get_synced_message_count(session.id) == 2
+    assert fresh_store.get_synced_turn_count(session.id) == 1
+
+
+@pytest.mark.anyio
 async def test_sync_flushes_buffered_tui_activity_before_final(
     fresh_store: SessionStore,
     tmp_path: Path,
@@ -111,8 +146,9 @@ async def test_sync_flushes_buffered_tui_activity_before_final(
     import tether.external_sync as external_sync
     from tether.bridges.manager import bridge_manager
 
-    monkeypatch.setattr(external_sync, "_HISTORY_FLUSH_DELAY_S", 30.0)
     session = _attached_session(fresh_store, tmp_path)
+    session.bridge_buffer_max_seconds = 30.0
+    fresh_store.update_session(session)
     fresh_store.set_synced_message_count(session.id, 1, 1)
     bridge = MockBridge()
     bridge_manager.register_bridge("mock", bridge)
@@ -133,6 +169,145 @@ async def test_sync_flushes_buffered_tui_activity_before_final(
     assert result == SyncResult(synced=2, total=3)
     assert [call["text"] for call in bridge.output_calls] == ["Working...", "Done"]
     assert bridge.output_calls[-1]["metadata"]["final"] is True
+
+
+@pytest.mark.anyio
+async def test_sync_uses_session_buffer_delay_for_tui_activity(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """External TUI activity uses the session buffer override."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.bridge_buffer_max_seconds = 0.0
+    fresh_store.update_session(session)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Prompt"),
+        SessionMessage(role="assistant", content="Working..."),
+        SessionMessage(role="user", content="Next prompt"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=2, total=3)
+    assert [call["text"] for call in bridge.output_calls] == [
+        "Working...",
+        "👤 User: Next prompt",
+    ]
+
+
+@pytest.mark.anyio
+async def test_sync_respects_none_verbosity_for_tui_activity(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Verbosity none suppresses imported non-final assistant activity."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.bridge_verbosity = "none"
+    session.bridge_buffer_max_seconds = 0.0
+    fresh_store.update_session(session)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Prompt"),
+        SessionMessage(role="assistant", content="Working..."),
+        SessionMessage(role="assistant", content="Done"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=2, total=3)
+    assert [call["text"] for call in bridge.output_calls] == ["Done"]
+    assert bridge.output_calls[-1]["metadata"]["final"] is True
+
+
+@pytest.mark.anyio
+async def test_sync_replays_external_thinking_when_verbosity_allows_it(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Imported assistant thinking is bridged as non-final activity."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.bridge_verbosity = "minimal"
+    fresh_store.update_session(session)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Prompt"),
+        SessionMessage(role="assistant", content="Answer", thinking="Reasoning"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=1, total=2)
+    assert [call["text"] for call in bridge.output_calls] == ["Reasoning", "Answer"]
+
+
+@pytest.mark.anyio
+async def test_sync_suppresses_external_thinking_when_verbosity_none(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Verbosity none suppresses imported thinking but keeps final output."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.bridge_verbosity = "none"
+    fresh_store.update_session(session)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+
+    messages = [
+        SessionMessage(role="user", content="Prompt"),
+        SessionMessage(role="assistant", content="Answer", thinking="Reasoning"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=1, total=2)
+    assert [call["text"] for call in bridge.output_calls] == ["Answer"]
 
 
 @pytest.mark.anyio
@@ -190,6 +365,106 @@ async def test_sync_recovers_only_messages_after_live_event_log(
     assert result == SyncResult(synced=1, total=3)
     assert [call["text"] for call in bridge.output_calls] == ["Recovered final answer"]
     assert fresh_store.get_synced_message_count(session.id) == 3
+
+
+@pytest.mark.anyio
+async def test_sync_skips_live_user_input_echoes(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Watcher history sync does not echo prompts already sent through Tether."""
+    import tether.external_sync as external_sync
+    from tether.bridges.manager import bridge_manager
+
+    session = _attached_session(fresh_store, tmp_path)
+    session.runner_type = "pi"
+    session.adapter = "pi_rpc"
+    fresh_store.update_session(session)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    bridge = MockBridge()
+    bridge_manager.register_bridge("mock", bridge)
+    await fresh_store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": "2026-07-19T06:54:50Z",
+            "seq": fresh_store.next_seq(session.id),
+            "type": "user_input",
+            "data": {"text": "You didn’t find svarogsden, why"},
+        },
+    )
+
+    messages = [
+        SessionMessage(role="assistant", content="old"),
+        SessionMessage(
+            role="user",
+            content="You didn’t find svarogsden, why",
+            timestamp="2026-07-19T06:54:50.618Z",
+        ),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages, runner_type=RunnerType.PI),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=1, total=2)
+    assert bridge.output_calls == []
+    history_user_events = [
+        event
+        for event in fresh_store.read_event_log(session.id, since_seq=0)
+        if event.get("type") == "user_input"
+        and (event.get("data") or {}).get("is_history")
+    ]
+    assert history_user_events == []
+    assert fresh_store.get_synced_message_count(session.id) == 2
+
+
+@pytest.mark.anyio
+async def test_sync_matches_live_user_inputs_by_occurrence(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """One live prompt suppresses only one matching history message."""
+    import tether.external_sync as external_sync
+
+    session = _attached_session(fresh_store, tmp_path)
+    fresh_store.set_synced_message_count(session.id, 1, 1)
+    await fresh_store.emit(
+        session.id,
+        {
+            "session_id": session.id,
+            "ts": "2026-07-19T06:54:50Z",
+            "seq": fresh_store.next_seq(session.id),
+            "type": "user_input",
+            "data": {"text": "continue"},
+        },
+    )
+    messages = [
+        SessionMessage(role="assistant", content="old"),
+        SessionMessage(role="user", content="continue"),
+        SessionMessage(role="user", content="continue"),
+    ]
+    monkeypatch.setattr(
+        external_sync,
+        "get_external_session_detail",
+        lambda **_: _detail("external-1", messages, runner_type=RunnerType.PI),
+    )
+
+    result = await external_sync.sync_external_session_delta(session.id, source="test")
+
+    assert result == SyncResult(synced=2, total=3)
+    history_user_events = [
+        event
+        for event in fresh_store.read_event_log(session.id, since_seq=0)
+        if event.get("type") == "user_input"
+        and (event.get("data") or {}).get("is_history")
+    ]
+    assert [event["data"]["text"] for event in history_user_events] == ["continue"]
 
 
 @pytest.mark.anyio

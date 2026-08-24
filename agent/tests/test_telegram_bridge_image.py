@@ -235,9 +235,10 @@ async def test_output_attachment_uses_document_when_image_extension_is_spoofed(
 class FakeUser:
     """Fake Telegram user."""
 
-    def __init__(self, user_id: int) -> None:
+    def __init__(self, user_id: int, *, is_bot: bool = False) -> None:
         self.id = user_id
         self.username = "tester"
+        self.is_bot = is_bot
 
 
 class FakeGuardMessage:
@@ -254,8 +255,8 @@ class FakeGuardMessage:
 class FakeGuardUpdate:
     """Fake Telegram update for access checks."""
 
-    def __init__(self, user_id: int) -> None:
-        self.effective_user = FakeUser(user_id)
+    def __init__(self, user_id: int, *, is_bot: bool = False) -> None:
+        self.effective_user = FakeUser(user_id, is_bot=is_bot)
         self.message = FakeGuardMessage(user_id)
         self.callback_query = None
 
@@ -269,6 +270,20 @@ async def test_telegram_guard_allows_configured_user(monkeypatch) -> None:
     update = FakeGuardUpdate(42)
 
     await bridge._guard_update(update, object())
+
+    assert update.message.replies == []
+
+
+@pytest.mark.anyio
+async def test_telegram_guard_silently_ignores_bot_updates(monkeypatch) -> None:
+    """Telegram bot messages never become commands or restriction replies."""
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "42")
+    bridge = TelegramBridge("token", 123)
+    update = FakeGuardUpdate(7, is_bot=True)
+
+    with pytest.raises(ApplicationHandlerStop):
+        await bridge._guard_update(update, object())
 
     assert update.message.replies == []
 

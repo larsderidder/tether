@@ -3,8 +3,6 @@
 import os
 import sqlite3
 
-import pytest
-
 from tether.models import SessionState
 from tether.store import SessionStore
 
@@ -79,6 +77,7 @@ class TestSessionDirectory:
         session = fresh_store.create_session("repo_test", "main")
         workdir = str(tmp_path / "workdir")
         import os
+
         os.makedirs(workdir, exist_ok=True)
 
         fresh_store.set_workdir(session.id, workdir, managed=False)
@@ -117,7 +116,9 @@ class TestProcessBookkeeping:
         fresh_store.clear_runner_session_id(session.id, force=True)
         assert fresh_store.get_runner_session_id(session.id) is None
 
-    def test_update_session_cannot_change_runner_session_id(self, fresh_store: SessionStore) -> None:
+    def test_update_session_cannot_change_runner_session_id(
+        self, fresh_store: SessionStore
+    ) -> None:
         """update_session cannot change or clear runner_session_id once set."""
         session = fresh_store.create_session("repo_test", "main")
         fresh_store.set_runner_session_id(session.id, "runner_123")
@@ -132,7 +133,9 @@ class TestProcessBookkeeping:
         fresh_store.update_session(session)
         assert fresh_store.get_runner_session_id(session.id) == "runner_123"
 
-    def test_replace_runner_session_id_on_expiry(self, fresh_store: SessionStore) -> None:
+    def test_replace_runner_session_id_on_expiry(
+        self, fresh_store: SessionStore
+    ) -> None:
         """replace_runner_session_id updates binding when old session expired."""
         session = fresh_store.create_session("repo_test", "main")
         fresh_store.set_runner_session_id(session.id, "old_sdk_123")
@@ -142,7 +145,9 @@ class TestProcessBookkeeping:
         fresh_store.replace_runner_session_id(session.id, "old_sdk_123", "new_sdk_456")
         assert fresh_store.get_runner_session_id(session.id) == "new_sdk_456"
 
-    def test_replace_runner_session_id_wrong_old_id(self, fresh_store: SessionStore) -> None:
+    def test_replace_runner_session_id_wrong_old_id(
+        self, fresh_store: SessionStore
+    ) -> None:
         """replace_runner_session_id rejects if old_id doesn't match current."""
         session = fresh_store.create_session("repo_test", "main")
         fresh_store.set_runner_session_id(session.id, "current_abc")
@@ -150,7 +155,9 @@ class TestProcessBookkeeping:
         fresh_store.replace_runner_session_id(session.id, "wrong_old", "new_xyz")
         assert fresh_store.get_runner_session_id(session.id) == "current_abc"
 
-    def test_replace_runner_session_id_not_stolen(self, fresh_store: SessionStore) -> None:
+    def test_replace_runner_session_id_not_stolen(
+        self, fresh_store: SessionStore
+    ) -> None:
         """replace_runner_session_id won't steal an ID from another session."""
         session_a = fresh_store.create_session("repo_a", "main")
         session_b = fresh_store.create_session("repo_b", "main")
@@ -160,6 +167,18 @@ class TestProcessBookkeeping:
         # Try to replace B's binding with A's SDK session ID
         fresh_store.replace_runner_session_id(session_b.id, "sdk_bbb", "sdk_aaa")
         assert fresh_store.get_runner_session_id(session_b.id) == "sdk_bbb"
+
+    def test_synced_message_counts_survive_restart(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """External transcript cursors persist across store reconstruction."""
+        session = fresh_store.create_session("repo_test", "main")
+        fresh_store.set_synced_message_count(session.id, 42, 7)
+
+        restarted_store = SessionStore()
+
+        assert restarted_store.get_synced_message_count(session.id) == 42
+        assert restarted_store.get_synced_turn_count(session.id) == 7
 
     def test_stop_requested(self, fresh_store: SessionStore) -> None:
         """Stop request flag can be set and checked."""
@@ -215,7 +234,8 @@ class TestMigrationEnforcement:
 
         # Create a minimal DB with only the initial schema columns
         conn = sqlite3.connect(db_path)
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE sessions (
                 id VARCHAR PRIMARY KEY,
                 repo_id VARCHAR NOT NULL,
@@ -237,8 +257,10 @@ class TestMigrationEnforcement:
                 directory_has_git BOOLEAN NOT NULL DEFAULT 0,
                 workdir_managed BOOLEAN NOT NULL DEFAULT 0
             )
-        """)
-        conn.execute("""
+        """
+        )
+        conn.execute(
+            """
             CREATE TABLE messages (
                 id VARCHAR PRIMARY KEY,
                 session_id VARCHAR NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -247,13 +269,15 @@ class TestMigrationEnforcement:
                 created_at VARCHAR NOT NULL,
                 seq INTEGER NOT NULL
             )
-        """)
+        """
+        )
         conn.commit()
         conn.close()
 
         monkeypatch.setenv("TETHER_AGENT_DATA_DIR", data_dir)
 
         from tether.db import reset_engine, init_db
+
         reset_engine()
         init_db()
 
@@ -265,6 +289,16 @@ class TestMigrationEnforcement:
 
         # These columns were added by later migrations
         assert "adapter" in columns, "adapter column missing after migration"
-        assert "approval_mode" in columns, "approval_mode column missing after migration"
+        assert (
+            "approval_mode" in columns
+        ), "approval_mode column missing after migration"
         assert "platform" in columns, "platform column missing after migration"
-        assert "external_agent_name" in columns, "external_agent_name column missing after migration"
+        assert (
+            "external_agent_name" in columns
+        ), "external_agent_name column missing after migration"
+        assert (
+            "bridge_verbosity" in columns
+        ), "bridge_verbosity column missing after migration"
+        assert (
+            "bridge_buffer_max_seconds" in columns
+        ), "bridge_buffer_max_seconds column missing after migration"

@@ -144,6 +144,24 @@ class TestSubscriberLifecycle:
         sub = _make_subscriber(fresh_store, fake_bridge)
         await sub.unsubscribe("nonexistent")
 
+    @pytest.mark.anyio
+    async def test_unsubscribe_cancels_delayed_output_flush(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Unsubscribing discards delayed activity instead of leaking a task."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        sub._buffer_output(session.id, "pending")
+        await sub._schedule_flush(session.id, fake_bridge, 60)
+        flush_task = sub._output_flush_tasks[session.id]
+
+        await sub.unsubscribe(session.id)
+        await asyncio.sleep(0)
+
+        assert session.id not in sub._output_flush_tasks
+        assert flush_task.cancelled()
+
 
 class TestEventRouting:
     """Test _consume routes events to the correct bridge methods."""
@@ -229,12 +247,46 @@ class TestEventRouting:
         assert len(fake_bridge.output_calls) == 0
 
     @pytest.mark.anyio
+    async def test_context_warning_flushes_immediately(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Context warnings bypass normal end-of-turn output buffering."""
+        session = fresh_store.create_session("test", "main")
+        session.bridge_verbosity = "none"
+        fresh_store.update_session(session)
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output",
+                "data": {
+                    "text": "[warning] Pi context is 82% full\n",
+                    "final": False,
+                    "bridge_segments": [
+                        {"kind": "warning", "text": "Pi context is 82% full"}
+                    ],
+                },
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert len(fake_bridge.output_calls) == 1
+        assert "82%" in fake_bridge.output_calls[0]["text"]
+
+    @pytest.mark.anyio
     async def test_automation_message_output_flushes_immediately(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
         """Automation messages are delivered as separate bridge replies."""
 
         session = fresh_store.create_session("test", "main")
+        session.bridge_buffer_max_seconds = 0
+        fresh_store.update_session(session)
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
@@ -383,6 +435,110 @@ class TestEventRouting:
         assert fake_bridge.output_calls[0]["metadata"]["final"] is True
 
     @pytest.mark.anyio
+    async def test_minimal_verbosity_buffers_thinking_until_final_output(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The default-style minimal policy sends thinking and final output only."""
+        monkeypatch.setenv("TETHER_BRIDGE_VERBOSITY", "minimal")
+        monkeypatch.delenv("TETHER_BRIDGE_BUFFER_MAX_SECONDS", raising=False)
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        for segment in [
+            {"kind": "thinking", "label": "thinking", "text": "checking state"},
+            {"kind": "tool_call", "label": "bash", "text": "pwd"},
+            {"kind": "tool_output", "label": "bash", "text": "/tmp/demo"},
+            {"kind": "assistant", "text": "interim prose"},
+        ]:
+            await self._emit_and_wait(
+                fresh_store,
+                session.id,
+                {
+                    "session_id": session.id,
+                    "type": "output",
+                    "data": {
+                        "text": segment["text"],
+                        "final": False,
+                        "bridge_segments": [segment],
+                    },
+                },
+            )
+        await asyncio.sleep(0.03)
+        assert fake_bridge.output_calls == []
+
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "Done."},
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "[thinking] checking state\n",
+            "Done.",
+        ]
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "thinking", "label": "thinking", "text": "checking state"}
+        ]
+
+    @pytest.mark.anyio
+    async def test_medium_verbosity_keeps_tool_names_without_contents(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Medium verbosity reports tool calls but redacts arguments and output."""
+        monkeypatch.setenv("TETHER_BRIDGE_VERBOSITY", "medium")
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        for segment in [
+            {"kind": "tool_call", "label": "bash", "text": "secret args"},
+            {"kind": "tool_output", "label": "bash", "text": "secret output"},
+        ]:
+            await self._emit_and_wait(
+                fresh_store,
+                session.id,
+                {
+                    "session_id": session.id,
+                    "type": "output",
+                    "data": {
+                        "text": segment["text"],
+                        "final": False,
+                        "bridge_segments": [segment],
+                    },
+                },
+            )
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "output_final",
+                "data": {"text": "Done."},
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "[tool: bash]",
+            "Done.",
+        ]
+        assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
+            {"kind": "tool_call", "label": "bash", "text": ""}
+        ]
+
+    @pytest.mark.anyio
     async def test_output_final_flushes_buffered_tool_activity(
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
@@ -430,12 +586,11 @@ class TestEventRouting:
         self,
         fresh_store: SessionStore,
         fake_bridge: FakeBridge,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tool telemetry is buffered briefly and then sent as one bridge message."""
-        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "0")
-        monkeypatch.setattr("tether.bridges.subscriber._OUTPUT_FLUSH_DELAY_S", 0.01)
         session = fresh_store.create_session("test", "main")
+        session.bridge_buffer_max_seconds = 0.01
+        fresh_store.update_session(session)
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
@@ -469,11 +624,8 @@ class TestEventRouting:
         self,
         fresh_store: SessionStore,
         fake_bridge: FakeBridge,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tool telemetry can be held until the final assistant message."""
-        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "1")
-        monkeypatch.setattr("tether.bridges.subscriber._TOOL_FLUSH_DELAY_S", 0.01)
         session = fresh_store.create_session("test", "main")
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
@@ -508,7 +660,7 @@ class TestEventRouting:
         await sub.unsubscribe(session.id)
 
         assert [call["text"] for call in fake_bridge.output_calls] == [
-            "pwd/tmp/demo",
+            "[bash] pwd\n[bash] /tmp/demo",
             "Done.",
         ]
         assert fake_bridge.output_calls[0]["metadata"]["tool_activity"] is True
@@ -518,12 +670,11 @@ class TestEventRouting:
         self,
         fresh_store: SessionStore,
         fake_bridge: FakeBridge,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tool telemetry flushes once per interval while more output arrives."""
-        monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "0")
-        monkeypatch.setattr("tether.bridges.subscriber._OUTPUT_FLUSH_DELAY_S", 0.02)
         session = fresh_store.create_session("test", "main")
+        session.bridge_buffer_max_seconds = 0.02
+        fresh_store.update_session(session)
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
@@ -610,15 +761,17 @@ class TestEventRouting:
         ]
 
     @pytest.mark.anyio
-    async def test_streaming_prose_flushes_after_delay(
+    async def test_thinking_flushes_after_buffer_max_seconds(
         self,
         fresh_store: SessionStore,
         fake_bridge: FakeBridge,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Non-final assistant prose is periodically delivered to bridges."""
-        monkeypatch.setattr("tether.bridges.subscriber._OUTPUT_FLUSH_DELAY_S", 0)
+        """A session buffer max sends allowed non-final activity during long turns."""
+        monkeypatch.setenv("TETHER_BRIDGE_VERBOSITY", "minimal")
         session = fresh_store.create_session("test", "main")
+        session.bridge_buffer_max_seconds = 0
+        fresh_store.update_session(session)
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
@@ -631,14 +784,14 @@ class TestEventRouting:
                 "data": {
                     "text": "partial update",
                     "final": False,
-                    "bridge_segments": [
-                        {"kind": "assistant", "text": "partial update"}
-                    ],
+                    "bridge_segments": [{"kind": "thinking", "text": "partial update"}],
                 },
             },
         )
         await sub.unsubscribe(session.id)
-        assert [call["text"] for call in fake_bridge.output_calls] == ["partial update"]
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "[thinking] partial update\n"
+        ]
 
     @pytest.mark.anyio
     async def test_output_final_replaces_buffered_streaming_prose(
@@ -808,9 +961,47 @@ class TestEventRouting:
                 "data": {"state": "ERROR"},
             },
         )
+        await asyncio.sleep(0.1)
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.status_calls) == 1
         assert fake_bridge.status_calls[0]["status"] == "error"
+
+    @pytest.mark.anyio
+    async def test_coalesces_error_state_with_detailed_error(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """The detailed error replaces the preceding generic error state."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "session_state",
+                "data": {"state": "ERROR"},
+            },
+        )
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "type": "error",
+                "data": {"message": "WebSocket error"},
+            },
+        )
+        await asyncio.sleep(0.15)
+        await sub.unsubscribe(session.id)
+
+        assert fake_bridge.status_calls == [
+            {
+                "session_id": session.id,
+                "status": "error",
+                "metadata": {"message": "WebSocket error"},
+            }
+        ]
 
     @pytest.mark.anyio
     async def test_routes_error_event_to_status(

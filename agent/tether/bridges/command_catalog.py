@@ -113,6 +113,18 @@ COMMANDS: tuple[BridgeCommand, ...] = (
         frozenset({"telegram", "slack", "discord"}),
     ),
     BridgeCommand(
+        "verbosity",
+        "[none|minimal|medium|high]",
+        "Show or set bridge output verbosity",
+        frozenset({"telegram", "slack", "discord"}),
+    ),
+    BridgeCommand(
+        "buffer",
+        "[seconds|off]",
+        "Show or set bridge output buffering",
+        frozenset({"telegram", "slack", "discord"}),
+    ),
+    BridgeCommand(
         "rename",
         "<name>",
         "Rename this Discord thread",

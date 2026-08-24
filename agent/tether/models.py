@@ -79,6 +79,10 @@ class Session(SQLModel, table=True):
     approval_mode: Optional[int] = None  # None = use global default, 0/1/2 = override
     adapter: Optional[str] = None  # Adapter selection (immutable after creation)
     model: Optional[str] = None  # Model selection captured when the session is created
+    bridge_verbosity: Optional[str] = None  # None = use global default
+    bridge_buffer_max_seconds: Optional[float] = None  # None = only flush at turn end
+    synced_message_count: Optional[int] = 0
+    synced_turn_count: Optional[int] = 0
 
     # External agent fields
     external_agent_id: Optional[str] = None

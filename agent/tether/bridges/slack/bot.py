@@ -20,6 +20,13 @@ from tether.bridges.model_api import (
     get_session_model,
     set_session_model,
 )
+from tether.bridges.output_policy_api import (
+    format_bridge_output_policy,
+    get_bridge_output_policy,
+    parse_buffer_arg,
+    parse_verbosity_arg,
+    set_bridge_output_policy,
+)
 from tether.bridges.rich_output import render_slack_messages
 from tether.bridges.reaction_shortcuts import (
     ReactionShortcutError,
@@ -216,6 +223,12 @@ class SlackBridge(UpstreamSlackBridge):
         if cmd == "!model":
             await self._cmd_model(event, args)
             return
+        if cmd == "!verbosity":
+            await self._cmd_verbosity(event, args)
+            return
+        if cmd == "!buffer":
+            await self._cmd_buffer(event, args)
+            return
         await super()._dispatch_command(event, text)
 
     async def _cmd_compact(self, event: dict, args: str) -> None:
@@ -280,6 +293,62 @@ class SlackBridge(UpstreamSlackBridge):
                 "Failed to update Slack session model", session_id=session_id
             )
             await self._reply(event, f"Failed to update model: {exc}")
+
+    async def _cmd_verbosity(self, event: dict, args: str) -> None:
+        """Show or change bridge output verbosity for the current session."""
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
+            await self._reply(event, "Use this command inside a session thread.")
+            return
+        session_id = self._session_for_thread(thread_ts)
+        if not session_id:
+            await self._reply(event, "No session linked to this thread.")
+            return
+        verbosity, error, clear = parse_verbosity_arg(args)
+        if error:
+            await self._reply(event, error)
+            return
+        try:
+            if verbosity or clear:
+                session = await set_bridge_output_policy(
+                    session_id, verbosity=verbosity, clear_verbosity=clear
+                )
+            else:
+                session = await get_bridge_output_policy(session_id)
+            await self._reply(event, format_bridge_output_policy(session))
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Slack output verbosity", session_id=session_id
+            )
+            await self._reply(event, f"Failed to update verbosity: {exc}")
+
+    async def _cmd_buffer(self, event: dict, args: str) -> None:
+        """Show or change bridge output buffering for the current session."""
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
+            await self._reply(event, "Use this command inside a session thread.")
+            return
+        session_id = self._session_for_thread(thread_ts)
+        if not session_id:
+            await self._reply(event, "No session linked to this thread.")
+            return
+        seconds, error, clear = parse_buffer_arg(args)
+        if error:
+            await self._reply(event, error)
+            return
+        try:
+            if seconds is not None or clear:
+                session = await set_bridge_output_policy(
+                    session_id, buffer_max_seconds=seconds, clear_buffer=clear
+                )
+            else:
+                session = await get_bridge_output_policy(session_id)
+            await self._reply(event, format_bridge_output_policy(session))
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Slack output buffer", session_id=session_id
+            )
+            await self._reply(event, f"Failed to update buffer: {exc}")
 
     async def _cmd_help(self, event: dict) -> None:
         """Handle !help."""

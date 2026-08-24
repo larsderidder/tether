@@ -52,8 +52,10 @@ Create session. Supports local directory sessions and cloned-repo sessions.
 | `shallow` | `bool` | Shallow clone (`--depth 1`) |
 | `auto_branch` | `bool` | Create a `tether/<id>` working branch after clone |
 | `adapter` | `str?` | Runner adapter (see Runners doc) |
-| `model` | `str?` | Model captured on the session and passed to compatible runners. If omitted, the adapter default model is used when configured. |
+| `model` | `str?` | Model captured on the session and passed to compatible runners. If omitted, the adapter default model is used when configured. Blocked models return `MODEL_BLOCKED` with status 422. |
 | `platform` | `str?` | `"telegram"`, `"slack"`, `"discord"` |
+| `bridge_verbosity` | `str?` | Optional bridge verbosity override: `none`, `minimal`, `medium`, or `high` |
+| `bridge_buffer_max_seconds` | `float?` | Optional max seconds before flushing buffered bridge activity. `null` means flush at final/end turn |
 
 **Response** includes `clone_url`, `clone_branch`, and `working_branch` fields.
 
@@ -94,6 +96,13 @@ Request runner context compaction for an idle session. Currently supported by `p
 {"approval_mode": 1}
 ```
 
+### `PATCH /api/sessions/{id}/bridge-output`
+Set or clear per-session bridge verbosity and buffering.
+```json
+{"bridge_verbosity": "medium", "bridge_buffer_max_seconds": 30}
+```
+Clear either override by sending `null` for that field.
+
 ### `POST /api/sessions/{id}/permission`
 Respond to a permission request.
 ```json
@@ -116,7 +125,7 @@ Returns model settings for an adapter.
 Returns active model settings for a session.
 
 ### `PATCH /api/sessions/{id}/model`
-Changes the model used for future turns. Fails with 409 while the session is running.
+Changes the model used for future turns. Fails with 409 while the session is running and 422 when the model is blocked for the adapter.
 ```json
 {"model": "anthropic/claude-sonnet-4-20250514"}
 ```
@@ -321,6 +330,7 @@ agent turn in cloned workspaces that are git repos.
 - `agent/tether/api/events.py` - SSE stream endpoint
 - `agent/tether/api/emit.py` - Event emission helpers (incl. `emit_checkpoint`)
 - `agent/tether/api/schemas.py` - Request/response Pydantic models
+- `agent/tether/bridges/subscriber.py` - Applies per-session bridge verbosity and buffering policy
 - `agent/tether/api/deps.py` - Auth dependency
 - `agent/tether/api/state.py` - State machine + session locking
 - `agent/tether/git_ops.py` - Git operations (status, log, commit, push, branch, checkout, PR)

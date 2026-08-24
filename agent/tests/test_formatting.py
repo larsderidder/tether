@@ -393,6 +393,37 @@ class TestRichOutputFormatting:
         assert "Final interim note" in messages[0]
         assert "[thinking]" not in messages[0]
 
+    def test_stream_batch_cleans_markdown_from_telegram_thinking(self) -> None:
+        messages = render_telegram_messages(
+            "fallback",
+            metadata={
+                "stream_batch": True,
+                "bridge_segments": [
+                    {"kind": "thinking", "text": "**Summarizing final answer**"},
+                    {"kind": "assistant", "text": "Bottom line: **Done**"},
+                ],
+            },
+        )
+
+        assert messages == [
+            "💭 <i>Summarizing final answer</i>\n\nBottom line: <b>Done</b>"
+        ]
+
+    def test_final_telegram_output_still_parses_legacy_status_markers(self) -> None:
+        messages = render_telegram_messages(
+            "[notify] loki extension: loaded\nPerfect, ready.",
+            metadata={"final": True},
+        )
+
+        assert messages == ["ℹ️ loki extension: loaded", "Perfect, ready."]
+
+    def test_render_telegram_messages_splits_long_output_at_paragraph(self) -> None:
+        first = "a" * 3000
+        second = "b" * 3000
+        messages = render_telegram_messages(f"{first}\n\n{second}")
+
+        assert messages == [first, second]
+
     def test_tool_activity_bundle_can_keep_separate_messages(self, monkeypatch) -> None:
         monkeypatch.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES", "0")
 

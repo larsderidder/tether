@@ -30,6 +30,10 @@ The central entity. Represents one supervised agent run.
 | `approval_mode` | `int?` | `None` = global default, `0/1/2` = override |
 | `adapter` | `str?` | Runner adapter name (immutable after creation) |
 | `model` | `str?` | Model selected when the session was created |
+| `bridge_verbosity` | `str?` | Per-session bridge verbosity override: `none`, `minimal`, `medium`, or `high` |
+| `bridge_buffer_max_seconds` | `float?` | Optional per-session max seconds before flushing buffered bridge activity. `None` means flush at final/end turn |
+| `synced_message_count` | `int?` | Durable cursor for messages imported from the external runner transcript |
+| `synced_turn_count` | `int?` | Durable count of imported user turns |
 | `external_agent_id` | `str?` | External agent identifier |
 | `external_agent_name` | `str?` | e.g., "Claude Code" |
 | `external_agent_type` | `str?` | Agent type string |
@@ -89,7 +93,8 @@ Event types: `output`, `output_final`, `session_state`, `metadata`, `heartbeat`,
 
 `output.data.bridge_segments` is optional metadata for bridge renderers. It is a list of small typed segments with `kind`, `text`, and optional `label` fields. Bridges prefer these segments over parsing marker text, while the UI and old consumers can keep using `output.data.text`.
 
-Supported segment kinds: `assistant`, `thinking`, `tool_call`, `tool_output`, `tool_result`, `tool_error`, `status`.
+Supported segment kinds: `assistant`, `thinking`, `tool_call`, `tool_output`, `tool_result`, `tool_error`, `status`, `warning`.
+Bridge delivery filters these by the session's effective verbosity before sending to chat platforms.
 
 ```json
 {

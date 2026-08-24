@@ -39,6 +39,7 @@ _TOOL_OUTPUT_MAX_CHARS = 1200
 _TOOL_OUTPUT_MAX_LINES = 80
 _TETHER_SESSION_NAME_PREFIX = "Tether: "
 _TETHER_SESSION_NAME_MAX = 80
+_CONTEXT_WARNING_PERCENT = 80.0
 
 # Pi tool calls that should trigger permission requests in Tether
 _PERMISSION_TOOLS = {"bash", "write", "edit"}
@@ -141,6 +142,9 @@ class PiRpcRunner:
         self._assistant_marker_needed: dict[str, bool] = {}
         self._thinking_marker_needed: dict[str, bool] = {}
         self._at_line_start: dict[str, bool] = {}
+        self._context_windows: dict[str, int] = {}
+        self._auto_compaction_enabled: dict[str, bool] = {}
+        self._context_warning_sent: set[str] = set()
         self._pi_binary: str | None = None
 
     # ------------------------------------------------------------------
@@ -422,6 +426,7 @@ class PiRpcRunner:
                 "type": "prompt",
                 "message": text,
                 "images": images or [],
+                "streamingBehavior": "followUp",
             },
         )
 
@@ -478,6 +483,9 @@ class PiRpcRunner:
         self._assistant_marker_needed.pop(session_id, None)
         self._thinking_marker_needed.pop(session_id, None)
         self._at_line_start.pop(session_id, None)
+        self._context_windows.pop(session_id, None)
+        self._auto_compaction_enabled.pop(session_id, None)
+        self._context_warning_sent.discard(session_id)
         store.clear_process(session_id)
 
     async def _emit_output(
@@ -628,6 +636,9 @@ class PiRpcRunner:
         elif etype == "message_update":
             await self._handle_message_update(session_id, event)
             return
+        elif etype == "turn_end":
+            await self._handle_turn_end(session_id, event)
+            return
 
         # -- Tool execution --
         elif etype in {
@@ -674,12 +685,93 @@ class PiRpcRunner:
         self._is_streaming.pop(session_id, False)
         self._streamed_text.pop(session_id, False)
         emitted_final = await self._emit_agent_final_messages(session_id, event)
-        if emitted_final:
+        agent_error = self._agent_end_error_message(event)
+        if emitted_final or agent_error:
             await self._advance_external_sync_cursor(session_id)
+        if agent_error:
+            if event.get("willRetry"):
+                return
+            can_auto_compact = self._auto_compaction_enabled.get(session_id, False)
+            if self._is_context_overflow_error(agent_error) and can_auto_compact:
+                await self._emit_context_recovery_notice(session_id)
+                return
+            if self._is_unrecoverable_agent_error(agent_error):
+                await self._discard_unrecoverable_pi_session(session_id)
+            await self._events.on_error(session_id, "PI_AGENT_ERROR", agent_error)
+            return
 
         # The pi process stays alive between turns, so _read_events will not
         # signal completion until the process exits.
         await self._events.on_awaiting_input(session_id)
+
+    @staticmethod
+    def _is_context_overflow_error(message: str) -> bool:
+        """Return true for provider errors that Pi can recover via compaction."""
+        normalized = message.casefold()
+        return "context window" in normalized and any(
+            marker in normalized
+            for marker in ("exceed", "maximum", "too large", "too long")
+        )
+
+    @staticmethod
+    def _is_unrecoverable_agent_error(message: str) -> bool:
+        """Return true for pi history errors that poison resumed sessions."""
+        return "no tool call found for function call output" in message.casefold()
+
+    async def _emit_context_recovery_notice(self, session_id: str) -> None:
+        """Tell bridge users that Pi is compacting and will continue the turn."""
+        message = "Pi reached the context limit. It is compacting context and will retry the turn."
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"[warning] {message}\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment("warning", message),
+        )
+
+    async def _discard_unrecoverable_pi_session(self, session_id: str) -> None:
+        """Forget a poisoned pi session so the next input starts fresh."""
+        self._session_files.pop(session_id, None)
+        store.clear_runner_session_id(session_id, force=True)
+        proc = self._processes.get(session_id)
+        if proc and proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                logger.exception(
+                    "Failed to terminate poisoned pi process", session_id=session_id
+                )
+        await self._emit_output(
+            session_id,
+            "combined",
+            "[notify] Pi session history is corrupted; the next input will start a fresh pi context.\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment(
+                "status",
+                "Pi session history is corrupted; the next input will start a fresh pi context.",
+            ),
+        )
+
+    @staticmethod
+    def _agent_end_error_message(event: dict) -> str | None:
+        """Extract a visible pi agent error from an agent_end event."""
+        top_level_error = event.get("errorMessage") or event.get("finalError")
+        if top_level_error:
+            return str(top_level_error)
+
+        for msg in event.get("messages", []):
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            error_message = msg.get("errorMessage")
+            if error_message:
+                return str(error_message)
+            if msg.get("stopReason") == "error":
+                return "Pi agent stopped with an error before producing a response."
+        return None
 
     async def _emit_agent_final_messages(self, session_id: str, event: dict) -> bool:
         """Emit assistant text blocks from an agent_end event."""
@@ -712,6 +804,49 @@ class PiRpcRunner:
                 emitted_final = True
         return emitted_final
 
+    async def _handle_turn_end(self, session_id: str, event: dict) -> None:
+        """Warn once when a Pi turn reports high context usage."""
+        if session_id in self._context_warning_sent:
+            return
+
+        context_window = self._context_windows.get(session_id, 0)
+        message = event.get("message")
+        usage = message.get("usage") if isinstance(message, dict) else None
+        if context_window <= 0 or not isinstance(usage, dict):
+            return
+
+        # ASVS 2.2.1: accept only bounded positive numeric usage from the RPC process.
+        try:
+            context_tokens = int(usage.get("totalTokens") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if context_tokens <= 0 or context_tokens > context_window * 10:
+            return
+
+        percent = context_tokens / context_window * 100
+        if percent < _CONTEXT_WARNING_PERCENT:
+            return
+
+        self._context_warning_sent.add(session_id)
+        rounded_percent = min(999, round(percent))
+        compaction_note = (
+            "Pi auto-compaction is enabled."
+            if self._auto_compaction_enabled.get(session_id, False)
+            else "Run /compact soon to avoid losing the turn."
+        )
+        warning = (
+            f"Pi context is {rounded_percent}% full "
+            f"({context_tokens:,} of {context_window:,} tokens). {compaction_note}"
+        )
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"[warning] {warning}\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=_bridge_segment("warning", warning),
+        )
+
     async def _handle_message_update(self, session_id: str, event: dict) -> None:
         """Handle streaming assistant message deltas from pi."""
         delta_event = event.get("assistantMessageEvent", {})
@@ -724,9 +859,10 @@ class PiRpcRunner:
         elif delta_type == "done":
             return
         elif delta_type == "error":
-            reason = delta_event.get("reason", "unknown")
-            await self._events.on_error(
-                session_id, "PI_STREAM_ERROR", f"Stream error: {reason}"
+            logger.info(
+                "Pi stream attempt reported an error; waiting for agent_end",
+                session_id=session_id,
+                reason=str(delta_event.get("reason", "unknown"))[:200],
             )
 
     async def _handle_text_delta(self, session_id: str, delta_event: dict) -> None:
@@ -894,6 +1030,7 @@ class PiRpcRunner:
 
         result = event.get("result")
         if result:
+            self._context_warning_sent.discard(session_id)
             tokens_before = result.get("tokensBefore", 0)
             await self._emit_output(
                 session_id,
@@ -919,6 +1056,12 @@ class PiRpcRunner:
                     f"compaction failed: {message}",
                 ),
             )
+            if event.get("willRetry") is False:
+                await self._events.on_error(
+                    session_id,
+                    "PI_COMPACTION_FAILED",
+                    f"Context recovery failed: {message}",
+                )
 
     async def _handle_retry_event(self, session_id: str, event: dict) -> None:
         """Emit retry status or errors."""
@@ -1016,6 +1159,8 @@ class PiRpcRunner:
                     bridge_segments=_bridge_segment("status", msg),
                 )
                 self._assistant_marker_needed[session_id] = True
+            return
+        if method in {"setStatus", "setWidget"}:
             return
 
         request_id = str(event.get("id") or f"extui_{uuid.uuid4().hex[:12]}")
@@ -1183,6 +1328,13 @@ class PiRpcRunner:
                 model_name = model_info.get("name", "unknown")
                 model_id = model_info.get("id", "unknown")
                 provider = model_info.get("provider", "unknown")
+                # ASVS 2.2.1: reject malformed model limits from the RPC boundary.
+                try:
+                    context_window = int(model_info.get("contextWindow") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    context_window = 0
+                if context_window > 0:
+                    self._context_windows[session_id] = context_window
                 await self._events.on_header(
                     session_id,
                     title=f"Pi — {model_name}",
@@ -1190,6 +1342,9 @@ class PiRpcRunner:
                     provider=provider,
                 )
 
+            self._auto_compaction_enabled[session_id] = bool(
+                data.get("autoCompactionEnabled", False)
+            )
             session_file = data.get("sessionFile")
             if session_file:
                 self._session_files[session_id] = session_file

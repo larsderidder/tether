@@ -30,6 +30,13 @@ from tether.bridges.model_api import (
     get_session_model,
     set_session_model,
 )
+from tether.bridges.output_policy_api import (
+    format_bridge_output_policy,
+    get_bridge_output_policy,
+    parse_buffer_arg,
+    parse_verbosity_arg,
+    set_bridge_output_policy,
+)
 from tether.bridges.dedupe import (
     ShortLivedMessageDedupe,
     discord_message_key,
@@ -1129,6 +1136,18 @@ class DiscordBridge(UpstreamDiscordBridge):
                 return
             await self._cmd_model(message, args)
             return
+        if cmd == "!verbosity":
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._cmd_verbosity(message, args)
+            return
+        if cmd == "!buffer":
+            if not self._is_authorized_user_id(getattr(message.author, "id", None)):
+                await self._send_not_paired(message)
+                return
+            await self._cmd_buffer(message, args)
+            return
 
         await super()._dispatch_command(message, text)
 
@@ -1175,6 +1194,56 @@ class DiscordBridge(UpstreamDiscordBridge):
                 "Failed to update Discord session model", session_id=session_id
             )
             await message.channel.send(f"Failed to update model: {exc}")
+
+    async def _cmd_verbosity(self, message: Any, args: str) -> None:
+        """Show or change bridge output verbosity for the current session."""
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        session_id = self._session_for_thread(channel_id or 0)
+        if not session_id:
+            await message.channel.send("Use this command inside a session thread.")
+            return
+        verbosity, error, clear = parse_verbosity_arg(args)
+        if error:
+            await message.channel.send(error)
+            return
+        try:
+            if verbosity or clear:
+                session = await set_bridge_output_policy(
+                    session_id, verbosity=verbosity, clear_verbosity=clear
+                )
+            else:
+                session = await get_bridge_output_policy(session_id)
+            await message.channel.send(format_bridge_output_policy(session))
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Discord output verbosity", session_id=session_id
+            )
+            await message.channel.send(f"Failed to update verbosity: {exc}")
+
+    async def _cmd_buffer(self, message: Any, args: str) -> None:
+        """Show or change bridge output buffering for the current session."""
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        session_id = self._session_for_thread(channel_id or 0)
+        if not session_id:
+            await message.channel.send("Use this command inside a session thread.")
+            return
+        seconds, error, clear = parse_buffer_arg(args)
+        if error:
+            await message.channel.send(error)
+            return
+        try:
+            if seconds is not None or clear:
+                session = await set_bridge_output_policy(
+                    session_id, buffer_max_seconds=seconds, clear_buffer=clear
+                )
+            else:
+                session = await get_bridge_output_policy(session_id)
+            await message.channel.send(format_bridge_output_policy(session))
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Discord output buffer", session_id=session_id
+            )
+            await message.channel.send(f"Failed to update buffer: {exc}")
 
     async def _cmd_compact(self, message: Any, args: str) -> None:
         """Compact the runner context for the current session."""

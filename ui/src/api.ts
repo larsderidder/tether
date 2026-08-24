@@ -18,6 +18,10 @@ export type Session = {
   message_count: number;
   has_pending_permission: boolean;
   approval_mode: ApprovalMode | null;  // null = use global default
+  bridge_verbosity: BridgeVerbosity | null;
+  effective_bridge_verbosity: BridgeVerbosity;
+  bridge_buffer_max_seconds: number | null;
+  effective_bridge_buffer_max_seconds: number | null;
 };
 
 export type EventEnvelope = {
@@ -126,6 +130,8 @@ export type ApprovalMode = 0 | 1 | 2;
 // 0 = Interactive (ask for permissions)
 // 1 = Auto-approve edits only
 // 2 = Full auto-approve (bypass all)
+
+export type BridgeVerbosity = "none" | "minimal" | "medium" | "high";
 
 export function getBaseUrl(): string {
   return localStorage.getItem(BASE_KEY) || localStorage.getItem(LEGACY_BASE_KEY_V1) || "";
@@ -296,6 +302,26 @@ export async function updateSessionApprovalMode(
   return await fetchJson<Session>(`/api/sessions/${id}/approval-mode`, {
     method: "PATCH",
     body: JSON.stringify({ approval_mode: approvalMode }),
+  });
+}
+
+export async function updateSessionBridgeOutput(
+  id: string,
+  options: {
+    bridgeVerbosity?: BridgeVerbosity | null;
+    bridgeBufferMaxSeconds?: number | null;
+  }
+): Promise<Session> {
+  const body: Record<string, BridgeVerbosity | number | null> = {};
+  if ("bridgeVerbosity" in options) {
+    body.bridge_verbosity = options.bridgeVerbosity ?? null;
+  }
+  if ("bridgeBufferMaxSeconds" in options) {
+    body.bridge_buffer_max_seconds = options.bridgeBufferMaxSeconds ?? null;
+  }
+  return await fetchJson<Session>(`/api/sessions/${id}/bridge-output`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
   });
 }
 

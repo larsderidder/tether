@@ -57,6 +57,13 @@ from tether.bridges.model_api import (
     get_session_model,
     set_session_model,
 )
+from tether.bridges.output_policy_api import (
+    format_bridge_output_policy,
+    get_bridge_output_policy,
+    parse_buffer_arg,
+    parse_verbosity_arg,
+    set_bridge_output_policy,
+)
 from tether.bridges.rich_output import render_telegram_messages
 from tether.bridges.retry import bridge_retry_after_s, with_bridge_send_retry
 from tether.bridges.telegram.formatting import markdown_to_telegram_html
@@ -115,14 +122,19 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._last_output_send_at = 0.0
 
     @staticmethod
-    def _update_user_id(update: Any) -> int | None:
-        """Return the Telegram user ID for an update, if present."""
+    def _update_user(update: Any) -> Any:
+        """Return the Telegram user for an update, if present."""
         user = getattr(update, "effective_user", None)
         if user is None and getattr(update, "callback_query", None):
             user = getattr(update.callback_query, "from_user", None)
         if user is None and getattr(update, "message", None):
             user = getattr(update.message, "from_user", None)
-        user_id = getattr(user, "id", None)
+        return user
+
+    @classmethod
+    def _update_user_id(cls, update: Any) -> int | None:
+        """Return the Telegram user ID for an update, if present."""
+        user_id = getattr(cls._update_user(update), "id", None)
         try:
             return int(user_id) if user_id is not None else None
         except (TypeError, ValueError):
@@ -137,6 +149,9 @@ class TelegramBridge(UpstreamTelegramBridge):
 
     async def _guard_update(self, update: Any, context: Any) -> None:
         """Stop unauthorized Telegram users before command handlers run."""
+        if bool(getattr(self._update_user(update), "is_bot", False)):
+            # ASVS 8.3.3: never treat an intermediary bot as the human originator.
+            raise ApplicationHandlerStop
         if self._is_authorized_update(update):
             return
 
@@ -372,6 +387,8 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._app.add_handler(CommandHandler("compact", self._cmd_compact))
         self._app.add_handler(CommandHandler("models", self._cmd_models))
         self._app.add_handler(CommandHandler("model", self._cmd_model))
+        self._app.add_handler(CommandHandler("verbosity", self._cmd_verbosity))
+        self._app.add_handler(CommandHandler("buffer", self._cmd_buffer))
         await self._register_command_menu()
         self._app.add_handler(
             MessageHandler(
@@ -669,6 +686,68 @@ class TelegramBridge(UpstreamTelegramBridge):
                 "Failed to update Telegram session model", session_id=session_id
             )
             await message.reply_text(f"Failed to update model: {exc}")
+
+    async def _cmd_verbosity(self, update: Any, context: Any) -> None:
+        """Handle /verbosity in a session topic."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+        session_id = self._session_id_for_topic_message(message)
+        if not getattr(message, "message_thread_id", None):
+            await message.reply_text("Use this command inside a session topic.")
+            return
+        if not session_id:
+            await message.reply_text("No session linked to this topic.")
+            return
+        raw = " ".join(getattr(context, "args", []) or [])
+        verbosity, error, clear = parse_verbosity_arg(raw)
+        if error:
+            await message.reply_text(error)
+            return
+        try:
+            if verbosity or clear:
+                session = await set_bridge_output_policy(
+                    session_id, verbosity=verbosity, clear_verbosity=clear
+                )
+            else:
+                session = await get_bridge_output_policy(session_id)
+            await message.reply_text(format_bridge_output_policy(session))
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Telegram output verbosity", session_id=session_id
+            )
+            await message.reply_text(f"Failed to update verbosity: {exc}")
+
+    async def _cmd_buffer(self, update: Any, context: Any) -> None:
+        """Handle /buffer in a session topic."""
+        message = getattr(update, "message", None)
+        if message is None:
+            return
+        session_id = self._session_id_for_topic_message(message)
+        if not getattr(message, "message_thread_id", None):
+            await message.reply_text("Use this command inside a session topic.")
+            return
+        if not session_id:
+            await message.reply_text("No session linked to this topic.")
+            return
+        raw = " ".join(getattr(context, "args", []) or [])
+        seconds, error, clear = parse_buffer_arg(raw)
+        if error:
+            await message.reply_text(error)
+            return
+        try:
+            if seconds is not None or clear:
+                session = await set_bridge_output_policy(
+                    session_id, buffer_max_seconds=seconds, clear_buffer=clear
+                )
+            else:
+                session = await get_bridge_output_policy(session_id)
+            await message.reply_text(format_bridge_output_policy(session))
+        except Exception as exc:
+            logger.exception(
+                "Failed to update Telegram output buffer", session_id=session_id
+            )
+            await message.reply_text(f"Failed to update buffer: {exc}")
 
     async def _cmd_help(self, update: Any, context: Any) -> None:
         """Handle /help."""
@@ -1003,6 +1082,11 @@ class TelegramBridge(UpstreamTelegramBridge):
             return "message thread not found" in str(exc).casefold()
         return "message thread not found" in str(exc).casefold()
 
+    @staticmethod
+    def _is_html_parse_error(exc: Exception) -> bool:
+        """Return true when Telegram rejected generated HTML markup."""
+        return "can't parse entities" in str(exc).casefold()
+
     def _drop_missing_topic_binding(self, session_id: str, topic_id: int) -> None:
         """Forget a Telegram binding after its forum topic was deleted."""
         self._state.remove_session(session_id)
@@ -1024,7 +1108,12 @@ class TelegramBridge(UpstreamTelegramBridge):
             )
 
     async def _send_output_message(
-        self, session_id: str, topic_id: int, message: str
+        self,
+        session_id: str,
+        topic_id: int,
+        message: str,
+        *,
+        parse_mode: str | None = "HTML",
     ) -> bool:
         """Send one Telegram output message with flood-limit recovery."""
 
@@ -1049,14 +1138,16 @@ class TelegramBridge(UpstreamTelegramBridge):
                 await asyncio.sleep(delay_s)
 
             try:
+                send_kwargs: dict[str, Any] = {
+                    "chat_id": self._forum_group_id,
+                    "message_thread_id": topic_id,
+                    "text": message,
+                }
+                if parse_mode:
+                    send_kwargs["parse_mode"] = parse_mode
                 await with_bridge_send_retry(
                     "telegram.output",
-                    lambda: self._app.bot.send_message(
-                        chat_id=self._forum_group_id,
-                        message_thread_id=topic_id,
-                        text=message,
-                        parse_mode="HTML",
-                    ),
+                    lambda: self._app.bot.send_message(**send_kwargs),
                     max_delay_s=60.0,
                 )
                 self._last_output_send_at = loop.time()
@@ -1084,6 +1175,22 @@ class TelegramBridge(UpstreamTelegramBridge):
                 )
 
         raise RuntimeError("Telegram flood control did not recover in time")
+
+    async def on_status_change(
+        self, session_id: str, status: str, metadata: dict | None = None
+    ) -> None:
+        """Send useful Telegram errors while retaining upstream status handling."""
+        message = str((metadata or {}).get("message") or "").replace("\x00", "").strip()
+        if status != "error" or not message:
+            await super().on_status_change(session_id, status, metadata=metadata)
+            return
+        if not self._app or not self._state.get_topic_for_session(session_id):
+            return
+        if not self._should_send_error_status(session_id):
+            return
+
+        # ASVS 16.5.1: show a bounded provider message, never attached diagnostics or stacks.
+        await self.on_output(session_id, f"❌ Error: {message[:3500]}")
 
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
@@ -1113,11 +1220,21 @@ class TelegramBridge(UpstreamTelegramBridge):
                     sent_any = sent_any or sent
                     if not sent:
                         break
-                except Exception:
+                except Exception as exc:
+                    if not self._is_html_parse_error(exc):
+                        logger.exception(
+                            "Failed to send Telegram message",
+                            session_id=session_id,
+                            topic_id=topic_id,
+                        )
+                        break
                     try:
                         fallback = html.unescape(re.sub(r"<[^>]+>", "", message))[:4096]
                         sent = await self._send_output_message(
-                            session_id, topic_id, fallback
+                            session_id,
+                            topic_id,
+                            fallback,
+                            parse_mode=None,
                         )
                         sent_any = sent_any or sent
                     except Exception:

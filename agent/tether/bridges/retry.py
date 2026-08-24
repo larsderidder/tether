@@ -56,6 +56,20 @@ def _is_retryable_bridge_error(exc: BaseException) -> bool:
         return True
     if status is not None:
         return status >= 500
+    retryable_names = {
+        "ConnectError",
+        "ConnectTimeout",
+        "NetworkError",
+        "PoolTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "TimedOut",
+        "TimeoutException",
+        "WriteError",
+        "WriteTimeout",
+    }
+    if exc.__class__.__name__ in retryable_names:
+        return True
     return isinstance(exc, (TimeoutError, OSError, asyncio.TimeoutError))
 
 

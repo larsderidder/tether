@@ -16,6 +16,10 @@ class RetryableError(Exception):
         self.retry_after = retry_after
 
 
+class TimedOut(Exception):
+    """Fake Telegram timeout exception."""
+
+
 @pytest.mark.anyio
 async def test_with_bridge_send_retry_retries_429(monkeypatch) -> None:
     """Transient rate-limit errors are retried."""
@@ -38,6 +42,30 @@ async def test_with_bridge_send_retry_retries_429(monkeypatch) -> None:
     assert await with_bridge_send_retry("test", send) == "ok"
     assert calls == 2
     assert sleeps == [0.25]
+
+
+@pytest.mark.anyio
+async def test_with_bridge_send_retry_retries_platform_timeout(monkeypatch) -> None:
+    """Telegram timeout errors are retried before failing the send."""
+
+    sleeps: list[float] = []
+    calls = 0
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async def send() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimedOut("Timed out")
+        return "ok"
+
+    monkeypatch.setattr("tether.bridges.retry.asyncio.sleep", fake_sleep)
+
+    assert await with_bridge_send_retry("test", send) == "ok"
+    assert calls == 2
+    assert sleeps == [1.0]
 
 
 @pytest.mark.anyio

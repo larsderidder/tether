@@ -1,5 +1,6 @@
 """Unit tests for settings module."""
 
+import json
 import os
 import pytest
 
@@ -7,7 +8,7 @@ from tether.settings import Settings
 
 
 @pytest.fixture
-def clean_env(monkeypatch):
+def clean_env(monkeypatch, tmp_path):
     """Remove all TETHER_ env vars for clean tests."""
     for key in list(os.environ.keys()):
         if (
@@ -16,6 +17,7 @@ def clean_env(monkeypatch):
             or key == "ANTHROPIC_API_KEY"
         ):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
     return monkeypatch
 
 
@@ -87,10 +89,9 @@ class TestIntSettings:
         assert Settings.pi_tool_output_max_lines() == 80
         assert Settings.bridge_tool_output_inline_chars() == 800
         assert Settings.bridge_tool_output_inline_lines() == 6
-        assert Settings.bridge_output_flush_delay_seconds() == 2.0
-        assert Settings.bridge_tool_activity_flush_delay_seconds() == 5.0
+        assert Settings.bridge_verbosity() == "minimal"
+        assert Settings.bridge_buffer_max_seconds() is None
         assert Settings.bridge_tool_activity_combine_messages() is True
-        assert Settings.bridge_tool_activity_flush_on_final_only() is False
 
     def test_tool_output_limits_can_be_configured(self, clean_env) -> None:
         """Tool output truncation limits can be configured."""
@@ -99,20 +100,18 @@ class TestIntSettings:
         clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "120")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS", "700")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES", "5")
-        clean_env.setenv("TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS", "30")
-        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS", "2.5")
+        clean_env.setenv("TETHER_BRIDGE_VERBOSITY", "medium")
+        clean_env.setenv("TETHER_BRIDGE_BUFFER_MAX_SECONDS", "30")
         clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES", "0")
-        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY", "1")
 
         assert Settings.pi_resume_max_session_file_bytes() == 209715200
         assert Settings.pi_tool_output_max_chars() == 2400
         assert Settings.pi_tool_output_max_lines() == 120
         assert Settings.bridge_tool_output_inline_chars() == 700
         assert Settings.bridge_tool_output_inline_lines() == 5
-        assert Settings.bridge_output_flush_delay_seconds() == 30.0
-        assert Settings.bridge_tool_activity_flush_delay_seconds() == 2.5
+        assert Settings.bridge_verbosity() == "medium"
+        assert Settings.bridge_buffer_max_seconds() == 30.0
         assert Settings.bridge_tool_activity_combine_messages() is False
-        assert Settings.bridge_tool_activity_flush_on_final_only() is True
 
     def test_tool_output_limits_are_bounded(self, clean_env) -> None:
         """Tool output truncation limits are clamped to safe ranges."""
@@ -121,16 +120,16 @@ class TestIntSettings:
         clean_env.setenv("TETHER_PI_TOOL_OUTPUT_MAX_LINES", "1")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS", "999999")
         clean_env.setenv("TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES", "999999")
-        clean_env.setenv("TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS", "999999")
-        clean_env.setenv("TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS", "999999")
+        clean_env.setenv("TETHER_BRIDGE_VERBOSITY", "verbose")
+        clean_env.setenv("TETHER_BRIDGE_BUFFER_MAX_SECONDS", "999999")
 
         assert Settings.pi_resume_max_session_file_bytes() == 10 * 1024 * 1024
         assert Settings.pi_tool_output_max_chars() == 200
         assert Settings.pi_tool_output_max_lines() == 5
         assert Settings.bridge_tool_output_inline_chars() == 1800
         assert Settings.bridge_tool_output_inline_lines() == 50
-        assert Settings.bridge_output_flush_delay_seconds() == 300.0
-        assert Settings.bridge_tool_activity_flush_delay_seconds() == 300.0
+        assert Settings.bridge_verbosity() == "minimal"
+        assert Settings.bridge_buffer_max_seconds() == 300.0
 
 
 class TestStringSettings:
@@ -186,6 +185,58 @@ class TestStringSettings:
             "openai/gpt-5.1",
             "anthropic/claude-sonnet",
         ]
+
+    def test_pi_adapter_models_fallback_to_pi_settings(
+        self, clean_env, tmp_path
+    ) -> None:
+        """Pi adapter models fall back to provider-qualified pi settings."""
+        settings_dir = tmp_path / ".pi" / "agent"
+        settings_dir.mkdir(parents=True)
+        (settings_dir / "settings.json").write_text(
+            json.dumps(
+                {
+                    "defaultProvider": "openai-codex",
+                    "defaultModel": "gpt-5.5",
+                    "enabledModels": [
+                        "openai-codex/gpt-5.4",
+                        "openai-codex/gpt-5.5",
+                        "claude-bridge/claude-opus-4-8",
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        clean_env.setenv("TETHER_PI_BLOCKED_MODELS", "claude")
+
+        assert Settings.adapter_default_model("pi_rpc") == "openai-codex/gpt-5.5"
+        assert Settings.adapter_models("pi_rpc") == [
+            "openai-codex/gpt-5.5",
+            "openai-codex/gpt-5.4",
+        ]
+        assert (
+            Settings.normalize_adapter_model("pi_rpc", "gpt-5.5")
+            == "openai-codex/gpt-5.5"
+        )
+
+    def test_adapter_blocked_models(self, clean_env) -> None:
+        """Adapter model settings hide blocked models."""
+        clean_env.setenv("TETHER_PI_DEFAULT_MODEL", "anthropic/claude-opus-4")
+        clean_env.setenv(
+            "TETHER_PI_MODELS",
+            "anthropic/claude-opus-4,anthropic/claude-sonnet-4",
+        )
+        clean_env.setenv("TETHER_PI_BLOCKED_MODELS", "opus")
+
+        assert Settings.adapter_blocked_models("pi_rpc") == ["opus"]
+        assert Settings.is_adapter_model_blocked("pi_rpc", "anthropic/claude-opus-4")
+        assert Settings.adapter_default_model("pi_rpc") == ""
+        assert Settings.adapter_models("pi_rpc") == ["anthropic/claude-sonnet-4"]
+
+    def test_adapter_model_blacklist_alias(self, clean_env) -> None:
+        """Adapter model blacklist is accepted as a compatibility alias."""
+        clean_env.setenv("TETHER_PI_MODEL_BLACKLIST", "anthropic/claude-opus-4")
+
+        assert Settings.adapter_blocked_models("pi_rpc") == ["anthropic/claude-opus-4"]
 
     def test_log_level_default(self, clean_env) -> None:
         """Log level defaults to INFO."""

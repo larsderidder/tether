@@ -111,6 +111,17 @@ class ApiRunnerEvents:
             session = store.get_session(session_id)
             if not session:
                 return
+            normalized_message = message.casefold()
+            if session.state == SessionState.INTERRUPTING and any(
+                marker in normalized_message
+                for marker in ("aborted", "abort", "retry cancelled")
+            ):
+                logger.info(
+                    "Ignoring expected runner abort during interruption",
+                    session_id=session_id,
+                    code=code,
+                )
+                return
             await finalize_output(session, status="error")
             if session.state != SessionState.ERROR:
                 transition(session, SessionState.ERROR, ended_at=True)
@@ -153,12 +164,14 @@ class ApiRunnerEvents:
             session = store.get_session(session_id)
             if not session:
                 return
-            if session.state in (SessionState.AWAITING_INPUT, SessionState.ERROR):
+            if session.state == SessionState.ERROR:
                 return
             await finalize_output(
                 session,
                 status="stopped" if store.is_stop_requested(session_id) else "success",
             )
+            if session.state == SessionState.AWAITING_INPUT:
+                return
             transition(session, SessionState.AWAITING_INPUT)
             await emit_state(session)
 

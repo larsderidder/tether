@@ -1,6 +1,7 @@
 """Tests for API endpoints."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,6 +49,59 @@ class TestSessionsEndpoints:
         assert session["id"].startswith("sess_")
         assert session["state"] == "CREATED"
         assert session["created_at"] is not None
+        assert session["bridge_verbosity"] is None
+        assert session["effective_bridge_verbosity"] == "high"
+        assert session["bridge_buffer_max_seconds"] is None
+
+    @pytest.mark.anyio
+    async def test_bridge_session_defaults_to_interactive_approval(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Bridge-controlled sessions default to interactive approval."""
+        with patch(
+            "tether.api.sessions.create_or_reuse_thread",
+            new_callable=AsyncMock,
+            return_value={"thread_id": "topic-1", "platform": "telegram"},
+        ):
+            response = await api_client.post(
+                "/api/sessions",
+                json={"repo_id": "test_repo", "platform": "telegram"},
+            )
+
+        assert response.status_code == 201
+        assert response.json()["approval_mode"] == 0
+
+    @pytest.mark.anyio
+    async def test_session_bridge_output_endpoint(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Session bridge output policy can be changed independently."""
+        create_resp = await api_client.post(
+            "/api/sessions", json={"repo_id": "test_repo"}
+        )
+        session_id = create_resp.json()["id"]
+
+        patch_resp = await api_client.patch(
+            f"/api/sessions/{session_id}/bridge-output",
+            json={"bridge_verbosity": "medium", "bridge_buffer_max_seconds": 15},
+        )
+
+        assert patch_resp.status_code == 200
+        updated = patch_resp.json()
+        assert updated["bridge_verbosity"] == "medium"
+        assert updated["effective_bridge_verbosity"] == "medium"
+        assert updated["bridge_buffer_max_seconds"] == 15
+        assert updated["effective_bridge_buffer_max_seconds"] == 15
+
+        clear_resp = await api_client.patch(
+            f"/api/sessions/{session_id}/bridge-output",
+            json={"bridge_verbosity": None, "bridge_buffer_max_seconds": None},
+        )
+
+        assert clear_resp.status_code == 200
+        cleared = clear_resp.json()
+        assert cleared["bridge_verbosity"] is None
+        assert cleared["bridge_buffer_max_seconds"] is None
 
     @pytest.mark.anyio
     async def test_create_session_with_directory(
@@ -94,6 +148,129 @@ class TestSessionsEndpoints:
         )
         assert patch_resp.status_code == 200
         assert patch_resp.json()["model"] == "model-b"
+
+    @pytest.mark.anyio
+    async def test_pi_session_model_endpoints_use_provider_qualified_models(
+        self,
+        api_client: httpx.AsyncClient,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Pi model endpoints expose and store provider-qualified model ids."""
+        settings_dir = tmp_path / ".pi" / "agent"
+        settings_dir.mkdir(parents=True)
+        (settings_dir / "settings.json").write_text(
+            json.dumps(
+                {
+                    "defaultProvider": "openai-codex",
+                    "defaultModel": "gpt-5.5",
+                    "enabledModels": [
+                        "openai-codex/gpt-5.4",
+                        "openai-codex/gpt-5.5",
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("TETHER_PI_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("TETHER_PI_MODELS", raising=False)
+        monkeypatch.delenv("TETHER_PI_BLOCKED_MODELS", raising=False)
+        monkeypatch.delenv("TETHER_PI_MODEL_BLACKLIST", raising=False)
+
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={"repo_id": "test_repo", "adapter": "pi_rpc", "model": "gpt-5.5"},
+        )
+        assert create_resp.status_code == 201
+        assert create_resp.json()["model"] == "openai-codex/gpt-5.5"
+        session_id = create_resp.json()["id"]
+
+        get_resp = await api_client.get(f"/api/sessions/{session_id}/model")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["model"] == "openai-codex/gpt-5.5"
+        assert get_resp.json()["default_model"] == "openai-codex/gpt-5.5"
+        assert get_resp.json()["available_models"] == [
+            "openai-codex/gpt-5.5",
+            "openai-codex/gpt-5.4",
+        ]
+
+        patch_resp = await api_client.patch(
+            f"/api/sessions/{session_id}/model", json={"model": "gpt-5.4"}
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["model"] == "openai-codex/gpt-5.4"
+
+    @pytest.mark.anyio
+    async def test_blocked_model_rejected(
+        self, api_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Blocked adapter models cannot be set on sessions."""
+        monkeypatch.setenv("TETHER_PI_BLOCKED_MODELS", "*opus*")
+
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={
+                "repo_id": "test_repo",
+                "adapter": "pi_rpc",
+                "model": "anthropic/claude-opus-4",
+            },
+        )
+        assert create_resp.status_code == 422
+        assert create_resp.json()["error"]["code"] == "MODEL_BLOCKED"
+
+        ok_resp = await api_client.post(
+            "/api/sessions",
+            json={
+                "repo_id": "test_repo",
+                "adapter": "pi_rpc",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        )
+        session_id = ok_resp.json()["id"]
+
+        patch_resp = await api_client.patch(
+            f"/api/sessions/{session_id}/model",
+            json={"model": "anthropic/claude-opus-4"},
+        )
+        assert patch_resp.status_code == 422
+        assert patch_resp.json()["error"]["code"] == "MODEL_BLOCKED"
+
+    @pytest.mark.anyio
+    async def test_pi_model_update_stops_errored_process(
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        monkeypatch,
+    ) -> None:
+        """Pi model changes after an error should apply on the next turn."""
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={
+                "repo_id": "test_repo",
+                "adapter": "pi_rpc",
+                "model": "openai-codex/gpt-5.5",
+            },
+        )
+        session_id = create_resp.json()["id"]
+        session = fresh_store.get_session(session_id)
+        session.state = SessionState.ERROR
+        fresh_store.update_session(session)
+
+        mock_runner = MagicMock()
+        mock_runner.stop = AsyncMock()
+        monkeypatch.setattr(
+            "tether.api.sessions.get_api_runner",
+            lambda *a, **kw: mock_runner,
+        )
+
+        patch_resp = await api_client.patch(
+            f"/api/sessions/{session_id}/model", json={"model": "openai/gpt-5"}
+        )
+
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["model"] == "openai/gpt-5"
+        mock_runner.stop.assert_awaited_once_with(session_id)
 
     @pytest.mark.anyio
     async def test_create_session_invalid_directory(
@@ -196,6 +373,57 @@ class TestSessionLifecycle:
         response = await api_client.post(f"/api/sessions/{session_id}/interrupt")
 
         assert response.status_code == 409
+
+    @pytest.mark.anyio
+    async def test_interrupt_does_not_promote_tool_output_to_final(
+        self,
+        api_client: httpx.AsyncClient,
+        fresh_store: SessionStore,
+        monkeypatch,
+    ) -> None:
+        """Interrupting a turn discards telemetry when no clean final exists."""
+        create_resp = await api_client.post(
+            "/api/sessions", json={"repo_id": "test_repo"}
+        )
+        session_id = create_resp.json()["id"]
+
+        session = fresh_store.get_session(session_id)
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session_id,
+            "combined",
+            "[bash] sensitive tool output\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=[
+                {
+                    "kind": "tool_output",
+                    "label": "bash",
+                    "text": "sensitive tool output",
+                }
+            ],
+        )
+
+        mock_runner = MagicMock()
+        mock_runner.stop = AsyncMock()
+        monkeypatch.setattr(
+            "tether.api.sessions.get_api_runner",
+            lambda *args, **kwargs: mock_runner,
+        )
+
+        response = await api_client.post(f"/api/sessions/{session_id}/interrupt")
+
+        assert response.status_code == 200
+        assert response.json()["state"] == "AWAITING_INPUT"
+        output_final_events = [
+            event
+            for event in fresh_store.read_event_log(session_id)
+            if event.get("type") == "output_final"
+        ]
+        assert output_final_events == []
 
     @pytest.mark.anyio
     async def test_send_input_to_created_session_fails(

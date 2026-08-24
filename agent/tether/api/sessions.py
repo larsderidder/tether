@@ -34,6 +34,7 @@ from tether.api.schemas import (
     SessionResponse,
     StartSessionRequest,
     UpdateApprovalModeRequest,
+    UpdateBridgeOutputRequest,
     UpdateModelRequest,
 )
 from tether.api.state import (
@@ -64,6 +65,18 @@ from tether.store import store
 
 router = APIRouter(tags=["sessions"])
 logger = structlog.get_logger(__name__)
+
+
+def _validate_model_allowed(adapter: str | None, model: str | None) -> None:
+    """Reject models blocked for the selected adapter."""
+    if not settings.is_adapter_model_blocked(adapter, model):
+        return
+    adapter_label = adapter or "default adapter"
+    raise_http_error(
+        "MODEL_BLOCKED",
+        f"Model '{model}' is blocked for {adapter_label}.",
+        422,
+    )
 
 
 async def _warn_if_remote_bypass_permissions(
@@ -226,10 +239,14 @@ async def create_session(
                 "VALIDATION_ERROR", f"Invalid adapter '{payload.adapter}': {e}", 422
             )
 
-    model = payload.model.strip() if payload.model else ""
+    adapter_for_model = payload.adapter or settings.adapter()
+    model = settings.normalize_adapter_model(
+        adapter_for_model, payload.model.strip() if payload.model else ""
+    )
     if not model:
-        model = settings.adapter_default_model(payload.adapter or settings.adapter())
+        model = settings.adapter_default_model(adapter_for_model)
     if model:
+        _validate_model_allowed(adapter_for_model, model)
         session.model = model
         logger.info("Session model configured", model=session.model)
 
@@ -246,6 +263,13 @@ async def create_session(
         session.name = payload.session_name
     if payload.approval_mode is not None:
         session.approval_mode = payload.approval_mode
+    elif payload.platform:
+        # ASVS 8.2.1 and 8.3.1: remote bridge sessions start with least privilege.
+        session.approval_mode = 0
+    if payload.bridge_verbosity is not None:
+        session.bridge_verbosity = payload.bridge_verbosity
+    if payload.bridge_buffer_max_seconds is not None:
+        session.bridge_buffer_max_seconds = payload.bridge_buffer_max_seconds
 
     # Platform binding: create messaging thread
     if payload.platform:
@@ -959,14 +983,17 @@ async def update_session_model(
                 "Cannot change model while the session is running",
                 409,
             )
-        model = payload.model.strip()
+        adapter = session.adapter or settings.adapter()
+        model = settings.normalize_adapter_model(adapter, payload.model.strip())
         if not model:
             raise_http_error("VALIDATION_ERROR", "model must not be empty", 422)
+        _validate_model_allowed(adapter, model)
         session.model = model
         store.update_session(session)
-        if (
-            session.adapter or ""
-        ).lower() == "pi_rpc" and session.state == SessionState.AWAITING_INPUT:
+        if (session.adapter or "").lower() == "pi_rpc" and session.state in (
+            SessionState.AWAITING_INPUT,
+            SessionState.ERROR,
+        ):
             with suppress(Exception):
                 await get_api_runner(session.adapter).stop(session_id)
         logger.info("Session model updated", model=session.model)
@@ -1019,6 +1046,31 @@ async def update_approval_mode(
         logger.info(
             "Session approval mode updated",
             approval_mode=session.approval_mode,
+        )
+        return SessionResponse.from_session(session, store)
+
+
+@router.patch("/sessions/{session_id}/bridge-output", response_model=SessionResponse)
+async def update_bridge_output(
+    session_id: str,
+    payload: UpdateBridgeOutputRequest,
+    _: None = Depends(require_token),
+) -> SessionResponse:
+    """Update bridge output verbosity and buffering for a session."""
+    with _session_logging_context(session_id):
+        session = store.get_session(session_id)
+        if not session:
+            raise_http_error("NOT_FOUND", "Session not found", 404)
+
+        if "bridge_verbosity" in payload.model_fields_set:
+            session.bridge_verbosity = payload.bridge_verbosity
+        if "bridge_buffer_max_seconds" in payload.model_fields_set:
+            session.bridge_buffer_max_seconds = payload.bridge_buffer_max_seconds
+        store.update_session(session)
+        logger.info(
+            "Session bridge output policy updated",
+            bridge_verbosity=session.bridge_verbosity,
+            bridge_buffer_max_seconds=session.bridge_buffer_max_seconds,
         )
         return SessionResponse.from_session(session, store)
 

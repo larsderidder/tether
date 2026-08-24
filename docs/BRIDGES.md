@@ -42,21 +42,26 @@ Shared helpers (in base class):
 ## BridgeSubscriber (`agent/tether/bridges/subscriber.py`)
 
 Routes store events to bridge methods:
-- `output` with assistant or thinking `bridge_segments` → buffered and sent after the configurable quiet period, then replaced by final output when the turn completes
-- `output` with tool `bridge_segments` → buffered and sent as bundled tool activity after the configurable quiet period
+- `output` events are filtered by the effective session verbosity before chat delivery
+- `none` delivers only final/end-turn output
+- `minimal` delivers thinking blocks plus final/end-turn output
+- `medium` delivers thinking blocks, tool call names, and final/end-turn output, without tool args or output contents
+- `high` delivers thinking blocks, tool calls, and truncated tool output/result snippets
+- non-final bridge activity is held until final/end turn unless `bridge_buffer_max_seconds` or `TETHER_BRIDGE_BUFFER_MAX_SECONDS` is set
 - `output` with `final=True` → skipped because `output_final` carries the final blob
-- `output_final` → flushes any pending tool bundle first, then sends the final assistant message once
-- `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY=1` disables periodic tool flushes and keeps tool telemetry bundled until final output, permission prompts, or turn end
+- `output_final` → flushes allowed buffered activity first, then sends the final assistant message once
 - `permission_request` → flushes prior buffered output in event order, builds `ApprovalRequest`, calls `on_approval_request()`
 - `Waiting for confirmation:` tool output → suppressed because the approval prompt already carries the actionable state
 - `session_state` RUNNING → `on_typing()`
-- `session_state` ERROR → `on_status_change("error")`
-- `error` → `on_status_change("error", metadata)`
+- `session_state` ERROR → schedules a short generic error fallback
+- `error` → replaces the pending fallback and calls `on_status_change("error", metadata)` once
+- `warning` bridge segments → delivered immediately regardless of verbosity or turn buffering
 
 ## Platform Implementations
 
 ### Telegram (`agent/tether/bridges/telegram/`)
 - **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/sync`, `/usage`, `/compact`, `/help`
+- Error notifications include the bounded runner message instead of the generic `Status: error` text
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
 - Approval UI: inline keyboard with Allow, Deny, Allow {tool} (30m), Allow All (30m), Show All
@@ -92,6 +97,11 @@ Routes store events to bridge methods:
 | `!models` / `/models` | List configured models for the current session's adapter |
 | `!model` / `/model` | Show the current session model |
 | `!model <model>` / `/model <model>` | Switch the model for future turns in this session |
+| `!verbosity` / `/verbosity` | Show bridge output verbosity for this session |
+| `!verbosity <none|minimal|medium|high>` / `/verbosity <none|minimal|medium|high>` | Set bridge output verbosity for this session |
+| `!buffer` / `/buffer` | Show bridge output buffering for this session |
+| `!buffer <seconds|off>` / `/buffer <seconds|off>` | Set or clear the max buffer seconds for this session |
+| `!new` / `/new` inside a session thread or topic | Start a child session in the same directory with the same adapter and model |
 | `!stop` / `/stop` | Interrupt the session |
 
 ## Bridge Git Commands
@@ -140,10 +150,9 @@ Stored in base class as in-memory dicts:
 | `DISCORD_AUTO_PAIR_USER_IDS` | Comma-separated Discord user IDs to seed into the paired-user set at launch |
 | `TETHER_BRIDGE_TOOL_OUTPUT_INLINE_CHARS` | Max characters shown inline for tool output across bridges (default: 800, range: 100-1800) |
 | `TETHER_BRIDGE_TOOL_OUTPUT_INLINE_LINES` | Max lines shown inline for tool output across bridges (default: 6, range: 1-50) |
-| `TETHER_BRIDGE_OUTPUT_FLUSH_DELAY_SECONDS` | Seconds to buffer non-final bridge output after the latest event before delivery (default: 2, range: 0-300) |
-| `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_DELAY_SECONDS` | Seconds to buffer tool activity after the latest tool event before delivery (default: 5, range: 0-300) |
+| `TETHER_BRIDGE_VERBOSITY` | Default bridge verbosity: `none`, `minimal`, `medium`, or `high` (default: `minimal`) |
+| `TETHER_BRIDGE_BUFFER_MAX_SECONDS` | Default max seconds before flushing non-final bridge activity. Unset means final/end-turn only (range: 0-300) |
 | `TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES` | Render a buffered tool activity bundle as one platform message when possible (default: 1) |
-| `TETHER_BRIDGE_TOOL_ACTIVITY_FLUSH_ON_FINAL_ONLY` | Disable periodic tool activity delivery and flush the whole bundle just before final output, permission prompts, or turn end (default: 0) |
 | `TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES` | Optional cap for one Telegram output batch. Default `0` sends all chunks slowly. When capped, Tether keeps the final chunk visible. |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.

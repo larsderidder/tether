@@ -11,6 +11,7 @@ from tether.models import (
     ExternalSessionMessage,
     SessionState,
 )
+from tether.settings import settings
 
 if TYPE_CHECKING:
     from tether.models import Session
@@ -42,6 +43,8 @@ class CreateSessionRequest(BaseModel):
     platform: str | None = None  # "telegram", "slack", "discord"
     session_name: str | None = None
     approval_mode: int | None = None  # 0=interactive, 1=edits only, 2=full auto
+    bridge_verbosity: Literal["none", "minimal", "medium", "high"] | None = None
+    bridge_buffer_max_seconds: float | None = Field(default=None, ge=0, le=300)
 
 
 class ImageInput(BaseModel):
@@ -139,6 +142,13 @@ class UpdateApprovalModeRequest(BaseModel):
     approval_mode: Literal[0, 1, 2] | None = None
 
 
+class UpdateBridgeOutputRequest(BaseModel):
+    """Request body for updating bridge output policy."""
+
+    bridge_verbosity: Literal["none", "minimal", "medium", "high"] | None = None
+    bridge_buffer_max_seconds: float | None = Field(default=None, ge=0, le=300)
+
+
 # --- Response Models ---
 
 
@@ -164,6 +174,10 @@ class SessionResponse(BaseModel):
     approval_mode: int | None  # None = use global default, 0/1/2 = override
     adapter: str | None  # Adapter configured for this session
     model: str | None  # Model configured for this session
+    bridge_verbosity: str | None  # None = use global default
+    effective_bridge_verbosity: str
+    bridge_buffer_max_seconds: float | None  # None = use global default
+    effective_bridge_buffer_max_seconds: float | None
     # External agent fields
     external_agent_name: str | None = None
     external_agent_type: str | None = None
@@ -198,6 +212,17 @@ class SessionResponse(BaseModel):
             approval_mode=session.approval_mode,
             adapter=session.adapter,
             model=session.model,
+            bridge_verbosity=getattr(session, "bridge_verbosity", None),
+            effective_bridge_verbosity=getattr(session, "bridge_verbosity", None)
+            or settings.bridge_verbosity(),
+            bridge_buffer_max_seconds=getattr(
+                session, "bridge_buffer_max_seconds", None
+            ),
+            effective_bridge_buffer_max_seconds=(
+                getattr(session, "bridge_buffer_max_seconds", None)
+                if getattr(session, "bridge_buffer_max_seconds", None) is not None
+                else settings.bridge_buffer_max_seconds()
+            ),
             external_agent_name=session.external_agent_name,
             external_agent_type=session.external_agent_type,
             external_agent_icon=session.external_agent_icon,

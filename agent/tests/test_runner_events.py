@@ -47,7 +47,9 @@ class TestOnOutput:
         assert updated.runner_header == "Claude Code v1.0"
 
     @pytest.mark.anyio
-    async def test_output_preserves_bridge_segments(self, fresh_store: SessionStore) -> None:
+    async def test_output_preserves_bridge_segments(
+        self, fresh_store: SessionStore
+    ) -> None:
         """on_output stores structured bridge metadata on output events."""
         from tether.api.runner_events import ApiRunnerEvents
 
@@ -193,6 +195,26 @@ class TestOnError:
         assert updated.state == SessionState.ERROR
 
     @pytest.mark.anyio
+    async def test_expected_abort_during_interrupt_is_not_an_error(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """The runner's abort acknowledgement must not override interruption."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.INTERRUPTING
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_error(session.id, "PI_AGENT_ERROR", "Request was aborted")
+
+        updated = fresh_store.get_session(session.id)
+        assert updated.state == SessionState.INTERRUPTING
+        assert not any(
+            event["type"] == "error" for event in fresh_store.read_event_log(session.id)
+        )
+
+    @pytest.mark.anyio
     async def test_error_idempotent_if_already_error(
         self, fresh_store: SessionStore
     ) -> None:
@@ -209,6 +231,36 @@ class TestOnError:
 
         updated = fresh_store.get_session(session.id)
         assert updated.state == SessionState.ERROR
+
+    @pytest.mark.anyio
+    async def test_error_discards_intermediate_tool_telemetry(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Errors do not promote intermediate tool telemetry to final output."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "[Agent] 0 tool uses...\n",
+            kind="step",
+            is_final=False,
+            bridge_segments=[
+                {"kind": "tool_output", "label": "Agent", "text": "0 tool uses..."}
+            ],
+        )
+        await events.on_error(session.id, "CRASH", "WebSocket error")
+
+        log = fresh_store.read_event_log(session.id)
+        output_final_events = [
+            event for event in log if event.get("type") == "output_final"
+        ]
+        assert output_final_events == []
 
 
 class TestOnExit:
@@ -343,6 +395,34 @@ class TestOnAwaitingInput:
 
         updated = fresh_store.get_session(session.id)
         assert updated.state == SessionState.AWAITING_INPUT
+
+    @pytest.mark.anyio
+    async def test_finalizes_background_output_if_already_awaiting(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Background completion finalizes output while the session is already idle."""
+        from tether.api.runner_events import ApiRunnerEvents
+
+        session = fresh_store.create_session("test", "main")
+        session.state = SessionState.AWAITING_INPUT
+        fresh_store.update_session(session)
+
+        events = ApiRunnerEvents()
+        await events.on_output(
+            session.id,
+            "combined",
+            "Background result",
+            kind="final",
+            is_final=True,
+        )
+        await events.on_awaiting_input(session.id)
+
+        output_final_events = [
+            event
+            for event in fresh_store.read_event_log(session.id)
+            if event.get("type") == "output_final"
+        ]
+        assert output_final_events[-1]["data"]["text"] == "Background result"
 
     @pytest.mark.anyio
     async def test_skipped_if_error(self, fresh_store: SessionStore) -> None:

@@ -103,6 +103,7 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 | `TETHER_DEFAULT_AGENT_ADAPTER` | Force adapter: `claude_subprocess`, `codex_sdk_sidecar`, `opencode`, `litellm`, `automation`, etc. |
 | `TETHER_<ADAPTER>_DEFAULT_MODEL` | Optional model assigned to new sessions for an adapter, such as `TETHER_PI_DEFAULT_MODEL` or `TETHER_CLAUDE_DEFAULT_MODEL` |
 | `TETHER_<ADAPTER>_MODELS` | Comma-separated model choices shown by bridge model commands, such as `TETHER_PI_MODELS` |
+| `TETHER_<ADAPTER>_BLOCKED_MODELS` | Comma-separated blocked model patterns. Substrings and wildcards are supported, such as `TETHER_PI_BLOCKED_MODELS=opus`. `TETHER_<ADAPTER>_MODEL_BLACKLIST` is accepted as an alias. |
 | `ANTHROPIC_API_KEY` | API key for Claude (alternative to CLI OAuth) |
 | `TETHER_AGENT_CLAUDE_MODEL` | Model override (default: claude-sonnet-4-20250514) |
 | `TETHER_CODEX_SIDECAR_URL` | Sidecar URL (default: http://localhost:8788) |
@@ -115,9 +116,13 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 | `TETHER_PI_TOOL_OUTPUT_MAX_CHARS` | Max characters kept from pi tool output in Tether events (default: 1200, range: 200-20000) |
 | `TETHER_PI_TOOL_OUTPUT_MAX_LINES` | Max lines kept from pi tool output in Tether events (default: 80, range: 5-1000) |
 
-## Pi RPC Compaction
+## Pi RPC Recovery and Compaction
 
-The `pi_rpc` adapter can request manual pi compaction through `POST /api/sessions/{id}/compact`. Tether sends the RPC `compact` command to pi and renders `compaction_start` / `compaction_end` status events to bridges. The bridge command is `!compact [instructions]` on Slack and Discord, `/compact [instructions]` on Telegram.
+The `pi_rpc` adapter keeps the Tether session running when Pi marks an attempt as retryable. Transient provider errors such as WebSocket failures therefore no longer suppress a later successful final answer. Context-window overflow also remains recoverable while Pi auto-compaction is enabled. A failed retry or failed overflow compaction still transitions the session to `ERROR`.
+
+Tether emits an immediate bridge warning once reported context use reaches 80% of the model window. The warning resets after successful compaction. If the context limit is reached, Tether reports that Pi is compacting and retrying rather than emitting a terminal error prematurely.
+
+The adapter can request manual pi compaction through `POST /api/sessions/{id}/compact`. Tether sends the RPC `compact` command to pi and renders `compaction_start` / `compaction_end` status events to bridges. The bridge command is `!compact [instructions]` on Slack and Discord, `/compact [instructions]` on Telegram.
 
 Compaction is lossy for active model context but does not shrink pi's JSONL history file. Large session files may still be too big to resume with a provider even after compaction.
 

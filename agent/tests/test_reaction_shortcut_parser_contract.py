@@ -19,7 +19,9 @@ def _mock_callbacks(**overrides) -> BridgeCallbacks:
         respond_to_permission=AsyncMock(return_value=True),
         list_sessions=AsyncMock(return_value=[]),
         get_usage=AsyncMock(return_value={}),
-        check_directory=AsyncMock(side_effect=lambda path: {"exists": True, "path": path}),
+        check_directory=AsyncMock(
+            side_effect=lambda path: {"exists": True, "path": path}
+        ),
         list_external_sessions=AsyncMock(return_value=[]),
         get_external_history=AsyncMock(return_value=None),
         attach_external=AsyncMock(return_value={}),
@@ -82,6 +84,34 @@ async def test_thread_seeded_reaction_contract_reuses_base_directory_for_agent_o
     assert directory == "/worktrees/demo"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("platform", ["slack", "discord"])
+async def test_thread_seeded_new_reuses_base_model_for_same_adapter(
+    platform: str,
+) -> None:
+    bridge = _make_bridge(
+        platform,
+        callbacks=_mock_callbacks(),
+        get_session_info=lambda _session_id: {
+            "directory": "/worktrees/demo",
+            "adapter": "pi_rpc",
+            "model": "anthropic/claude-sonnet-4",
+        },
+    )
+
+    adapter, directory = await bridge._parse_new_args(
+        "",
+        base_session_id="sess_existing",
+    )
+
+    assert adapter == "pi_rpc"
+    assert directory == "/worktrees/demo"
+    assert (
+        bridge._model_for_child_session("sess_existing", adapter)
+        == "anthropic/claude-sonnet-4"
+    )
+
+
 def test_parse_reaction_shortcut_message_extracts_args_and_prompt() -> None:
     shortcut = parse_reaction_shortcut_message(
         "!new codex /worktrees/tether\nFix the failing Discord tests."
@@ -109,7 +139,9 @@ def test_parse_reaction_shortcut_message_ignores_plain_messages_when_disabled() 
     assert shortcut is None
 
 
-def test_parse_reaction_shortcut_message_does_not_treat_other_commands_as_plain() -> None:
+def test_parse_reaction_shortcut_message_does_not_treat_other_commands_as_plain() -> (
+    None
+):
     shortcut = parse_reaction_shortcut_message(
         "!help",
         allow_plain_message=True,

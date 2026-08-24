@@ -267,6 +267,13 @@ async def finalize_output(
         return
 
     pending_text, attachments, warnings = store.get_pending_final_output(session.id)
+    if status in {"stopped", "error"} and pending_text is None:
+        # ASVS 14.2.6: unfinished telemetry may contain sensitive tool data.
+        store.consume_output(session.id)
+        store.mark_turn_finalized(session.id)
+        store.clear_pending_final_output(session.id)
+        return
+
     visible_text = compose_final_output(
         pending_text or "",
         status=status,

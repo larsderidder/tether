@@ -22,6 +22,9 @@ def _clean_thinking_markers(text: str) -> str:
     """Remove legacy inline thinking markers from token-streamed output."""
 
     cleaned = re.sub(r"\[thinking\]\s*", " ", text)
+    cleaned = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_\n]+)__", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", cleaned)
     return re.sub(r"[ \t]{2,}", " ", cleaned)
 
 
@@ -249,11 +252,35 @@ def _clean_table_cell(text: str) -> str:
 
 
 def _chunk_plain(text: str, limit: int) -> list[str]:
-    """Split plain text into fixed-size chunks."""
+    """Split plain text into readable chunks within the platform limit."""
 
     if len(text) <= limit:
         return [text]
-    return [text[i : i + limit] for i in range(0, len(text), limit)]
+
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = _plain_chunk_split(remaining, limit)
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _plain_chunk_split(text: str, limit: int) -> int:
+    """Pick a stable split point near the message limit."""
+
+    minimum = max(1, int(limit * 0.5))
+    candidates = [
+        text.rfind("\n\n", 0, limit + 1),
+        text.rfind("\n", 0, limit + 1),
+        text.rfind(" ", 0, limit + 1),
+    ]
+    for candidate in candidates:
+        if candidate >= minimum:
+            return candidate + 1
+    return limit
 
 
 def _chunk_code_block(body: str, limit: int, language: str = "text") -> list[str]:

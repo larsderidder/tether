@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from hashlib import sha1
+from hashlib import sha256
 from typing import Any
 
 
@@ -200,4 +200,4 @@ class BridgeTurnAccumulator:
     @staticmethod
     def _text_key(text: str) -> str:
         normalized = " ".join(text.split())
-        return sha1(normalized.encode("utf-8")).hexdigest()
+        return sha256(normalized.encode("utf-8")).hexdigest()

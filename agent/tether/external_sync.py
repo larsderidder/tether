@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -23,7 +24,7 @@ _REPLAY_THINKING_LIMIT = 150
 _REPLAY_TOTAL_LIMIT = 1900
 _FORCE_SYNC_REPLAY_LIMIT = 75
 _BASELINE_RECOVERY_REPLAY_LIMIT = 25
-_HISTORY_FLUSH_DELAY_S = settings.bridge_output_flush_delay_seconds()
+_VERBOSITIES = {"none", "minimal", "medium", "high"}
 _HISTORY_BUFFERS: dict[str, list[str]] = {}
 _HISTORY_FLUSH_TASKS: dict[str, asyncio.Task] = {}
 
@@ -91,6 +92,21 @@ def _messages_after_timestamp(messages: list, after: datetime) -> tuple[list, in
         if timestamp and timestamp > after:
             return messages[index:], index
     return [], len(messages)
+
+
+def _live_user_input_counts(session_id: str) -> Counter[str]:
+    """Count user prompts already emitted live by Tether."""
+    counts: Counter[str] = Counter()
+    for event in store.read_event_log(session_id, since_seq=0):
+        if event.get("type") != "user_input":
+            continue
+        data = event.get("data") or {}
+        if data.get("is_history"):
+            continue
+        normalized = " ".join(str(data.get("text") or "").split())
+        if normalized:
+            counts[normalized] += 1
+    return counts
 
 
 def external_runner_type_for_session(session) -> ExternalRunnerType:
@@ -200,6 +216,33 @@ def get_bound_bridge(session) -> object | None:
     return bridge
 
 
+def _history_verbosity(session) -> str:
+    """Return the effective bridge verbosity for imported history."""
+    verbosity = str(
+        getattr(session, "bridge_verbosity", None) or settings.bridge_verbosity()
+    ).lower()
+    if verbosity not in _VERBOSITIES:
+        return settings.bridge_verbosity()
+    return verbosity
+
+
+def _history_buffer_max_seconds(session) -> float | None:
+    """Return the effective bridge buffer delay for imported history."""
+    buffer_max_seconds = getattr(session, "bridge_buffer_max_seconds", None)
+    if buffer_max_seconds is None:
+        return settings.bridge_buffer_max_seconds()
+    return buffer_max_seconds
+
+
+def _should_relay_history_chunk(session, metadata: dict) -> bool:
+    """Return true when an imported bridge chunk passes output policy."""
+    if metadata.get("role") != "assistant":
+        return True
+    if metadata.get("final") or metadata.get("is_final"):
+        return True
+    return _history_verbosity(session) != "none"
+
+
 async def _flush_history_buffer(session, bridge: object | None) -> None:
     """Send buffered non-final external history to the bound bridge."""
     task = _HISTORY_FLUSH_TASKS.pop(session.id, None)
@@ -221,13 +264,19 @@ async def _flush_history_buffer(session, bridge: object | None) -> None:
 
 async def _schedule_history_flush(session, bridge: object | None) -> None:
     """Schedule a delayed flush for buffered external history."""
+    delay_seconds = _history_buffer_max_seconds(session)
+    if delay_seconds is None:
+        return
+    if delay_seconds <= 0:
+        await _flush_history_buffer(session, bridge)
+        return
     existing = _HISTORY_FLUSH_TASKS.get(session.id)
     if existing and not existing.done():
         return
 
     async def _delayed_flush() -> None:
         try:
-            await asyncio.sleep(_HISTORY_FLUSH_DELAY_S)
+            await asyncio.sleep(delay_seconds)
         except asyncio.CancelledError:
             return
         await _flush_history_buffer(session, bridge)
@@ -269,6 +318,9 @@ async def send_history_to_bridge(
         return
 
     is_final = bool(metadata.get("final") or metadata.get("is_final"))
+    if not _should_relay_history_chunk(session, metadata):
+        return
+
     is_bufferable_history = (
         bool(metadata.get("is_history"))
         and metadata.get("role") == "assistant"
@@ -317,6 +369,19 @@ async def relay_history_message_to_bridge(
             metadata={"is_history": True, "role": "user"},
         )
         return
+
+    if thinking:
+        await send_history_to_bridge(
+            session=session,
+            bridge=bridge,
+            text=thinking,
+            metadata={
+                "is_history": True,
+                "role": "assistant",
+                "kind": "step",
+                "final": False,
+            },
+        )
 
     if content:
         kind = "final" if is_final else "step"
@@ -415,6 +480,16 @@ async def sync_external_session_delta(
         )
         new_messages = messages[start_idx:]
         base_idx = start_idx
+    elif synced_count < 0:
+        turn_count = sum(1 for message in messages if message.role == "user")
+        store.set_synced_message_count(session_id, len(messages), turn_count)
+        logger.info(
+            "Initialized persisted sync baseline without replay",
+            session_id=session_id,
+            source=source,
+            total_messages=len(messages),
+        )
+        return SyncResult(synced=0, total=len(messages))
     elif synced_count == 0 and (
         event_log_timestamp := _event_log_recovery_timestamp(session_id)
     ):
@@ -481,7 +556,14 @@ async def sync_external_session_delta(
             return SyncResult(synced=len(new_messages), total=len(messages))
 
     history_bridge = get_bound_bridge(session)
+    live_user_inputs = _live_user_input_counts(session.id)
     for i, msg in enumerate(new_messages):
+        if msg.role == "user":
+            normalized_input = " ".join(str(msg.content or "").split())
+            if live_user_inputs[normalized_input] > 0:
+                live_user_inputs[normalized_input] -= 1
+                continue
+
         is_final = False
         if msg.role == "assistant":
             next_idx = base_idx + i + 1

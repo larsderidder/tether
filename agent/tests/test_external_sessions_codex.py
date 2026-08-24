@@ -250,6 +250,7 @@ async def test_attach_codex_session_replays_history_to_platform_thread(
     assert response.status_code == 201
     payload = response.json()
     assert payload["platform"] == "mock"
+    assert payload["approval_mode"] == 0
     assert payload["platform_thread_id"] == f"mock_{payload['id']}"
     assert [call["text"] for call in mock_bridge.output_calls] == [
         "👤 User: Hello Codex",
@@ -359,6 +360,7 @@ async def test_attach_existing_codex_session_replays_history_when_binding_platfo
     payload = second.json()
     assert payload["id"] == first_id
     assert payload["platform"] == "mock"
+    assert payload["approval_mode"] == 0
     assert [call["text"] for call in mock_bridge.output_calls] == [
         "👤 User: Hello Codex",
         "Hi there",
@@ -440,22 +442,22 @@ async def test_sync_after_restart_does_not_duplicate(
     events_after_attach = fresh_store.read_event_log(tether_session_id, since_seq=0)
     count_after_attach = len(events_after_attach)
 
-    # Step 2: Simulate agent restart — clear the in-memory synced count
-    # (synced_message_count is runtime-only, lost on restart)
-    runtime = fresh_store._runtime.get(tether_session_id)
-    assert runtime is not None
-    runtime.synced_message_count = 0
-    runtime.synced_turn_count = 0
+    # Step 2: Reconstruct the store as a process restart would.
+    restarted_store = SessionStore()
+    import tether.external_sync as external_sync
 
-    # Step 3: Sync — baseline recovery replays only a limited recent window.
+    monkeypatch.setattr(external_sessions, "store", restarted_store)
+    monkeypatch.setattr(external_sync, "store", restarted_store)
+
+    # Step 3: Sync finds no delta because the durable cursor was restored.
     sync_resp = await api_client.post(
         f"/api/sessions/{tether_session_id}/sync",
     )
     assert sync_resp.status_code == 200
     sync_data = sync_resp.json()
-    assert sync_data["synced"] == 2  # Recovery replay window for this fixture
+    assert sync_data["synced"] == 0
 
-    events_after_sync = fresh_store.read_event_log(tether_session_id, since_seq=0)
+    events_after_sync = restarted_store.read_event_log(tether_session_id, since_seq=0)
     assert len(events_after_sync) == count_after_attach  # No duplicates added
 
 

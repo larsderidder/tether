@@ -537,19 +537,33 @@ class SessionStore:
             turn_count: Number of conversation turns (user messages). If None,
                         uses count for backwards compatibility.
         """
+        synced_turn_count = turn_count if turn_count is not None else count
         runtime = self._get_runtime(session_id)
         runtime.synced_message_count = count
-        runtime.synced_turn_count = turn_count if turn_count is not None else count
+        runtime.synced_turn_count = synced_turn_count
+
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        session.synced_message_count = count
+        session.synced_turn_count = synced_turn_count
+        self._persist_session(session)
 
     def get_synced_message_count(self, session_id: str) -> int:
         """Get the number of messages previously synced from external session."""
-        runtime = self._runtime.get(session_id)
-        return runtime.synced_message_count if runtime else 0
+        session = self._sessions.get(session_id)
+        if session is None:
+            return 0
+        if session.synced_message_count is None:
+            return -1
+        return session.synced_message_count
 
     def get_synced_turn_count(self, session_id: str) -> int:
         """Get the number of conversation turns synced from external session."""
-        runtime = self._runtime.get(session_id)
-        return runtime.synced_turn_count if runtime else 0
+        session = self._sessions.get(session_id)
+        if session is None or session.synced_turn_count is None:
+            return 0
+        return session.synced_turn_count
 
     def should_emit_output(self, session_id: str, text: str) -> bool:
         """Return True if output is non-empty and not recently emitted.

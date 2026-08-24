@@ -253,7 +253,9 @@ async function ensureOpencodeSession(
 function modelFromString(value: string | undefined): SessionModel | undefined {
   const raw = String(value || "").trim();
   const slash = raw.indexOf("/");
-  if (slash <= 0 || slash >= raw.length - 1) return undefined;
+  if (slash <= 0 || slash >= raw.length - 1) {
+    return undefined;
+  }
   return { providerID: raw.slice(0, slash), modelID: raw.slice(slash + 1) };
 }
 
@@ -267,8 +269,8 @@ async function discoverSessionModel(
 
   try {
     const result = await handle.client.session.messages({
-      sessionID: ocSessionId,
-      limit: 20,
+      path: { id: ocSessionId },
+      query: { limit: 20 },
     });
     // @ts-ignore — SDK response shape varies by version
     const messages = (result.data ?? []) as Array<{ info: Record<string, any>; parts: unknown[] }>;

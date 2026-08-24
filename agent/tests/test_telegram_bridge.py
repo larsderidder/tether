@@ -43,6 +43,52 @@ class TestTelegramBridgeIntegration:
         assert TelegramBridge._agent_to_adapter("pi_rpc") == "pi_rpc"
 
     @pytest.mark.anyio
+    async def test_new_inside_topic_inherits_model(self) -> None:
+        """Telegram /new inside a session topic keeps the current model."""
+        from agent_tether.base import BridgeCallbacks
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        create_session = AsyncMock(
+            return_value={"id": "sess_child", "platform_thread_id": "456"}
+        )
+        callbacks = BridgeCallbacks(
+            create_session=create_session,
+            send_input=AsyncMock(),
+            stop_session=AsyncMock(),
+            respond_to_permission=AsyncMock(return_value=True),
+            list_sessions=AsyncMock(return_value=[]),
+            get_usage=AsyncMock(return_value={}),
+            check_directory=AsyncMock(
+                side_effect=lambda path: {"exists": True, "path": path}
+            ),
+            list_external_sessions=AsyncMock(return_value=[]),
+            get_external_history=AsyncMock(return_value=None),
+            attach_external=AsyncMock(return_value={}),
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+            callbacks=callbacks,
+            get_session_info=lambda _session_id: {
+                "directory": "/worktrees/demo",
+                "adapter": "pi_rpc",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        )
+        bridge._state.set_topic_for_session("sess_existing", 123, "Base")
+        update = MagicMock()
+        update.message.message_thread_id = 123
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = []
+
+        await bridge._cmd_new(update, context)
+
+        create_session.assert_awaited_once()
+        assert create_session.await_args.kwargs["adapter"] == "pi_rpc"
+        assert create_session.await_args.kwargs["model"] == "anthropic/claude-sonnet-4"
+
+    @pytest.mark.anyio
     async def test_rename_thread_updates_telegram_topic(self) -> None:
         """rename_thread updates the Telegram forum topic name."""
         from tether.bridges.telegram.bot import TelegramBridge
@@ -67,6 +113,30 @@ class TestTelegramBridgeIntegration:
             name="New pi session",
         )
         assert bridge._state._mappings["sess_1"].name == "New pi session"
+
+    @pytest.mark.anyio
+    async def test_error_status_includes_detailed_message(self) -> None:
+        """Telegram error notifications show the runner's useful reason."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = MagicMock()
+        bridge._state.set_topic_for_session("sess_1", 12345, "Test")
+        bridge._send_output_message = AsyncMock(return_value=True)
+
+        await bridge.on_status_change(
+            "sess_1",
+            "error",
+            metadata={"message": "Context window is nearly full"},
+        )
+
+        bridge._send_output_message.assert_awaited_once()
+        sent_text = bridge._send_output_message.await_args.args[2]
+        assert "Context window is nearly full" in sent_text
+        assert "Status: error" not in sent_text
 
     @pytest.mark.anyio
     async def test_on_output_sends_to_telegram(self, fresh_store: SessionStore) -> None:
@@ -249,6 +319,95 @@ class TestTelegramBridgeIntegration:
         assert attempts == 2
         sent_text = mock_bot.send_message.await_args.kwargs["text"]
         assert sent_text == "First"
+
+    @pytest.mark.anyio
+    async def test_on_output_retries_plain_text_after_html_parse_failure(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Invalid Telegram HTML falls back to a plain-text send."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot.render_telegram_messages",
+            lambda text, metadata=None: ["<module>boom</module>"],
+        )
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        attempts = 0
+
+        async def fail_once(label, send, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise Exception("Can't parse entities: unsupported start tag")
+            return await send()
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot.with_bridge_send_retry",
+            fail_once,
+        )
+
+        await bridge.on_output(session.id, "ignored")
+
+        assert attempts == 2
+        assert mock_bot.send_message.await_count == 1
+        send_kwargs = mock_bot.send_message.await_args.kwargs
+        assert send_kwargs["text"] == "boom"
+        assert "parse_mode" not in send_kwargs
+
+    @pytest.mark.anyio
+    async def test_on_output_does_not_plain_text_retry_timeout(
+        self, fresh_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plain-text fallback is only for Telegram HTML parse failures."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot._TELEGRAM_OUTPUT_MIN_INTERVAL_S", 0
+        )
+        session = fresh_store.create_session("repo_test", "main")
+
+        mock_app = MagicMock()
+        mock_bot = AsyncMock()
+        mock_app.bot = mock_bot
+
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+        )
+        bridge._app = mock_app
+        bridge._state.set_topic_for_session(session.id, 12345, "Test")
+
+        attempts = 0
+
+        async def fail_timeout(label, send, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise TimeoutError("Timed out")
+
+        monkeypatch.setattr(
+            "tether.bridges.telegram.bot.with_bridge_send_retry",
+            fail_timeout,
+        )
+
+        await bridge.on_output(session.id, "hello")
+
+        assert attempts == 1
+        assert mock_bot.send_message.await_count == 0
 
     @pytest.mark.anyio
     async def test_missing_topic_clears_telegram_binding(
