@@ -76,6 +76,18 @@ Key methods:
 - `next_seq()` - Monotonic sequence counter
 - `should_emit_output()` - Output deduplication
 
+## Retention
+
+Inactive sessions are retained for 30 days by default. Set
+`TETHER_AGENT_SESSION_RETENTION_DAYS` to override this, or `0` to disable pruning.
+Running and interrupting sessions are never pruned. The cutoff uses `ended_at`,
+then `last_activity_at`, then `created_at`, taking the first available timestamp.
+
+A separate background task closes recorded Telegram topics whose sessions have
+been removed, preserving their chat history. Existing idle and detached sessions
+are not orphaned. Session event-log directories are currently retained after
+pruning; this retention setting does not reclaim those files.
+
 ## Session Locking
 
 Per-session asyncio locks prevent concurrent state mutations. Used by start, input, interrupt, and delete endpoints to ensure atomic state transitions.

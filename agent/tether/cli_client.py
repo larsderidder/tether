@@ -395,7 +395,7 @@ def cmd_setup_agents(
 
     if any_action:
         print("\nSetup complete. You can now run:")
-        print('  tether new --adapter claude_auto -m "fix the thing"')
+        print('  tether new . --adapter pi -m "fix the thing"')
 
 
 # ---------------------------------------------------------------------------
@@ -911,8 +911,8 @@ def cmd_new(
                 ):
                     print(
                         "Error: No adapter specified and TETHER_DEFAULT_AGENT_ADAPTER is not set.\n"
-                        "Use -a to specify one: tether new . -a claude_auto\n"
-                        "Or set a default: echo 'TETHER_DEFAULT_AGENT_ADAPTER=claude_auto'"
+                        "Use -a to specify one: tether new . -a pi\n"
+                        "Or set a default: echo 'TETHER_DEFAULT_AGENT_ADAPTER=pi'"
                         " >> ~/.config/tether/config.env",
                         file=sys.stderr,
                     )

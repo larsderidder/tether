@@ -5,8 +5,25 @@ import stat
 
 import pytest
 
-from tether.init_wizard import _configure_integrations, _write_config
+from tether.init_wizard import _configure_integrations, _write_config, run_wizard
 from tether.config import parse_env_file
+
+
+def test_wizard_writes_pi_as_default_adapter(monkeypatch, tmp_path):
+    """New configurations explicitly select Pi by default."""
+    written = {}
+    monkeypatch.setattr("tether.init_wizard.secrets.token_urlsafe", lambda _n: "token")
+    monkeypatch.setattr("tether.init_wizard._configure_bridge", lambda _config: None)
+    monkeypatch.setattr("tether.init_wizard._configure_integrations", lambda: None)
+    monkeypatch.setattr(
+        "tether.init_wizard._write_config",
+        lambda config, _dest: written.update(config),
+    )
+    monkeypatch.setattr("tether.init_wizard.config_dir", lambda: tmp_path)
+
+    run_wizard()
+
+    assert written["TETHER_DEFAULT_AGENT_ADAPTER"] == "pi"
 
 
 class TestConfigureIntegrations:

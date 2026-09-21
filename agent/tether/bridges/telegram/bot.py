@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import contextlib
 from dataclasses import dataclass, field
+from datetime import timedelta
 import html
 import re
 from typing import Any
+from types import SimpleNamespace
+import time
 import uuid
 
 import structlog
 from agent_tether.telegram.bot import TelegramBridge as UpstreamTelegramBridge
 
 try:
-    from telegram import BotCommand
+    from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.error import BadRequest
     from telegram.ext import ApplicationHandlerStop
 except ImportError:
@@ -25,6 +29,7 @@ except ImportError:
         """Fallback used when python-telegram-bot is not installed."""
 
 
+from tether.adapter_names import adapter_label, bridge_agent_to_adapter
 from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.base import (
     ApprovalRequest,
@@ -66,6 +71,7 @@ from tether.bridges.output_policy_api import (
 )
 from tether.bridges.rich_output import render_telegram_messages
 from tether.bridges.retry import bridge_retry_after_s, with_bridge_send_retry
+from tether.bridges.session_creation import SessionCreationMixin, recent_directories
 from tether.bridges.telegram.formatting import markdown_to_telegram_html
 from tether.settings import settings
 
@@ -89,27 +95,33 @@ class _TelegramMediaGroupBuffer:
     total_count: int = 0
 
 
-class TelegramBridge(UpstreamTelegramBridge):
+@dataclass
+class _TelegramSessionPicker:
+    """A bounded, user-scoped snapshot behind short Telegram callbacks."""
+
+    kind: str
+    choices: list[str]
+    user_id: int
+    chat_id: int
+    topic_id: int | None
+    expires_at: float
+    adapter: str | None = None
+    session_id: str | None = None
+    active_model: str | None = None
+
+
+class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
     """Render tool calls and pass Telegram images through to sessions."""
 
     @staticmethod
     def _agent_to_adapter(raw: str) -> str | None:
-        """Map user-friendly agent names to local adapter names."""
-
-        normalized = (raw or "").strip().lower()
-        if normalized in {"automation", "script"}:
-            return "automation"
-        if normalized in {"pi", "pi_rpc"}:
-            return "pi_rpc"
-        return UpstreamTelegramBridge._agent_to_adapter(raw)
+        """Map user-facing agent names to canonical adapter names."""
+        return bridge_agent_to_adapter(raw)
 
     @staticmethod
     def _adapter_label(adapter: str | None) -> str | None:
-        """Map local adapter names to user-friendly labels."""
-
-        if adapter == "automation":
-            return "Automation"
-        return UpstreamTelegramBridge._adapter_label(adapter)
+        """Map canonical adapter names to user-facing labels."""
+        return adapter_label(adapter)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -120,6 +132,89 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._allowed_user_ids = settings.telegram_allowed_user_ids()
         self._output_paused_until = 0.0
         self._last_output_send_at = 0.0
+        self._topic_cleanup_paused_until = 0.0
+        self._session_pickers: dict[str, _TelegramSessionPicker] = {}
+
+    async def close_orphaned_topics(
+        self, get_sessions: Callable[[], list[dict]]
+    ) -> int:
+        """Close recorded topics whose sessions are gone, preserving chat history.
+
+        Keep failed mappings for retry. Refresh the store view before each close
+        so sessions attached during a long cleanup pass remain protected.
+        """
+        if not self._app:
+            return 0
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._topic_cleanup_paused_until:
+            return 0
+
+        retired = 0
+        # The upstream state manager has no public mapping iterator.
+        for session_id, mapping in list(self._state._mappings.items()):
+            topic_id = mapping.topic_id
+            if topic_id <= 1:
+                continue
+            if self._state.get_topic_for_session(session_id) != topic_id:
+                continue
+            sessions = get_sessions()
+            if any(session["id"] == session_id for session in sessions):
+                continue
+            if any(
+                session.get("platform") in (None, "telegram")
+                and str(session.get("platform_thread_id")) == str(topic_id)
+                for session in sessions
+            ):
+                continue
+
+            outcome = "closed"
+            try:
+                await self._app.bot.close_forum_topic(
+                    chat_id=self._forum_group_id, message_thread_id=topic_id
+                )
+            except Exception as exc:
+                retry_after = getattr(exc, "retry_after", None)
+                if isinstance(retry_after, timedelta):
+                    retry_after = retry_after.total_seconds()
+                if isinstance(retry_after, (int, float)):
+                    self._topic_cleanup_paused_until = loop.time() + retry_after + 1
+                    logger.warning(
+                        "Telegram topic cleanup rate limited",
+                        retry_after=retry_after,
+                    )
+                    return retired
+                message = str(exc).casefold().replace("_", " ")
+                if (
+                    BadRequest is not None
+                    and isinstance(exc, BadRequest)
+                    and message
+                    in {
+                        "topic not modified",
+                        "topic id invalid",
+                        "message thread not found",
+                    }
+                ):
+                    outcome = "already closed or missing"
+                else:
+                    logger.exception(
+                        "Failed to close orphaned Telegram topic; will retry",
+                        session_id=session_id,
+                        topic_id=topic_id,
+                    )
+                    return retired
+
+            if self._state.get_topic_for_session(session_id) == topic_id:
+                await self.on_session_removed(session_id)
+                retired += 1
+                logger.info(
+                    "Retired orphaned Telegram topic",
+                    session_id=session_id,
+                    topic_id=topic_id,
+                    outcome=outcome,
+                )
+            # Pace the backlog without blocking session maintenance or input.
+            await asyncio.sleep(_TELEGRAM_OUTPUT_MIN_INTERVAL_S)
+        return retired
 
     @staticmethod
     def _update_user(update: Any) -> Any:
@@ -251,6 +346,9 @@ class TelegramBridge(UpstreamTelegramBridge):
 
         query = getattr(update, "callback_query", None)
         data = getattr(query, "data", "") if query else ""
+        if data.startswith("pick:"):
+            await self._handle_session_picker(update, context)
+            return
         if not data.startswith("choice:"):
             await super()._handle_callback_query(update, context)
             return
@@ -381,6 +479,9 @@ class TelegramBridge(UpstreamTelegramBridge):
         self._app.add_handler(CallbackQueryHandler(self._guard_update), group=-1)
         self._app.add_handler(
             CallbackQueryHandler(self._handle_callback_query, pattern=r"^choice:")
+        )
+        self._app.add_handler(
+            CallbackQueryHandler(self._handle_callback_query, pattern=r"^pick:")
         )
 
         self._app.add_handler(CommandHandler("sync", self._cmd_sync))
@@ -636,22 +737,219 @@ class TelegramBridge(UpstreamTelegramBridge):
             )
             await message.reply_text(f"Failed to compact session: {exc}")
 
+    async def _cmd_new(self, update: Any, context: Any) -> None:
+        """Offer directory history when no path or an explicit recent list is requested."""
+        args = list(getattr(context, "args", None) or [])
+        base_id = self._session_id_for_topic_message(update.message)
+        adapter = self._agent_to_adapter(args[0]) if args else None
+        recent = args == ["recent"] or (adapter and args[1:] == ["recent"])
+        missing_directory = not base_id and (not args or (adapter and len(args) == 1))
+        if not recent and not missing_directory:
+            await super()._cmd_new(update, context)
+            return
+
+        if not adapter and base_id and self._get_session_info:
+            base = self._get_session_info(base_id) or {}
+            adapter = base.get("adapter")
+        adapter = adapter or self._config.default_adapter or settings.adapter()
+        try:
+            choices = await recent_directories(self._callbacks)
+            if not choices:
+                await update.message.reply_text(
+                    "No previous directories are available. Use /new [agent] /path/to/project."
+                )
+                return
+            await self._show_session_picker(
+                update, "directory", choices, adapter=adapter
+            )
+        except Exception:
+            logger.exception("Failed to load directory choices")
+            await update.message.reply_text(
+                "Could not load directories. Try /new again."
+            )
+
+    async def _show_session_picker(
+        self,
+        update: Any,
+        kind: str,
+        choices: list[str],
+        *,
+        adapter: str | None = None,
+        session_id: str | None = None,
+        active_model: str | None = None,
+    ) -> None:
+        """Store a snapshot so later clicks cannot select a different refreshed item."""
+        user_id = self._update_user_id(update)
+        if user_id is None:
+            await update.message.reply_text(
+                "Could not identify the user for this menu."
+            )
+            return
+        now = time.monotonic()
+        self._session_pickers = {
+            key: value
+            for key, value in self._session_pickers.items()
+            if value.expires_at > now
+        }
+        while len(self._session_pickers) >= 128:
+            self._session_pickers.pop(next(iter(self._session_pickers)))
+        token = uuid.uuid4().hex[:12]
+        picker = _TelegramSessionPicker(
+            kind=kind,
+            choices=choices,
+            user_id=user_id,
+            chat_id=update.message.chat_id,
+            topic_id=update.message.message_thread_id,
+            expires_at=now + 900,
+            adapter=adapter,
+            session_id=session_id,
+            active_model=active_model,
+        )
+        self._session_pickers[token] = picker
+        text, markup = self._session_picker_page(token, picker, 0)
+        await update.message.reply_text(text, reply_markup=markup)
+
+    def _session_picker_page(
+        self, token: str, picker: _TelegramSessionPicker, page: int
+    ) -> tuple[str, Any]:
+        """Render short callbacks and numbered full paths or provider-qualified models."""
+        page_count = max(1, (len(picker.choices) + 5) // 6)
+        page = max(0, min(page, page_count - 1))
+        label = self._adapter_label(picker.adapter) or picker.adapter or "default"
+        if picker.kind == "directory":
+            text = f"Choose a previous directory. Agent: {label}.\n"
+        else:
+            text = f"Agent: {label}\nCurrent model: {picker.active_model or 'agent default'}\n"
+        text += f"Page {page + 1}/{page_count}\n"
+        rows = []
+        for index in range(page * 6, min((page + 1) * 6, len(picker.choices))):
+            choice = picker.choices[index]
+            text += f"\n{index + 1}. {choice[:400]}"
+            button_label = choice.rsplit("/", 1)[-1] or choice
+            button = InlineKeyboardButton(
+                f"{index + 1}. {button_label[:55]}",
+                callback_data=f"pick:{token}:use:{index}",
+            )
+            rows.append([button])
+        navigation = []
+        if page:
+            navigation.append(
+                InlineKeyboardButton(
+                    "Previous", callback_data=f"pick:{token}:page:{page - 1}"
+                )
+            )
+        if page + 1 < page_count:
+            navigation.append(
+                InlineKeyboardButton(
+                    "Next", callback_data=f"pick:{token}:page:{page + 1}"
+                )
+            )
+        if navigation:
+            rows.append(navigation)
+        rows.append(
+            [InlineKeyboardButton("Cancel", callback_data=f"pick:{token}:cancel:0")]
+        )
+        if picker.kind == "directory":
+            text += "\n\nOr use /new [agent] /path/to/project for another directory."
+        return text, InlineKeyboardMarkup(rows)
+
+    async def _handle_session_picker(self, update: Any, context: Any) -> None:
+        """Validate menu ownership and context before creating or changing a session."""
+        query = update.callback_query
+        if not self._is_authorized_update(update):
+            await query.answer("This Tether bridge is restricted.", show_alert=True)
+            return
+        parts = str(query.data).split(":")
+        if len(parts) != 4:
+            await query.answer("Invalid selection.")
+            return
+        _, token, action, raw_index = parts
+        picker = self._session_pickers.get(token)
+        if not picker or picker.expires_at <= time.monotonic():
+            self._session_pickers.pop(token, None)
+            await query.answer("Menu expired. Run the command again.", show_alert=True)
+            return
+        if (
+            picker.user_id != self._update_user_id(update)
+            or picker.chat_id != query.message.chat_id
+            or picker.topic_id != query.message.message_thread_id
+        ):
+            await query.answer(
+                "Open your own menu with /new or /models.", show_alert=True
+            )
+            return
+        if (
+            picker.session_id
+            and picker.session_id != self._session_id_for_topic_message(query.message)
+        ):
+            await query.answer("Session changed. Run /models again.", show_alert=True)
+            return
+        try:
+            index = int(raw_index)
+        except ValueError:
+            await query.answer("Invalid selection.")
+            return
+        await query.answer()
+        if action == "page":
+            text, markup = self._session_picker_page(token, picker, index)
+            await query.edit_message_text(text, reply_markup=markup)
+            return
+        if action == "cancel":
+            self._session_pickers.pop(token, None)
+            await query.edit_message_text("Cancelled.")
+            return
+        if action != "use" or not 0 <= index < len(picker.choices):
+            return
+
+        # Consume before awaiting creation to prevent duplicate sessions on double taps.
+        self._session_pickers.pop(token, None)
+        choice = picker.choices[index]
+        if picker.kind == "directory":
+            await query.edit_message_text(f"Selected directory: {choice}")
+            selected_update = SimpleNamespace(
+                message=query.message, effective_user=query.from_user
+            )
+            selected_context = SimpleNamespace(args=[picker.adapter, choice])
+            await super()._cmd_new(selected_update, selected_context)
+        else:
+            try:
+                session = await set_session_model(picker.session_id, choice)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to select Telegram model", session_id=picker.session_id
+                )
+                self._session_pickers[token] = picker
+                await query.message.reply_text(
+                    f"Failed to update model: {exc}\nChoose another model or try again."
+                )
+                return
+            await query.edit_message_text(
+                f"Model set to {session.get('model') or choice} for future turns."
+            )
+
     async def _cmd_models(self, update: Any, context: Any) -> None:
-        """Handle /models in a session topic."""
+        """Offer configured model choices in the current session topic."""
         message = getattr(update, "message", None)
         if message is None:
             return
         session_id = self._session_id_for_topic_message(message)
-        if not getattr(message, "message_thread_id", None):
+        if not session_id:
             await message.reply_text("Use this command inside a session topic.")
             return
-        if not session_id:
-            await message.reply_text("No session linked to this topic.")
-            return
         try:
-            await message.reply_text(
-                format_model_info(await get_session_model(session_id))
-            )
+            info = await get_session_model(session_id)
+            choices = list(info.get("available_models") or [])
+            if choices:
+                await self._show_session_picker(
+                    update,
+                    "model",
+                    choices,
+                    adapter=info.get("adapter"),
+                    session_id=session_id,
+                    active_model=info.get("model"),
+                )
+            else:
+                await message.reply_text(format_model_info(info))
         except Exception as exc:
             logger.exception(
                 "Failed to fetch Telegram session model", session_id=session_id
@@ -678,9 +976,7 @@ class TelegramBridge(UpstreamTelegramBridge):
                     f"✅ Model set to {session.get('model') or model}."
                 )
             else:
-                await message.reply_text(
-                    format_model_info(await get_session_model(session_id))
-                )
+                await self._cmd_models(update, context)
         except Exception as exc:
             logger.exception(
                 "Failed to update Telegram session model", session_id=session_id

@@ -122,7 +122,7 @@ RestartSec=5
 
 # Core settings (also in ~/.config/tether/config.env, but explicit here is safer)
 Environment=TETHER_AGENT_TOKEN=<your-token>
-Environment=TETHER_DEFAULT_AGENT_ADAPTER=claude_auto
+Environment=TETHER_DEFAULT_AGENT_ADAPTER=claude
 
 # Agent API credentials
 Environment=ANTHROPIC_API_KEY=<your-key>

@@ -60,9 +60,11 @@ class TestIntSettings:
 
     def test_session_retention_days(self, clean_env) -> None:
         """Session retention days setting."""
-        assert Settings.session_retention_days() == 7
-        clean_env.setenv("TETHER_AGENT_SESSION_RETENTION_DAYS", "30")
         assert Settings.session_retention_days() == 30
+        clean_env.setenv("TETHER_AGENT_SESSION_RETENTION_DAYS", "7")
+        assert Settings.session_retention_days() == 7
+        clean_env.setenv("TETHER_AGENT_SESSION_RETENTION_DAYS", "0")
+        assert Settings.session_retention_days() == 0
 
     def test_session_idle_timeout(self, clean_env) -> None:
         """Session idle timeout setting."""
@@ -154,13 +156,17 @@ class TestStringSettings:
         assert Settings.host() == "127.0.0.1"
 
     def test_adapter_default(self, clean_env) -> None:
-        """Adapter returns None when not configured."""
-        assert Settings.adapter() is None
+        """Pi is the default adapter when none is configured."""
+        assert Settings.adapter() == "pi_rpc"
 
-    def test_adapter_custom(self, clean_env) -> None:
-        """Adapter can be customized."""
-        clean_env.setenv("TETHER_DEFAULT_AGENT_ADAPTER", "CLAUDE_SUBPROCESS")
-        assert Settings.adapter() == "claude_subprocess"  # lowercased
+    @pytest.mark.parametrize(
+        ("configured", "canonical"),
+        [("CLAUDE_SUBPROCESS", "claude_subprocess"), ("pi", "pi_rpc")],
+    )
+    def test_adapter_custom(self, clean_env, configured, canonical) -> None:
+        """Configured adapter names are normalized canonically."""
+        clean_env.setenv("TETHER_DEFAULT_AGENT_ADAPTER", configured)
+        assert Settings.adapter() == canonical
 
     def test_adapter_default_model(self, clean_env) -> None:
         """Adapter model settings support adapter-specific defaults."""

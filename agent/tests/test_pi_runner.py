@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agent_sessions import RunnerType, SessionDetail, SessionMessage
 
+from tether.api.runner_events import ApiRunnerEvents
 from tether.models import SessionState
 from tether.runner.base import RunnerUnavailableError
 from tether.runner.pi_rpc import (
@@ -275,6 +276,65 @@ async def test_resolve_session_file_blocks_huge_pi_history(
     assert "too large to resume" in str(exc_info.value)
     assert fresh_store.get_runner_session_id(session.id) == "pi-session-id"
     assert runner._session_files[session.id] == str(session_file)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("returncode", "stop_requested", "failed"),
+    [(1, False, True), (0, False, False), (-15, True, False)],
+)
+async def test_process_exit_is_not_silently_treated_as_idle(
+    monkeypatch, returncode, stop_requested, failed
+) -> None:
+    """Startup failures must reach bridges instead of looking like a completed turn."""
+    events = FakeRunnerEvents()
+    runner = PiRpcRunner(events)
+    proc = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=b"")
+    proc.stderr.read = AsyncMock(
+        return_value=b"Error: Model is ambiguous across providers\n"
+    )
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.returncode = returncode
+    monkeypatch.setattr(
+        "tether.runner.pi_rpc.store.is_stop_requested", lambda _: stop_requested
+    )
+
+    await runner._read_events("sess1", proc)
+
+    assert events.errors == []
+    assert events.awaiting_input_count == (0 if failed or stop_requested else 1)
+    assert events.exit_count == (1 if failed or stop_requested else 0)
+    assert events.heartbeats[-1]["done"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("state", [SessionState.RUNNING, SessionState.AWAITING_INPUT])
+async def test_process_failure_only_marks_active_turn_as_error(
+    fresh_store, monkeypatch, state
+) -> None:
+    """Stopping idle Pi processes during a restart is not a failed user turn."""
+    monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+    session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+    session.state = state
+    fresh_store.update_session(session)
+    runner = PiRpcRunner(ApiRunnerEvents())
+    proc = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=b"")
+    proc.stderr.read = AsyncMock(return_value=b"")
+    proc.wait = AsyncMock(return_value=1)
+    proc.returncode = 1
+
+    await runner._read_events(session.id, proc)
+
+    expected = SessionState.ERROR if state == SessionState.RUNNING else state
+    assert fresh_store.get_session(session.id).state == expected
+    errors = [
+        event
+        for event in fresh_store.read_event_log(session.id)
+        if event["type"] == "error"
+    ]
+    assert len(errors) == (1 if state == SessionState.RUNNING else 0)
 
 
 class TestPiRpcEventHandling:
@@ -813,7 +873,6 @@ class TestPiRpcEventHandling:
         self, fresh_store, monkeypatch
     ):
         """A successful retry finalizes the original Tether turn."""
-        from tether.api.runner_events import ApiRunnerEvents
 
         monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
         session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
@@ -1017,6 +1076,56 @@ class TestPiRpcEventHandling:
         assert [output["is_final"] for output in events.outputs] == [False, True]
         assert events.outputs[-1]["text"] == "- 350 output cards\n- Clean final text"
         assert events.awaiting_input_count == 1
+
+    @pytest.mark.anyio
+    async def test_agent_end_preserves_report_before_subagent_followup(
+        self, fresh_store, monkeypatch
+    ) -> None:
+        """All completed answers survive the single pending-final slot."""
+        monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session.state = SessionState.RUNNING
+        fresh_store.update_session(session)
+        runner = PiRpcRunner(ApiRunnerEvents())
+        messages = [
+            {
+                "role": "assistant",
+                "stopReason": "toolUse",
+                "content": [{"type": "text", "text": "Checking sources."}],
+            },
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [
+                    {"type": "text", "text": "Full investigation report.\n"},
+                    {"type": "text", "text": "Verified findings and caveats."},
+                ],
+            },
+            {
+                "role": "toolResult",
+                "content": [{"type": "text", "text": "Subagent details"}],
+            },
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "Already included above."}],
+            },
+        ]
+
+        await runner._handle_event(
+            session.id, MagicMock(), {"type": "agent_end", "messages": messages}
+        )
+
+        finals = [
+            event["data"]["text"]
+            for event in fresh_store.read_event_log(session.id)
+            if event["type"] == "output_final"
+        ]
+        assert finals == [
+            "Full investigation report.\nVerified findings and caveats.\n"
+            "Already included above."
+        ]
+        assert fresh_store.get_session(session.id).state == SessionState.AWAITING_INPUT
 
     @pytest.mark.anyio
     async def test_handle_get_state_response(self, runner_and_events, fresh_store):

@@ -39,8 +39,8 @@ From that point the session appears in the web UI and, if you set up a bridge, g
 If you want to launch agents through Tether rather than directly:
 
 ```bash
-# Set a default adapter once
-echo "TETHER_DEFAULT_AGENT_ADAPTER=claude_auto" >> ~/.config/tether/config.env
+# Pi is the default; pin it explicitly if desired
+echo "TETHER_DEFAULT_AGENT_ADAPTER=pi" >> ~/.config/tether/config.env
 
 tether new .                          # create a session in the current directory
 tether new . -m "fix the failing tests"  # create and start immediately
@@ -137,15 +137,15 @@ Claude subscription OAuth is intended for your own local use. If other people us
 
 ## Adapters
 
-Set `TETHER_DEFAULT_AGENT_ADAPTER` to use `tether new` or create sessions from the UI without specifying an adapter each time. If you only ever attach external sessions, you do not need this.
+New sessions use Pi by default. Set `TETHER_DEFAULT_AGENT_ADAPTER` to choose another adapter. Public names such as `pi`, `claude`, `codex`, and `opencode` are accepted; implementation names remain compatible.
 
 | Adapter | Description |
 |---------|-------------|
-| `claude_auto` | Claude Code, auto-detects OAuth or API key |
+| `claude` | Claude Code, auto-detects OAuth or API key |
 | `claude_subprocess` | Claude via Agent SDK subprocess |
 | `opencode` | OpenCode via TypeScript sidecar (auto-managed) |
-| `codex_sdk_sidecar` | Codex via TypeScript sidecar |
-| `pi_rpc` | Pi coding agent via JSON-RPC |
+| `codex` | Codex via TypeScript sidecar |
+| `pi` | Pi coding agent via JSON-RPC (`pi_rpc` remains compatible) |
 | `automation` | Script automations backed by local commands and manifests |
 | `litellm` | Any model via LiteLLM (experimental) |
 
@@ -228,7 +228,7 @@ Config is loaded in order: environment variables, local `.env`, `~/.config/tethe
 
 ```bash
 TETHER_AGENT_TOKEN=               # auth token (required in non-dev mode)
-TETHER_DEFAULT_AGENT_ADAPTER=     # default adapter for new sessions (optional)
+TETHER_DEFAULT_AGENT_ADAPTER=pi      # default adapter for new sessions
 TETHER_AGENT_HOST=0.0.0.0         # bind address
 TETHER_AGENT_PORT=8787            # port
 ```

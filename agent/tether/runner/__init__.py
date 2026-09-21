@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+
+from tether.adapter_names import normalize_adapter_name
 from tether.runner.base import Runner, RunnerEvents
 from tether.settings import settings
 
@@ -45,17 +47,6 @@ def _require_claude_sdk() -> None:
             "Claude adapter requires claude-agent-sdk. "
             "Install it with: pip install claude-agent-sdk"
         ) from e
-
-
-def normalize_adapter_name(name: str | None) -> str | None:
-    """Return the canonical adapter name for user-facing aliases."""
-
-    if name is None:
-        return None
-    normalized = name.strip().lower()
-    if normalized == "script":
-        return "automation"
-    return normalized
 
 
 def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:

@@ -11,6 +11,7 @@ import structlog
 from tether.api.emit import emit_state
 from tether.api.runner_events import get_api_runner
 from tether.api.state import session_lock, transition
+from tether.bridges.glue import bridge_manager, get_sessions_for_restore
 from tether.models import SessionState
 from tether.settings import settings
 from tether.store import store
@@ -29,6 +30,21 @@ def _parse_ts(value: str) -> float | None:
 
 
 MAINTENANCE_INTERVAL_SECONDS = 60
+
+
+async def telegram_topic_cleanup_loop() -> None:
+    """Close orphaned topics independently of pruning and idle timeouts."""
+    while True:
+        try:
+            bridge = bridge_manager.get_bridge("telegram")
+            close_topics = getattr(bridge, "close_orphaned_topics", None)
+            if close_topics is not None:
+                retired = await close_topics(get_sessions_for_restore)
+                if retired:
+                    logger.info("Cleaned up orphaned Telegram topics", count=retired)
+        except Exception:
+            logger.exception("Telegram topic cleanup failed; will retry")
+        await asyncio.sleep(MAINTENANCE_INTERVAL_SECONDS)
 
 
 async def maintenance_loop() -> None:

@@ -30,7 +30,7 @@ from tether.middleware import (
 )
 from tether.external_session_watcher import external_session_watcher
 from tether.log_config import configure_logging
-from tether.maintenance import maintenance_loop
+from tether.maintenance import maintenance_loop, telegram_topic_cleanup_loop
 from tether.settings import settings
 from tether.startup import log_ui_urls
 from tether.bridges.glue import (
@@ -60,11 +60,15 @@ async def lifespan(app: FastAPI):
     _subscribe_existing_sessions()
     await external_session_watcher.start()
     maintenance_task = asyncio.create_task(maintenance_loop())
+    topic_cleanup_task = asyncio.create_task(telegram_topic_cleanup_loop())
     log_ui_urls(port=settings.port())
     try:
         yield
     finally:
         maintenance_task.cancel()
+        topic_cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await topic_cleanup_task
         with suppress(asyncio.CancelledError):
             await maintenance_task
         # Give bridges and sidecars a few seconds to stop; don't block

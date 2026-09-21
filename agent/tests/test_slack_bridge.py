@@ -46,6 +46,89 @@ class TestSlackBridgePoC:
         )
         assert bridge is not None
 
+    @pytest.mark.parametrize(
+        ("agent", "adapter"),
+        [("pi", "pi_rpc"), ("opencode", "opencode")],
+    )
+    def test_new_agent_aliases(self, agent: str, adapter: str) -> None:
+        """Slack !new accepts public Pi and OpenCode names."""
+        from tether.bridges.slack.bot import SlackBridge
+
+        assert SlackBridge._agent_to_adapter(agent) == adapter
+
+    @pytest.mark.anyio
+    async def test_new_agent_outside_thread_lists_recent_directories(self) -> None:
+        """Slack !new <agent> outside a thread offers recent directories."""
+        from tether.bridges.slack import bot as slack_bot
+
+        callbacks = _mock_callbacks()
+        bridge = slack_bot.SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            callbacks=callbacks,
+        )
+        bridge._reply = AsyncMock()
+
+        with patch.object(
+            slack_bot,
+            "recent_directories",
+            AsyncMock(return_value=["/repo/one", "/repo/two"]),
+        ):
+            await bridge._cmd_new({"channel": "C01234567", "user": "U123"}, "pi")
+
+        bridge._reply.assert_awaited_once()
+        reply = bridge._reply.await_args.args[1]
+        assert "1. `/repo/one`" in reply
+        assert "`!new pi #1`" in reply
+        assert bridge._recent_new_directories[("C01234567", "U123")] == [
+            "/repo/one",
+            "/repo/two",
+        ]
+
+    @pytest.mark.anyio
+    async def test_new_agent_choice_uses_cached_recent_directory(self) -> None:
+        """Slack !new <agent> #N starts the matching cached directory."""
+        from tether.bridges.slack import bot as slack_bot
+
+        bridge = slack_bot.SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            callbacks=_mock_callbacks(),
+        )
+        bridge._reply = AsyncMock()
+        bridge._recent_new_directories[("C01234567", "U123")] = [
+            "/repo/one",
+            "/repo/two",
+        ]
+        parent_cmd = AsyncMock()
+
+        with patch.object(slack_bot.UpstreamSlackBridge, "_cmd_new", parent_cmd):
+            await bridge._cmd_new({"channel": "C01234567", "user": "U123"}, "pi #2")
+
+        parent_cmd.assert_awaited_once_with(
+            {"channel": "C01234567", "user": "U123"},
+            "--adapter pi /repo/two",
+        )
+
+    @pytest.mark.anyio
+    async def test_new_inside_thread_preserves_child_session_behavior(self) -> None:
+        """Slack !new <agent> inside a thread still reuses the child-session path."""
+        from tether.bridges.slack import bot as slack_bot
+
+        bridge = slack_bot.SlackBridge(
+            bot_token="xoxb-test-token",
+            channel_id="C01234567",
+            callbacks=_mock_callbacks(),
+        )
+        bridge._thread_ts["sess_existing"] = "111.222"
+        parent_cmd = AsyncMock()
+
+        event = {"channel": "C01234567", "user": "U123", "thread_ts": "111.222"}
+        with patch.object(slack_bot.UpstreamSlackBridge, "_cmd_new", parent_cmd):
+            await bridge._cmd_new(event, "pi")
+
+        parent_cmd.assert_awaited_once_with(event, "pi")
+
     @pytest.mark.anyio
     async def test_thread_names_are_unique_like_telegram(
         self, fresh_store: SessionStore, tmp_path

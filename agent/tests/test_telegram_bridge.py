@@ -35,12 +35,75 @@ class TestTelegramBridgeIntegration:
         )
         assert bridge is not None
 
-    def test_agent_aliases_include_pi(self) -> None:
-        """Telegram /new accepts Tether's local pi adapter alias."""
+    @pytest.mark.parametrize(
+        ("agent", "adapter"),
+        [
+            ("pi", "pi_rpc"),
+            ("pi_rpc", "pi_rpc"),
+            ("opencode", "opencode"),
+            ("opencode_sdk_sidecar", "opencode"),
+        ],
+    )
+    def test_agent_aliases_include_pi_and_opencode(
+        self, agent: str, adapter: str
+    ) -> None:
+        """Telegram /new accepts Pi and OpenCode adapter aliases."""
         from tether.bridges.telegram.bot import TelegramBridge
 
-        assert TelegramBridge._agent_to_adapter("pi") == "pi_rpc"
-        assert TelegramBridge._agent_to_adapter("pi_rpc") == "pi_rpc"
+        assert TelegramBridge._agent_to_adapter(agent) == adapter
+
+    @pytest.mark.parametrize(
+        ("adapter", "label"),
+        [("pi_rpc", "Pi"), ("opencode", "OpenCode")],
+    )
+    def test_agent_labels_include_pi_and_opencode(
+        self, adapter: str, label: str
+    ) -> None:
+        """Telegram confirmations use readable Pi and OpenCode labels."""
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        assert TelegramBridge._adapter_label(adapter) == label
+
+    @pytest.mark.parametrize(
+        ("agent", "adapter"),
+        [("pi", "pi_rpc"), ("opencode", "opencode")],
+    )
+    @pytest.mark.anyio
+    async def test_new_accepts_pi_and_opencode(self, agent: str, adapter: str) -> None:
+        """Telegram /new creates Pi and OpenCode sessions."""
+        from agent_tether.base import BridgeCallbacks
+        from tether.bridges.telegram.bot import TelegramBridge
+
+        create_session = AsyncMock(return_value={"id": "sess_new"})
+        callbacks = BridgeCallbacks(
+            create_session=create_session,
+            send_input=AsyncMock(),
+            stop_session=AsyncMock(),
+            respond_to_permission=AsyncMock(return_value=True),
+            list_sessions=AsyncMock(return_value=[]),
+            get_usage=AsyncMock(return_value={}),
+            check_directory=AsyncMock(
+                return_value={"exists": True, "path": "/worktrees/demo"}
+            ),
+            list_external_sessions=AsyncMock(return_value=[]),
+            get_external_history=AsyncMock(return_value=None),
+            attach_external=AsyncMock(return_value={}),
+        )
+        bridge = TelegramBridge(
+            bot_token="test_token",
+            forum_group_id=-1001234567890,
+            callbacks=callbacks,
+        )
+        update = MagicMock()
+        update.message.message_thread_id = None
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = [agent, "/worktrees/demo"]
+
+        await bridge._cmd_new(update, context)
+
+        create_session.assert_awaited_once()
+        assert create_session.await_args.kwargs["adapter"] == adapter
 
     @pytest.mark.anyio
     async def test_new_inside_topic_inherits_model(self) -> None:

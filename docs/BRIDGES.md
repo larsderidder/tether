@@ -63,6 +63,8 @@ Routes store events to bridge methods:
 - **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/sync`, `/usage`, `/compact`, `/help`
 - Error notifications include the bounded runner message instead of the generic `Status: error` text
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
+- Background cleanup closes recorded Telegram topics once their backing Tether session no longer exists. Chat history is preserved. Existing sessions, including idle or detached sessions, are left alone.
+- Cleanup runs separately from session maintenance, paces Telegram requests, and retries failures without discarding pending mappings. It also handles orphaned mappings left by earlier pruning.
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
 - Approval UI: inline keyboard with Allow, Deny, Allow {tool} (30m), Allow All (30m), Show All
 - Optional sender allowlist through `TELEGRAM_ALLOWED_USER_IDS`; without it, all forum users can control bound sessions
@@ -89,12 +91,14 @@ Routes store events to bridge methods:
 
 ## Bridge Session Commands
 
+New sessions announce their agent and model in the new topic or thread. If the runner's default is not known, the notice says so. Model changes reject choices outside a configured model list and keep the previous selection if resetting Pi fails. Pi startup/transport failures are reported instead of silently dropping the turn; provider access and quota are only checked when a turn runs.
+
 | Command | Action |
 |---------|--------|
 | `!compact [instructions]` / `/compact [instructions]` | Request pi context compaction for the current session |
 | `!sync` / `/sync` | Pull new messages from an attached external session |
 | `!usage` / `/usage` | Show token usage and cost |
-| `!models` / `/models` | List configured models for the current session's adapter |
+| `!models` / `/models` | List configured models for the current session's adapter; Telegram offers selection buttons |
 | `!model` / `/model` | Show the current session model |
 | `!model <model>` / `/model <model>` | Switch the model for future turns in this session |
 | `!verbosity` / `/verbosity` | Show bridge output verbosity for this session |
@@ -102,6 +106,8 @@ Routes store events to bridge methods:
 | `!buffer` / `/buffer` | Show bridge output buffering for this session |
 | `!buffer <seconds|off>` / `/buffer <seconds|off>` | Set or clear the max buffer seconds for this session |
 | `!new` / `/new` inside a session thread or topic | Start a child session in the same directory with the same adapter and model |
+| `!new [agent] [directory]` / `/new [agent] [directory]` | Start a session with Pi, OpenCode, Claude, or Codex. Pi is the default unless `TETHER_DEFAULT_AGENT_ADAPTER` overrides it. |
+| `!new recent` / `/new recent` | Choose a previously used directory, including external agent sessions. Also shown by bare `new` outside a session. Telegram uses paginated buttons; Slack and Discord show up to 10 choices selected with `!new [agent] #N`. |
 | `!stop` / `/stop` | Interrupt the session |
 
 ## Bridge Git Commands
@@ -145,6 +151,7 @@ Stored in base class as in-memory dicts:
 | `DISCORD_REQUIRE_PAIRING` | Require pairing before using the Discord bot (0/1) |
 | `DISCORD_PAIRING_CODE` | Optional fixed pairing code (if unset and pairing is required, one is generated and logged) |
 | `DISCORD_ALLOWED_USER_IDS` | Comma-separated Discord user IDs that are always authorized |
+| `TETHER_DEFAULT_AGENT_ADAPTER` | Default adapter for new sessions. Defaults to `pi`; `pi_rpc` remains compatible. |
 | `TETHER_BRIDGE_REACTION_NEW_SESSION_ENABLED` | Enable the `!new` plus checkmark reaction shortcut in Slack and Discord (default `1`) |
 | `TETHER_BRIDGE_REACTION_NEW_SESSION_EMOJI` | Emoji or reaction name used for the new-session shortcut (default `✅`) |
 | `DISCORD_AUTO_PAIR_USER_IDS` | Comma-separated Discord user IDs to seed into the paired-user set at launch |

@@ -13,7 +13,7 @@ Example template file::
     name: "Fix issues on my-project"
     clone_url: git@github.com:user/my-project.git
     branch: main
-    adapter: claude_auto
+    adapter: claude
     approval_mode: 2
     platform: telegram
     auto_branch: true

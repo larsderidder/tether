@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 
 import structlog
@@ -37,6 +37,7 @@ from tether.api.schemas import (
     UpdateBridgeOutputRequest,
     UpdateModelRequest,
 )
+from tether.adapter_names import normalize_adapter_name
 from tether.api.state import (
     maybe_set_session_name,
     now,
@@ -68,15 +69,24 @@ logger = structlog.get_logger(__name__)
 
 
 def _validate_model_allowed(adapter: str | None, model: str | None) -> None:
-    """Reject models blocked for the selected adapter."""
-    if not settings.is_adapter_model_blocked(adapter, model):
-        return
-    adapter_label = adapter or "default adapter"
-    raise_http_error(
-        "MODEL_BLOCKED",
-        f"Model '{model}' is blocked for {adapter_label}.",
-        422,
-    )
+    """Reject blocked models and typos when choices are configured."""
+    if settings.is_adapter_model_blocked(adapter, model):
+        adapter_label = adapter or "default adapter"
+        raise_http_error(
+            "MODEL_BLOCKED",
+            f"Model '{model}' is blocked for {adapter_label}.",
+            422,
+        )
+
+    available_models = settings.adapter_models(adapter)
+    if available_models and model not in available_models:
+        adapter_label = adapter or "default adapter"
+        choices = ", ".join(available_models)
+        raise_http_error(
+            "MODEL_NOT_AVAILABLE",
+            f"Model '{model}' is not configured for {adapter_label}. Available models: {choices}.",
+            422,
+        )
 
 
 async def _warn_if_remote_bypass_permissions(
@@ -197,6 +207,16 @@ async def create_session(
                 422,
             )
 
+    requested_adapter = normalize_adapter_name(payload.adapter)
+    adapter_for_model = requested_adapter or settings.adapter()
+    model = settings.normalize_adapter_model(
+        adapter_for_model, payload.model.strip() if payload.model else ""
+    )
+    if not model:
+        model = settings.adapter_default_model(adapter_for_model)
+    if model:
+        _validate_model_allowed(adapter_for_model, model)
+
     normalized_directory: str | None = None
     if payload.directory:
         candidate = Path(payload.directory).expanduser()
@@ -225,28 +245,21 @@ async def create_session(
         )
     session = store.create_session(repo_id=resolved_repo_id, base_ref=payload.base_ref)
 
-    # Validate and store adapter selection
-    if payload.adapter:
+    # Validate and store adapter selection.
+    if requested_adapter:
         try:
-            # Validate adapter early - this will create runner if needed
-            get_runner_registry().validate_adapter(payload.adapter)
-            session.adapter = payload.adapter
-            logger.info("Session adapter configured", adapter=payload.adapter)
+            # Validate adapter early. This creates the runner if needed.
+            get_runner_registry().validate_adapter(requested_adapter)
+            session.adapter = requested_adapter
+            logger.info("Session adapter configured", adapter=requested_adapter)
         except ValueError as e:
-            # Clean up session before returning error
+            # Clean up session before returning error.
             store.delete_session(session.id)
             raise_http_error(
                 "VALIDATION_ERROR", f"Invalid adapter '{payload.adapter}': {e}", 422
             )
 
-    adapter_for_model = payload.adapter or settings.adapter()
-    model = settings.normalize_adapter_model(
-        adapter_for_model, payload.model.strip() if payload.model else ""
-    )
-    if not model:
-        model = settings.adapter_default_model(adapter_for_model)
     if model:
-        _validate_model_allowed(adapter_for_model, model)
         session.model = model
         logger.info("Session model configured", model=session.model)
 
@@ -279,7 +292,7 @@ async def create_session(
             thread_label = preferred_thread_name_for_platform(
                 session, payload.platform
             ) or make_thread_name(
-                directory=normalized_directory, adapter=payload.adapter
+                directory=normalized_directory, adapter=requested_adapter
             )
             thread_info = await create_or_reuse_thread(
                 session.id,
@@ -936,7 +949,7 @@ async def list_models(
     _: None = Depends(require_token),
 ) -> ModelInfoResponse:
     """Return configured model choices for an adapter."""
-    adapter_name = adapter or settings.adapter()
+    adapter_name = normalize_adapter_name(adapter) or settings.adapter()
     default_model = settings.adapter_default_model(adapter_name) or None
     return ModelInfoResponse(
         adapter=adapter_name,
@@ -974,30 +987,63 @@ async def update_session_model(
 ) -> SessionResponse:
     """Update the model used for future turns in a session."""
     with _session_logging_context(session_id):
-        session = store.get_session(session_id)
-        if not session:
-            raise_http_error("NOT_FOUND", "Session not found", 404)
-        if session.state in (SessionState.RUNNING, SessionState.INTERRUPTING):
-            raise_http_error(
-                "SESSION_BUSY",
-                "Cannot change model while the session is running",
-                409,
+        async with session_lock(session_id):
+            session = store.get_session(session_id)
+            if not session:
+                raise_http_error("NOT_FOUND", "Session not found", 404)
+            if session.state in (SessionState.RUNNING, SessionState.INTERRUPTING):
+                raise_http_error(
+                    "SESSION_BUSY",
+                    "Cannot change model while the session is running",
+                    409,
+                )
+
+            adapter = session.adapter or settings.adapter()
+            model = settings.normalize_adapter_model(adapter, payload.model.strip())
+            if not model:
+                raise_http_error("VALIDATION_ERROR", "model must not be empty", 422)
+            _validate_model_allowed(adapter, model)
+
+            reset_pi_runner = (adapter or "").lower() == "pi_rpc" and session.state in (
+                SessionState.AWAITING_INPUT,
+                SessionState.ERROR,
             )
-        adapter = session.adapter or settings.adapter()
-        model = settings.normalize_adapter_model(adapter, payload.model.strip())
-        if not model:
-            raise_http_error("VALIDATION_ERROR", "model must not be empty", 422)
-        _validate_model_allowed(adapter, model)
-        session.model = model
-        store.update_session(session)
-        if (session.adapter or "").lower() == "pi_rpc" and session.state in (
-            SessionState.AWAITING_INPUT,
-            SessionState.ERROR,
-        ):
-            with suppress(Exception):
-                await get_api_runner(session.adapter).stop(session_id)
-        logger.info("Session model updated", model=session.model)
-        return SessionResponse.from_session(session, store)
+            if reset_pi_runner:
+                try:
+                    exit_code = await get_api_runner(adapter).stop(session_id)
+                except RunnerUnavailableError as exc:
+                    logger.warning(
+                        "Pi runner unavailable during model switch",
+                        session_id=session_id,
+                        error=str(exc),
+                    )
+                    raise_http_error(
+                        "MODEL_SWITCH_FAILED",
+                        f"Model was not changed because the Pi runner could not be reset: {exc}",
+                        503,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Pi runner reset failed during model switch",
+                        session_id=session_id,
+                    )
+                    raise_http_error(
+                        "MODEL_SWITCH_FAILED",
+                        f"Model was not changed because the Pi runner reset failed: {exc}",
+                        500,
+                    )
+                if exit_code not in (0, None):
+                    raise_http_error(
+                        "MODEL_SWITCH_FAILED",
+                        f"Model was not changed because the Pi runner exited with code {exit_code} during reset.",
+                        503,
+                    )
+
+            session.model = model
+            session.last_activity_at = now()
+            store.update_session(session)
+            logger.info("Session model updated", model=session.model)
+            return SessionResponse.from_session(session, store)
 
 
 @router.get("/sessions/{session_id}/diff", response_model=DiffResponse)

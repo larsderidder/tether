@@ -52,8 +52,8 @@ COMMANDS: tuple[BridgeCommand, ...] = (
     ),
     BridgeCommand(
         "new",
-        "[agent] [directory]",
-        "Start a new session",
+        "[agent] [directory|recent]",
+        "Start a session or choose a previous directory (default: Pi)",
         frozenset({"telegram", "slack", "discord"}),
         "global",
     ),

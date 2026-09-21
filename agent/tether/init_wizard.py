@@ -19,7 +19,7 @@ def run_wizard() -> None:
     print("This wizard will create your configuration file.")
     print()
 
-    config: dict[str, str] = {}
+    config: dict[str, str] = {"TETHER_DEFAULT_AGENT_ADAPTER": "pi"}
 
     # 1. Auth token
     token = secrets.token_urlsafe(32)
@@ -42,10 +42,8 @@ def run_wizard() -> None:
     print("Next steps:")
     print("  tether start")
     print()
-    print("To create sessions from the CLI or UI, set a default agent adapter:")
-    print(
-        "  TETHER_DEFAULT_AGENT_ADAPTER=claude_auto   # or opencode, pi_rpc, codex_sdk_sidecar"
-    )
+    print("Pi is the default agent for new sessions.")
+    print("Set TETHER_DEFAULT_AGENT_ADAPTER to use another adapter.")
     print()
     print("Your auth token (save this for connecting from your browser):")
     print(f"  {token}")

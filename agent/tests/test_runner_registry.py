@@ -105,19 +105,29 @@ def test_registry_caches_runners(registry, mock_events):
             assert runner1 is runner2
 
 
-def test_registry_maps_script_alias_to_automation(registry):
-    """Script is a user-facing alias for the automation adapter."""
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("script", "automation"),
+        ("pi", "pi_rpc"),
+        ("codex", "codex_sdk_sidecar"),
+        ("claude", "claude_auto"),
+        ("opencode_sdk_sidecar", "opencode"),
+    ],
+)
+def test_registry_maps_public_adapter_aliases(registry, alias, canonical):
+    """Public adapter names resolve to their canonical implementations."""
     with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
         mock_runner = MagicMock()
-        mock_runner.runner_type = "automation"
+        mock_runner.runner_type = canonical
         mock_get_runner.return_value = mock_runner
 
-        runner = registry.get_runner("script")
+        runner = registry.get_runner(alias)
 
         assert runner is mock_runner
-        mock_get_runner.assert_called_once_with(registry._events, name="automation")
-        assert "automation" in registry._runners
-        assert "script" not in registry._runners
+        mock_get_runner.assert_called_once_with(registry._events, name=canonical)
+        assert canonical in registry._runners
+        assert alias not in registry._runners or alias == canonical
 
 
 def test_registry_validates_adapter(registry):

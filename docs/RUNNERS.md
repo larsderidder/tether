@@ -85,11 +85,11 @@ Start one from Telegram with `/new automation /path/to/project`, then send photo
 
 See `AUTOMATIONS.md` for the full YAML and manifest contract.
 
-### Auto-detection (`runner/__init__.py`)
-`get_runner()` auto-selects adapter:
-1. If `TETHER_DEFAULT_AGENT_ADAPTER` is set, use that
-2. If Claude CLI OAuth or `ANTHROPIC_API_KEY` is available, use `claude_subprocess`
-3. Raise error
+### Default selection (`runner/__init__.py`)
+`get_runner()` selects an adapter in this order:
+1. Use the adapter passed for the session
+2. Use `TETHER_DEFAULT_AGENT_ADAPTER` when configured
+3. Use public adapter name `pi`, normalized internally to `pi_rpc`
 
 ## Runner Registry (`api/runner_registry.py`)
 
@@ -100,7 +100,7 @@ Caches runner instances. `get_runner_registry()` provides global singleton.
 
 | Env Var | Description |
 |---------|-------------|
-| `TETHER_DEFAULT_AGENT_ADAPTER` | Force adapter: `claude_subprocess`, `codex_sdk_sidecar`, `opencode`, `litellm`, `automation`, etc. |
+| `TETHER_DEFAULT_AGENT_ADAPTER` | Default adapter for new sessions. Defaults to `pi`. Public names are `pi`, `claude`, `codex`, and `opencode`; implementation names such as `pi_rpc` remain compatible. |
 | `TETHER_<ADAPTER>_DEFAULT_MODEL` | Optional model assigned to new sessions for an adapter, such as `TETHER_PI_DEFAULT_MODEL` or `TETHER_CLAUDE_DEFAULT_MODEL` |
 | `TETHER_<ADAPTER>_MODELS` | Comma-separated model choices shown by bridge model commands, such as `TETHER_PI_MODELS` |
 | `TETHER_<ADAPTER>_BLOCKED_MODELS` | Comma-separated blocked model patterns. Substrings and wildcards are supported, such as `TETHER_PI_BLOCKED_MODELS=opus`. `TETHER_<ADAPTER>_MODEL_BLACKLIST` is accepted as an alias. |

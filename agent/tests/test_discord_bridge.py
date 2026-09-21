@@ -49,6 +49,94 @@ class TestDiscordBridgePoC:
         )
         assert bridge is not None
 
+    @pytest.mark.parametrize(
+        ("agent", "adapter"),
+        [("pi", "pi_rpc"), ("opencode", "opencode")],
+    )
+    def test_new_agent_aliases(self, agent: str, adapter: str) -> None:
+        """Discord !new accepts public Pi and OpenCode names."""
+        from tether.bridges.discord.bot import DiscordBridge
+
+        assert DiscordBridge._agent_to_adapter(agent) == adapter
+
+    @pytest.mark.anyio
+    async def test_new_agent_outside_thread_lists_recent_directories(self) -> None:
+        """Discord !new <agent> outside a thread offers recent directories."""
+        from tether.bridges.discord import bot as discord_bot
+
+        callbacks = _mock_callbacks()
+        bridge = discord_bot.DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=callbacks,
+        )
+        message = MagicMock()
+        message.channel.id = 1234567890
+        message.channel.send = AsyncMock()
+        message.author.id = 456
+
+        with patch.object(
+            discord_bot,
+            "recent_directories",
+            AsyncMock(return_value=["/repo/one", "/repo/two"]),
+        ):
+            await bridge._cmd_new(message, "pi")
+
+        message.channel.send.assert_awaited_once()
+        reply = message.channel.send.await_args.args[0]
+        assert "1. `/repo/one`" in reply
+        assert "`!new pi #1`" in reply
+        assert bridge._recent_new_directories[(1234567890, 456)] == [
+            "/repo/one",
+            "/repo/two",
+        ]
+
+    @pytest.mark.anyio
+    async def test_new_agent_choice_uses_cached_recent_directory(self) -> None:
+        """Discord !new <agent> #N starts the matching cached directory."""
+        from tether.bridges.discord import bot as discord_bot
+
+        bridge = discord_bot.DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=_mock_callbacks(),
+        )
+        message = MagicMock()
+        message.channel.id = 1234567890
+        message.channel.send = AsyncMock()
+        message.author.id = 456
+        bridge._recent_new_directories[(1234567890, 456)] = [
+            "/repo/one",
+            "/repo/two",
+        ]
+        parent_cmd = AsyncMock()
+
+        with patch.object(discord_bot.UpstreamDiscordBridge, "_cmd_new", parent_cmd):
+            await bridge._cmd_new(message, "pi #2")
+
+        parent_cmd.assert_awaited_once_with(message, "--adapter pi /repo/two")
+
+    @pytest.mark.anyio
+    async def test_new_inside_thread_preserves_child_session_behavior(self) -> None:
+        """Discord !new <agent> inside a thread still reuses the child-session path."""
+        from tether.bridges.discord import bot as discord_bot
+
+        bridge = discord_bot.DiscordBridge(
+            bot_token="discord_bot_token",
+            channel_id=1234567890,
+            callbacks=_mock_callbacks(),
+        )
+        message = MagicMock()
+        message.channel.id = 9876543210
+        message.author.id = 456
+        bridge._thread_ids["sess_existing"] = 9876543210
+        parent_cmd = AsyncMock()
+
+        with patch.object(discord_bot.UpstreamDiscordBridge, "_cmd_new", parent_cmd):
+            await bridge._cmd_new(message, "pi")
+
+        parent_cmd.assert_awaited_once_with(message, "pi")
+
     @pytest.mark.anyio
     async def test_on_output_sends_to_discord_thread(
         self, fresh_store: SessionStore

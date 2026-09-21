@@ -457,7 +457,7 @@ def _write_remote_config(
         f"TETHER_AGENT_TOKEN={token}",
         "TETHER_AGENT_HOST=0.0.0.0",
         f"TETHER_AGENT_PORT={port}",
-        "TETHER_DEFAULT_AGENT_ADAPTER=claude_auto",
+        "TETHER_DEFAULT_AGENT_ADAPTER=pi",
     ]
     if telegram_token:
         lines.append(f"TELEGRAM_BOT_TOKEN={telegram_token}")

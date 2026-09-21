@@ -51,8 +51,8 @@ Create session. Supports local directory sessions and cloned-repo sessions.
 | `clone_branch` | `str?` | Branch to check out at clone time (default: repo default) |
 | `shallow` | `bool` | Shallow clone (`--depth 1`) |
 | `auto_branch` | `bool` | Create a `tether/<id>` working branch after clone |
-| `adapter` | `str?` | Runner adapter (see Runners doc) |
-| `model` | `str?` | Model captured on the session and passed to compatible runners. If omitted, the adapter default model is used when configured. Blocked models return `MODEL_BLOCKED` with status 422. |
+| `adapter` | `str?` | Runner adapter (see Runners doc). Public names such as `pi`, `claude`, `codex`, and `opencode` are normalized to canonical implementation names. Omit to use `TETHER_DEFAULT_AGENT_ADAPTER`, which defaults to Pi. |
+| `model` | `str?` | Model captured on the session and passed to compatible runners. If omitted, the adapter default model is used when configured. Blocked models return `MODEL_BLOCKED`; choices outside a configured model list return `MODEL_NOT_AVAILABLE`, both with status 422. |
 | `platform` | `str?` | `"telegram"`, `"slack"`, `"discord"` |
 | `bridge_verbosity` | `str?` | Optional bridge verbosity override: `none`, `minimal`, `medium`, or `high` |
 | `bridge_buffer_max_seconds` | `float?` | Optional max seconds before flushing buffered bridge activity. `null` means flush at final/end turn |
@@ -115,8 +115,8 @@ Returns aggregated token usage from metadata events.
 {"input_tokens": 1000, "output_tokens": 500, "total_cost_usd": 0.012}
 ```
 
-### `GET /api/models?adapter=pi_rpc`
-Returns model settings for an adapter.
+### `GET /api/models?adapter=pi`
+Returns model settings for an adapter. The response uses the canonical internal adapter name.
 ```json
 {"adapter": "pi_rpc", "model": "openai/gpt-5.1", "default_model": "openai/gpt-5.1", "available_models": ["openai/gpt-5.1"]}
 ```
@@ -125,7 +125,7 @@ Returns model settings for an adapter.
 Returns active model settings for a session.
 
 ### `PATCH /api/sessions/{id}/model`
-Changes the model used for future turns. Fails with 409 while the session is running and 422 when the model is blocked for the adapter.
+Changes the model used for future turns. Fails with 409 while the session is running and 422 when the model is blocked or absent from a configured model list. Changes are serialized with session input. Pi is reset before the new model is saved; a failed reset returns `MODEL_SWITCH_FAILED` and preserves the previous model.
 ```json
 {"model": "anthropic/claude-sonnet-4-20250514"}
 ```

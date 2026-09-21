@@ -8,6 +8,7 @@ the session file path.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import glob
 import json
 import os
@@ -25,6 +26,7 @@ from tether.discovery.pi_sessions import (
     get_pi_session_model,
 )
 from tether.models import SessionState
+from tether.log_redaction import make_log_redactor
 from tether.runner.base import RunnerEvents, RunnerUnavailableError
 from tether.settings import settings
 from tether.store import store
@@ -230,9 +232,15 @@ class PiRpcRunner:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    pass
+                    raise RunnerUnavailableError(
+                        "pi process did not stop after being killed"
+                    )
 
+        reader = self._readers.get(session_id)
         self._cleanup(session_id)
+        if reader and reader is not asyncio.current_task():
+            with suppress(asyncio.CancelledError):
+                await reader
         store.clear_stop_requested(session_id)
         return 0
 
@@ -412,7 +420,7 @@ class PiRpcRunner:
         proc = self._processes.get(session_id)
         if not proc or proc.returncode is not None:
             logger.warning("No pi process to send prompt to", session_id=session_id)
-            return
+            raise RunnerUnavailableError("pi process is not available")
 
         logger.info(
             "Sending prompt to pi",
@@ -443,13 +451,16 @@ class PiRpcRunner:
     ) -> None:
         """Write a JSON-line command to the subprocess stdin and await flush."""
         if proc.stdin is None:
-            return
+            raise RunnerUnavailableError("pi process stdin is not available")
         line = json.dumps(cmd, separators=(",", ":")) + "\n"
-        proc.stdin.write(line.encode())
         try:
+            proc.stdin.write(line.encode())
             await proc.stdin.drain()
-        except Exception:
-            logger.debug("Failed to drain stdin", exc_info=True)
+        except Exception as exc:
+            logger.warning("Failed to write pi command", error=str(exc))
+            raise RunnerUnavailableError(
+                f"failed to write to pi process: {exc}"
+            ) from exc
 
     def _get_pi_binary(self) -> str:
         """Find the pi binary, raising if not available."""
@@ -467,7 +478,7 @@ class PiRpcRunner:
         """Clean up all state for a session."""
         # Cancel reader
         reader = self._readers.pop(session_id, None)
-        if reader and not reader.done():
+        if reader and reader is not asyncio.current_task() and not reader.done():
             reader.cancel()
 
         # Cancel heartbeat
@@ -536,6 +547,8 @@ class PiRpcRunner:
     ) -> None:
         """Read JSON-line events from pi's stdout and dispatch them."""
         start_time = time.monotonic()
+        cancelled = False
+        stderr_text = ""
 
         logger.info("Starting pi event reader", session_id=session_id)
         try:
@@ -567,6 +580,7 @@ class PiRpcRunner:
                 await self._handle_event(session_id, proc, event)
         except asyncio.CancelledError:
             logger.info("Pi reader task cancelled", session_id=session_id)
+            cancelled = True
         except Exception:
             logger.exception("Pi reader task failed", session_id=session_id)
             await self._events.on_error(
@@ -586,6 +600,20 @@ class PiRpcRunner:
                         proc.stderr.read(), timeout=2.0
                     )
                     if stderr_data:
+                        # Startup diagnostics can contain configured credentials.
+                        redacted = make_log_redactor()(
+                            logger,
+                            "error",
+                            {"message": stderr_data.decode(errors="replace")},
+                        )
+                        stderr_text = str(redacted["message"]).strip()[-2000:]
+                        if proc.returncode not in (0, None):
+                            logger.warning(
+                                "Pi process failed",
+                                session_id=session_id,
+                                exit_code=proc.returncode,
+                                stderr=stderr_data.decode(errors="replace")[:4000],
+                            )
                         for line in stderr_data.decode(errors="replace").splitlines():
                             if line.strip():
                                 logger.debug(
@@ -604,10 +632,30 @@ class PiRpcRunner:
             self._cleanup(session_id)
 
             # Signal completion
-            if store.is_stop_requested(session_id):
-                await self._events.on_exit(session_id, proc.returncode)
-            else:
-                await self._events.on_awaiting_input(session_id)
+            if not cancelled:
+                session = store.get_session(session_id)
+                active_turn = session and session.state == SessionState.RUNNING
+                if store.is_stop_requested(session_id):
+                    await self._events.on_exit(session_id, proc.returncode)
+                elif proc.returncode not in (0, None):
+                    if active_turn:
+                        detail = f"Pi exited with code {proc.returncode}."
+                        if stderr_text:
+                            detail += f" {stderr_text}"
+                        await self._events.on_error(
+                            session_id,
+                            "PI_PROCESS_EXITED",
+                            f"{detail}\nCheck the model with /models (Telegram) or !models (Slack/Discord), then resend your message.",
+                        )
+                    await self._events.on_exit(session_id, proc.returncode)
+                elif active_turn:
+                    await self._events.on_error(
+                        session_id,
+                        "PI_PROCESS_EXITED",
+                        "Pi process exited before completing the turn.",
+                    )
+                else:
+                    await self._events.on_awaiting_input(session_id)
 
     # ------------------------------------------------------------------
     # Internal: event dispatch
@@ -774,35 +822,41 @@ class PiRpcRunner:
         return None
 
     async def _emit_agent_final_messages(self, session_id: str, event: dict) -> bool:
-        """Emit assistant text blocks from an agent_end event."""
-        messages = event.get("messages", [])
-        emitted_final = False
-        for msg in messages:
+        """Preserve completed answers when Pi drains follow-ups in the same run."""
+        answers: list[str] = []
+        for msg in event.get("messages", []):
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
+            if msg.get("stopReason") == "toolUse":
+                continue
             content = msg.get("content", [])
-            for block in content if isinstance(content, list) else []:
-                if not isinstance(block, dict) or block.get("type") != "text":
-                    continue
-                text = block.get("text", "")
-                if not text:
-                    continue
-                prefix = ""
-                if self._assistant_marker_needed.get(session_id):
-                    lead = "" if self._at_line_start.get(session_id, True) else "\n"
-                    prefix = f"{lead}[assistant] "
-                await self._emit_output(
-                    session_id,
-                    "combined",
-                    f"{prefix}{text}",
-                    kind="final",
-                    is_final=True,
-                    bridge_segments=_bridge_segment("assistant", text),
-                )
-                self._assistant_marker_needed[session_id] = False
-                self._thinking_marker_needed[session_id] = True
-                emitted_final = True
-        return emitted_final
+            text = "".join(
+                block.get("text", "")
+                for block in (content if isinstance(content, list) else [])
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+            if text:
+                answers.append(text)
+        if not answers:
+            return False
+
+        # The API has one pending-final slot; separate writes replace earlier answers.
+        text = "\n\n".join(answers)
+        prefix = ""
+        if self._assistant_marker_needed.get(session_id):
+            lead = "" if self._at_line_start.get(session_id, True) else "\n"
+            prefix = f"{lead}[assistant] "
+        await self._emit_output(
+            session_id,
+            "combined",
+            f"{prefix}{text}",
+            kind="final",
+            is_final=True,
+            bridge_segments=_bridge_segment("assistant", text),
+        )
+        self._assistant_marker_needed[session_id] = False
+        self._thinking_marker_needed[session_id] = True
+        return True
 
     async def _handle_turn_end(self, session_id: str, event: dict) -> None:
         """Warn once when a Pi turn reports high context usage."""

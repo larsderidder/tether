@@ -158,7 +158,7 @@ def get_tool_definitions() -> list[dict]:
                     },
                     "adapter": {
                         "type": "string",
-                        "description": "Runner adapter (e.g. claude_auto, claude_subprocess, pi_rpc)",
+                        "description": "Runner adapter, such as pi, claude, codex, or opencode",
                     },
                     "approval_mode": {
                         "type": "integer",

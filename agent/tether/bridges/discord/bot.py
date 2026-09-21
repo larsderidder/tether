@@ -12,6 +12,7 @@ import contextlib
 from dataclasses import dataclass
 import io
 import os
+import shlex
 import re
 import socket
 import time
@@ -23,8 +24,10 @@ from agent_tether.discord.bot import DiscordConfig as UpstreamDiscordConfig
 from agent_tether.discord.pairing_state import save as save_pairing_state
 from agent_tether.thread_naming import adapter_to_runner
 
+from tether.adapter_names import adapter_label, bridge_agent_to_adapter
 from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
+from tether.bridges.session_creation import SessionCreationMixin, recent_directories
 from tether.bridges.model_api import (
     format_model_info,
     get_session_model,
@@ -110,7 +113,7 @@ class _DiscordStarterState:
     last_rendered: str = ""
 
 
-class DiscordBridge(UpstreamDiscordBridge):
+class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
     """Compatibility wrapper for the upstream Discord bridge.
 
     Upstream ``channel.create_thread(...)`` creates private threads when the
@@ -122,6 +125,16 @@ class DiscordBridge(UpstreamDiscordBridge):
     message so Discord treats it as a public thread. For any other channel type,
     fall back to upstream behavior unchanged.
     """
+
+    @staticmethod
+    def _agent_to_adapter(raw: str) -> str | None:
+        """Map user-facing agent names to canonical adapter names."""
+        return bridge_agent_to_adapter(raw)
+
+    @staticmethod
+    def _adapter_label(adapter: str | None) -> str | None:
+        """Map canonical adapter names to user-facing labels."""
+        return adapter_label(adapter)
 
     def __init__(
         self,
@@ -180,6 +193,7 @@ class DiscordBridge(UpstreamDiscordBridge):
         self._dashboard_control_channel_id: int | None = None
         self._message_dedupe = ShortLivedMessageDedupe()
         self._message_expansions: dict[int, _DiscordExpansion] = {}
+        self._recent_new_directories: dict[tuple[int, int], list[str]] = {}
         self._apply_auto_pair_users()
 
     async def _send_upstream_error_status(
@@ -198,6 +212,99 @@ class DiscordBridge(UpstreamDiscordBridge):
         except (TypeError, ValueError):
             return None
         return thread_id or None
+
+    @staticmethod
+    def _safe_inline(value: str) -> str:
+        """Escape text for inline bridge command examples."""
+
+        return value.replace("`", "ʼ")
+
+    @staticmethod
+    def _recent_choice_index(token: str) -> int | None:
+        """Parse a one-based recent-directory choice token."""
+
+        raw = token.strip()
+        if not raw.startswith("#"):
+            return None
+        raw = raw[1:]
+        if not raw.isdigit():
+            return None
+        index = int(raw)
+        return index if index > 0 else None
+
+    def _recent_choice_key(self, message: Any) -> tuple[int, int]:
+        """Return the stable snapshot key for a Discord user in a channel."""
+
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0)) or int(
+            self._channel_id or 0
+        )
+        user_id = int(getattr(message.author, "id", 0) or 0)
+        return channel_id, user_id
+
+    async def _show_recent_directories(self, message: Any, agent: str | None) -> None:
+        """Show numbered recent directory choices for a later !new #N command."""
+
+        try:
+            directories = (await recent_directories(self._callbacks))[:10]
+        except Exception:
+            logger.exception("Failed to load Discord directory history")
+            await message.channel.send("Could not load directories. Try !new again.")
+            return
+        key = self._recent_choice_key(message)
+        if (
+            key not in self._recent_new_directories
+            and len(self._recent_new_directories) >= 128
+        ):
+            self._recent_new_directories.pop(next(iter(self._recent_new_directories)))
+        self._recent_new_directories[key] = list(directories)
+        if not directories:
+            await message.channel.send("No recent directories found.")
+            return
+
+        prefix = f"!new {agent} #" if agent else "!new #"
+        lines = ["Recent directories (up to 10):"]
+        for index, directory in enumerate(directories, 1):
+            label = directory if len(directory) <= 140 else directory[:137] + "..."
+            lines.append(f"{index}. `{self._safe_inline(label)}`")
+        lines.append("")
+        lines.append(f"Start one with `{prefix}1`.")
+        await message.channel.send("\n".join(lines))
+
+    async def _start_recent_directory(
+        self,
+        message: Any,
+        agent: str | None,
+        choice_token: str,
+    ) -> bool:
+        """Start a session from a cached recent-directory choice."""
+
+        index = self._recent_choice_index(choice_token)
+        if index is None:
+            return False
+
+        key = self._recent_choice_key(message)
+        directories = self._recent_new_directories.get(key) or []
+        if index > len(directories):
+            await message.channel.send(
+                "Run `!new recent` to refresh recent directories."
+            )
+            return True
+
+        directory = directories[index - 1]
+        if agent:
+            args = f"--adapter {shlex.quote(agent)} {shlex.quote(directory)}"
+        else:
+            base_id = self._session_for_thread(message.channel.id)
+            reply = await self._handle_new_extended(
+                message,
+                {"directory_raw": directory},
+                platform=self.PLATFORM,
+                base_session_id=base_id,
+            )
+            await message.channel.send(reply)
+            return True
+        await super()._cmd_new(message, args)
+        return True
 
     def _restore_thread_mappings_from_store(self) -> None:
         try:
@@ -1104,6 +1211,39 @@ class DiscordBridge(UpstreamDiscordBridge):
             return session_id
         self._restore_thread_mappings_from_store()
         return super()._session_for_thread(thread_id)
+
+    async def _cmd_new(self, message: Any, args: str) -> None:
+        """Handle recent-directory shortcuts before deferring to upstream !new."""
+
+        parts = (args or "").split()
+        channel_id = self._parse_thread_id(getattr(message.channel, "id", 0))
+        base_session_id = (
+            self._session_for_thread(channel_id or 0) if channel_id else None
+        )
+        if not parts and not base_session_id:
+            await self._show_recent_directories(message, None)
+            return
+
+        if parts and parts[0].lower() == "recent":
+            await self._show_recent_directories(message, None)
+            return
+
+        if parts and await self._start_recent_directory(message, None, parts[0]):
+            return
+
+        if parts:
+            adapter = self._agent_to_adapter(parts[0])
+            if adapter and len(parts) == 1 and not base_session_id:
+                await self._show_recent_directories(message, parts[0])
+                return
+            if adapter and len(parts) == 2:
+                if parts[1].lower() == "recent":
+                    await self._show_recent_directories(message, parts[0])
+                    return
+                if await self._start_recent_directory(message, parts[0], parts[1]):
+                    return
+
+        await super()._cmd_new(message, args)
 
     async def _dispatch_command(self, message: Any, text: str) -> None:
         """Parse Discord commands handled by the local bridge."""

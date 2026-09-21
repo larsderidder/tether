@@ -7,10 +7,44 @@ import httpx
 from tether.settings import settings
 
 
+class ModelApiError(RuntimeError):
+    """User-facing error returned by the session model API."""
+
+
 def _api_headers() -> dict[str, str]:
     """Return internal API auth headers."""
     token = settings.token()
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _json_or_error(response: httpx.Response) -> dict:
+    """Return JSON or raise a bridge-friendly API error."""
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        message = _error_message(response)
+        raise ModelApiError(message) from exc
+    return response.json()
+
+
+def _error_message(response: httpx.Response) -> str:
+    """Extract a concise error message from a Tether API response."""
+    try:
+        data = response.json()
+    except ValueError:
+        return f"Tether API returned HTTP {response.status_code}"
+
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        code = str(error.get("code") or "").strip()
+        if message and code:
+            return f"{message} ({code})"
+        if message:
+            return message
+        if code:
+            return code
+    return f"Tether API returned HTTP {response.status_code}"
 
 
 async def get_session_model(session_id: str) -> dict:
@@ -21,8 +55,7 @@ async def get_session_model(session_id: str) -> dict:
             headers=_api_headers(),
             timeout=10.0,
         )
-        response.raise_for_status()
-    return response.json()
+    return _json_or_error(response)
 
 
 async def set_session_model(session_id: str, model: str) -> dict:
@@ -34,8 +67,7 @@ async def set_session_model(session_id: str, model: str) -> dict:
             headers=_api_headers(),
             timeout=10.0,
         )
-        response.raise_for_status()
-    return response.json()
+    return _json_or_error(response)
 
 
 def format_model_info(info: dict) -> str:

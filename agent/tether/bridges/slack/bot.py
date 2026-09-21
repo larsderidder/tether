@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shlex
 from typing import Any
 
 import structlog
 from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
+from tether.adapter_names import adapter_label, bridge_agent_to_adapter
 from tether.bridges.attachments import attachments_from_metadata
 from tether.bridges.command_catalog import help_text
 from tether.bridges.compact_api import compact_session
 from tether.bridges.debug_attachments import build_error_debug_bundle
+from tether.bridges.session_creation import SessionCreationMixin, recent_directories
 from tether.bridges.model_api import (
     format_model_info,
     get_session_model,
@@ -40,8 +43,18 @@ logger = structlog.get_logger(__name__)
 _ERROR_ATTACHMENT_DELAY_S = 0.35
 
 
-class SlackBridge(UpstreamSlackBridge):
+class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
     """Local Slack wrapper that adds reaction-driven session creation."""
+
+    @staticmethod
+    def _agent_to_adapter(raw: str) -> str | None:
+        """Map user-facing agent names to canonical adapter names."""
+        return bridge_agent_to_adapter(raw)
+
+    @staticmethod
+    def _adapter_label(adapter: str | None) -> str | None:
+        """Map canonical adapter names to user-facing labels."""
+        return adapter_label(adapter)
 
     def __init__(
         self,
@@ -76,6 +89,7 @@ class SlackBridge(UpstreamSlackBridge):
         self._reaction_shortcuts_completed: set[str] = set()
         self._reaction_shortcuts_in_progress: set[str] = set()
         self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
+        self._recent_new_directories: dict[tuple[str, str], list[str]] = {}
 
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
@@ -208,6 +222,128 @@ class SlackBridge(UpstreamSlackBridge):
             return parse_reaction_shortcut_message(text) is not None
         except ReactionShortcutError:
             return True
+
+    @staticmethod
+    def _safe_inline(value: str) -> str:
+        """Escape text for inline bridge command examples."""
+
+        return value.replace("`", "ʼ")
+
+    @staticmethod
+    def _recent_choice_index(token: str) -> int | None:
+        """Parse a one-based recent-directory choice token."""
+
+        raw = token.strip()
+        if not raw.startswith("#"):
+            return None
+        raw = raw[1:]
+        if not raw.isdigit():
+            return None
+        index = int(raw)
+        return index if index > 0 else None
+
+    def _recent_choice_key(self, event: dict) -> tuple[str, str]:
+        """Return the stable snapshot key for a Slack user in a channel."""
+
+        return (
+            str(event.get("channel") or self._channel_id),
+            str(event.get("user") or ""),
+        )
+
+    async def _show_recent_directories(self, event: dict, agent: str | None) -> None:
+        """Show numbered recent directory choices for a later !new #N command."""
+
+        try:
+            directories = (await recent_directories(self._callbacks))[:10]
+        except Exception:
+            logger.exception("Failed to load Slack directory history")
+            await self._reply(event, "Could not load directories. Try !new again.")
+            return
+        key = self._recent_choice_key(event)
+        if (
+            key not in self._recent_new_directories
+            and len(self._recent_new_directories) >= 128
+        ):
+            self._recent_new_directories.pop(next(iter(self._recent_new_directories)))
+        self._recent_new_directories[key] = list(directories)
+        if not directories:
+            await self._reply(event, "No recent directories found.")
+            return
+
+        prefix = f"!new {agent} #" if agent else "!new #"
+        lines = ["Recent directories (up to 10):"]
+        for index, directory in enumerate(directories, 1):
+            label = directory if len(directory) <= 140 else directory[:137] + "..."
+            lines.append(f"{index}. `{self._safe_inline(label)}`")
+        lines.append("")
+        lines.append(f"Start one with `{prefix}1`.")
+        await self._reply(event, "\n".join(lines))
+
+    async def _start_recent_directory(
+        self,
+        event: dict,
+        agent: str | None,
+        choice_token: str,
+    ) -> bool:
+        """Start a session from a cached recent-directory choice."""
+
+        index = self._recent_choice_index(choice_token)
+        if index is None:
+            return False
+
+        key = self._recent_choice_key(event)
+        directories = self._recent_new_directories.get(key) or []
+        if index > len(directories):
+            await self._reply(event, "Run `!new recent` to refresh recent directories.")
+            return True
+
+        directory = directories[index - 1]
+        if agent:
+            args = f"--adapter {shlex.quote(agent)} {shlex.quote(directory)}"
+        else:
+            thread_ts = event.get("thread_ts")
+            base_id = self._session_for_thread(thread_ts) if thread_ts else None
+            reply = await self._handle_new_extended(
+                event,
+                {"directory_raw": directory},
+                platform=self.PLATFORM,
+                base_session_id=base_id,
+            )
+            await self._reply(event, reply)
+            return True
+        await super()._cmd_new(event, args)
+        return True
+
+    async def _cmd_new(self, event: dict, args: str) -> None:
+        """Handle recent-directory shortcuts before deferring to upstream !new."""
+
+        parts = (args or "").split()
+        thread_ts = event.get("thread_ts")
+        base_session_id = self._session_for_thread(thread_ts) if thread_ts else None
+        if not parts and not base_session_id:
+            await self._show_recent_directories(event, None)
+            return
+
+        if parts and parts[0].lower() == "recent":
+            await self._show_recent_directories(event, None)
+            return
+
+        if parts and await self._start_recent_directory(event, None, parts[0]):
+            return
+
+        if parts:
+            adapter = self._agent_to_adapter(parts[0])
+            if adapter and len(parts) == 1 and not base_session_id:
+                await self._show_recent_directories(event, parts[0])
+                return
+            if adapter and len(parts) == 2:
+                if parts[1].lower() == "recent":
+                    await self._show_recent_directories(event, parts[0])
+                    return
+                if await self._start_recent_directory(event, parts[0], parts[1]):
+                    return
+
+        await super()._cmd_new(event, args)
 
     async def _dispatch_command(self, event: dict, text: str) -> None:
         """Parse Slack commands handled by the local bridge."""

@@ -150,6 +150,16 @@ class TestSessionsEndpoints:
         assert patch_resp.json()["model"] == "model-b"
 
     @pytest.mark.anyio
+    async def test_model_list_normalizes_public_pi_alias(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Model lookup accepts the public Pi adapter name."""
+        response = await api_client.get("/api/models", params={"adapter": "pi"})
+
+        assert response.status_code == 200
+        assert response.json()["adapter"] == "pi_rpc"
+
+    @pytest.mark.anyio
     async def test_pi_session_model_endpoints_use_provider_qualified_models(
         self,
         api_client: httpx.AsyncClient,
@@ -207,6 +217,7 @@ class TestSessionsEndpoints:
     ) -> None:
         """Blocked adapter models cannot be set on sessions."""
         monkeypatch.setenv("TETHER_PI_BLOCKED_MODELS", "*opus*")
+        monkeypatch.setenv("TETHER_PI_MODELS", "anthropic/claude-sonnet-4")
 
         create_resp = await api_client.post(
             "/api/sessions",
@@ -244,6 +255,7 @@ class TestSessionsEndpoints:
         monkeypatch,
     ) -> None:
         """Pi model changes after an error should apply on the next turn."""
+        monkeypatch.setenv("TETHER_PI_MODELS", "openai-codex/gpt-5.5,openai/gpt-5")
         create_resp = await api_client.post(
             "/api/sessions",
             json={
@@ -258,7 +270,7 @@ class TestSessionsEndpoints:
         fresh_store.update_session(session)
 
         mock_runner = MagicMock()
-        mock_runner.stop = AsyncMock()
+        mock_runner.stop = AsyncMock(return_value=0)
         monkeypatch.setattr(
             "tether.api.sessions.get_api_runner",
             lambda *a, **kw: mock_runner,
@@ -743,6 +755,27 @@ class TestSessionRename:
             assert response.status_code == 201
             session = response.json()
             assert session["adapter"] == "claude_subprocess"
+
+    @pytest.mark.anyio
+    async def test_create_session_with_public_pi_alias(
+        self, api_client: httpx.AsyncClient, tmp_path
+    ) -> None:
+        """Public Pi adapter names are stored canonically."""
+        test_dir = tmp_path / "test_repo"
+        test_dir.mkdir()
+
+        with patch("tether.api.runner_registry.get_runner") as mock_get_runner:
+            mock_runner = MagicMock()
+            mock_runner.runner_type = "pi"
+            mock_get_runner.return_value = mock_runner
+
+            response = await api_client.post(
+                "/api/sessions",
+                json={"directory": str(test_dir), "adapter": "pi"},
+            )
+
+        assert response.status_code == 201
+        assert response.json()["adapter"] == "pi_rpc"
 
     @pytest.mark.anyio
     async def test_create_session_without_adapter(

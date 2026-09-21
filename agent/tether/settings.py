@@ -18,6 +18,8 @@ import json
 import os
 from pathlib import Path
 
+from tether.adapter_names import normalize_adapter_name
+
 
 def _get(name: str, default: str = "") -> str:
     """Get an environment variable value."""
@@ -308,20 +310,13 @@ class Settings:
         Env: TETHER_DEFAULT_AGENT_ADAPTER
         Backwards compat: TETHER_AGENT_ADAPTER is still accepted if the new name is not set.
 
-        Returns None when not configured. Callers that need a concrete adapter
-        must handle None and surface a clear error rather than silently falling
-        back to a default.
+        Defaults to Pi when neither environment variable is configured.
 
-        Options:
-            - claude_auto: Auto-detect Claude (requires OAuth or ANTHROPIC_API_KEY)
-            - claude_subprocess: Claude via Agent SDK subprocess
-            - opencode: OpenCode via sidecar
-            - codex_sdk_sidecar: Codex via SDK sidecar
-            - pi_rpc: Pi coding agent via JSON-RPC subprocess
-            - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
+        Public options are pi, claude, codex, and opencode. Canonical
+        implementation names remain accepted for backwards compatibility.
         """
         value = _get("TETHER_DEFAULT_AGENT_ADAPTER") or _get("TETHER_AGENT_ADAPTER")
-        return value.lower() if value else None
+        return normalize_adapter_name(value or "pi")
 
     @staticmethod
     def adapter_model_key(adapter: str | None) -> str:
@@ -496,11 +491,11 @@ class Settings:
 
     @staticmethod
     def session_retention_days() -> int:
-        """Number of days to retain completed sessions before pruning.
+        """Days to retain inactive sessions before pruning. 0 disables pruning.
 
-        Env: TETHER_AGENT_SESSION_RETENTION_DAYS (default: 7)
+        Env: TETHER_AGENT_SESSION_RETENTION_DAYS (default: 30)
         """
-        return _get_int("TETHER_AGENT_SESSION_RETENTION_DAYS", default=7)
+        return _get_int("TETHER_AGENT_SESSION_RETENTION_DAYS", default=30)
 
     @staticmethod
     def session_idle_timeout_seconds() -> int:
