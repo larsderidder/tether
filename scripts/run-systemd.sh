@@ -21,5 +21,6 @@ fi
 
 make build-ui build-sidecars
 
-cd "$ROOT/agent"
+# Keep the checkout root as cwd so load_config finds its .env.
+export PYTHONPATH="$ROOT/agent${PYTHONPATH:+:$PYTHONPATH}"
 exec "$VENV_PYTHON" -m tether.main

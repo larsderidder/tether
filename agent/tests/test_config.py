@@ -1,10 +1,55 @@
 """Unit tests for config module."""
 
 import os
+from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
 from tether.config import config_dir, data_dir_default, load_config, parse_env_file
+
+
+@pytest.mark.parametrize("launcher", ["systemd", "make"])
+def test_source_launcher_keeps_project_config_directory(
+    tmp_path: Path, launcher: str
+) -> None:
+    """Source launches must load the checkout .env, not just user-level settings."""
+    source = Path(__file__).resolve().parents[2]
+    repo = tmp_path / "checkout"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "agent").mkdir()
+    (repo / ".env").write_text("TETHER_DEFAULT_AGENT_ADAPTER=pi\n")
+    shutil.copyfile(source / "scripts/run-systemd.sh", repo / "scripts/run-systemd.sh")
+    shutil.copyfile(source / "Makefile", repo / "Makefile")
+    home = tmp_path / "home"
+    binaries = home / ".virtualenvs/tether/bin"
+    binaries.mkdir(parents=True)
+    python = binaries / "python"
+    python.write_text('#!/bin/bash\nprintf "%s\\n" "$PWD" "$@"\n')
+    python.chmod(0o755)
+    env = {**os.environ, "HOME": str(home), "PATH": f"{binaries}:{os.environ['PATH']}"}
+    if launcher == "systemd":
+        make = binaries / "make"
+        make.write_text("#!/bin/bash\nexit 0\n")
+        make.chmod(0o755)
+        command = ["bash", str(repo / "scripts/run-systemd.sh")]
+    else:
+        command = [
+            "make",
+            "--no-print-directory",
+            "-o",
+            "build-ui",
+            "-o",
+            "build-sidecars",
+            "start",
+        ]
+
+    result = subprocess.run(
+        command, cwd=repo, env=env, capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.splitlines()[-3:] == [str(repo), "-m", "tether.main"]
 
 
 class TestParseEnvFile:

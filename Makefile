@@ -27,11 +27,11 @@ build-ui:
 build-sidecars:
 	./scripts/build-sidecars.sh
 
-# Start agent natively (Claude auto-detect works out of the box)
+# Start from the checkout root so its .env selects the default agent (Pi).
 start: build-ui build-sidecars
-	cd agent && python -m tether.main
+	PYTHONPATH="$(CURDIR)/agent$${PYTHONPATH:+:$$PYTHONPATH}" python -m tether.main
 
-# Start agent + Codex sidecar locally (recommended)
+# Optional Codex adapter and sidecar.
 start-codex: build-ui
 	./scripts/start-codex-local.sh
 
