@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Session } from "@/api"
+import { formatAgentName } from "@/composables/formatters"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
@@ -22,8 +23,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{ close: [] }>()
 
 const runnerTypeStyles = () => {
-  const type = props.session?.runner_type
-  if (type === "claude") {
+  const type = formatAgentName(props.session?.runner_type || props.session?.adapter)
+  if (type.startsWith("Claude")) {
     return "border-amber-500/60 bg-amber-900/30 text-amber-300"
   }
   return "border-emerald-500/60 bg-emerald-900/30 text-emerald-300"
@@ -39,12 +40,12 @@ const runnerTypeStyles = () => {
       </div>
       <div class="flex flex-wrap gap-3 text-[11px] uppercase tracking-[0.2em] text-stone-400">
         <div
-          v-if="session?.runner_type"
+          v-if="session?.runner_type || session?.adapter"
           class="rounded-xl border px-3 py-2"
           :class="runnerTypeStyles()"
         >
           <p>Runner</p>
-          <p class="mt-1 text-xs font-semibold capitalize">{{ session.runner_type }}</p>
+          <p class="mt-1 text-xs font-semibold">{{ formatAgentName(session?.runner_type || session?.adapter) }}</p>
         </div>
         <div class="rounded-xl border border-stone-700/80 bg-stone-900/40 px-3 py-2">
           <p>Directory</p>

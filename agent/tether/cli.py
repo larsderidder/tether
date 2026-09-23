@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> None:
     agents_parser.add_argument(
         "agent",
         nargs="?",
-        help="Limit setup to a specific agent (claude_code, opencode, pi)",
+        help="Limit setup to a specific agent (pi, opencode, claude_code)",
     )
     agents_parser.add_argument(
         "--check",
@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> None:
     list_parser.add_argument(
         "--runner-type",
         "-r",
-        help="Filter external sessions by runner type (claude, codex, pi)",
+        help="Filter external sessions by runner type (pi, claude, codex, opencode)",
     )
     list_parser.add_argument(
         "--limit",
@@ -226,8 +226,8 @@ def main(argv: list[str] | None = None) -> None:
     attach_current_parser.add_argument(
         "--runner-type",
         "-r",
-        default="claude_code",
-        help="Runner type (claude_code, codex, pi)",
+        default="pi",
+        help="Runner type (pi, claude_code, codex, opencode; default: pi)",
     )
     attach_current_parser.add_argument(
         "--directory",
@@ -270,8 +270,8 @@ def main(argv: list[str] | None = None) -> None:
     attach_parser.add_argument(
         "--runner-type",
         "-r",
-        default="claude_code",
-        help="Runner type (default: claude_code)",
+        default="pi",
+        help="Runner type (pi, claude_code, codex, opencode; default: pi)",
     )
     attach_parser.add_argument(
         "--directory",
@@ -304,7 +304,7 @@ def main(argv: list[str] | None = None) -> None:
     new_parser.add_argument(
         "--adapter",
         "-a",
-        help="Agent adapter (claude_auto, opencode, pi, codex, ...)",
+        help="Agent adapter (pi by default; also claude, codex, opencode, ...)",
     )
     new_parser.add_argument(
         "--prompt",

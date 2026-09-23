@@ -291,7 +291,7 @@ def cmd_setup_agents(
         agents = [a for a in agents if a["name"] == agent_filter]
         if not agents:
             print(f"Error: unknown agent '{agent_filter}'.", file=sys.stderr)
-            print("Known agents: claude_code, opencode, pi", file=sys.stderr)
+            print("Known agents: pi, opencode, claude_code", file=sys.stderr)
             sys.exit(1)
 
     print(f"Checking remote server ({server_label})...\n")
@@ -389,7 +389,7 @@ def cmd_setup_agents(
                 return
 
             if verify.get("ok"):
-                print(f"  {label}: authenticated \u2713")
+                print(f"  {label}: {verify.get('message', 'ready')}")
             else:
                 print(f"  {label}: {verify.get('message', 'verification failed')}")
 
@@ -417,7 +417,7 @@ def _agent_label(name: str) -> str:
     labels = {
         "claude_code": "Claude Code",
         "opencode": "OpenCode",
-        "pi": "pi",
+        "pi": "Pi",
     }
     return labels.get(name, name)
 
@@ -447,16 +447,17 @@ def _has_local_credentials(agent_name: str) -> bool:
 
 
 def _read_local_credentials(agent_name: str) -> dict[str, str]:
-    """Read local credential files for an agent and return {rel_path: content}.
-
-    Currently only claude_code is supported (reads ~/.claude/.credentials.json).
-    Returns an empty dict if no credentials are found locally.
-    """
-    if agent_name != "claude_code":
+    """Read supported agent credential files for the explicit setup prompt."""
+    paths = {
+        "pi": ".pi/agent/auth.json",
+        "claude_code": ".claude/.credentials.json",
+    }
+    rel = paths.get(agent_name)
+    if not rel:
         return {}
 
     home = os.path.expanduser("~")
-    creds_path = os.path.join(home, ".claude", ".credentials.json")
+    creds_path = os.path.join(home, rel)
 
     if not os.path.exists(creds_path):
         return {}
@@ -467,7 +468,6 @@ def _read_local_credentials(agent_name: str) -> dict[str, str]:
     except OSError:
         return {}
 
-    rel = ".claude/.credentials.json"
     return {rel: content}
 
 

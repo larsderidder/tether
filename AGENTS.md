@@ -4,7 +4,9 @@ This file is the canonical entrypoint for AI agents working in this repository.
 
 ## What is Tether
 
-Local-first control plane for supervising AI coding agents. Start agents (Claude Code, Codex), monitor progress, review changes, approve actions — from mobile or messaging platforms (Telegram, Slack, Discord).
+Local-first control plane for supervising AI coding agents. Pi is the primary agent and the default throughout Tether; Claude Code, Codex, and OpenCode are optional alternatives. Monitor progress, review changes, and approve actions from mobile or messaging platforms (Telegram, Slack, Discord).
+
+New-session commands use the configured default adapter, not the parent session's adapter. Bare `/new` and `!new` show directory choices with the current session's directory first. Keep Pi first in agent choices, examples, and setup guidance.
 
 ## Before You Start
 

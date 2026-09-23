@@ -25,8 +25,7 @@ Create session. Supports local directory sessions and cloned-repo sessions.
 ```json
 {
   "directory": "/path/to/project",
-  "adapter": "claude_auto",
-  "model": "claude-sonnet-4-20250514",
+  "adapter": "pi",
   "platform": "telegram"
 }
 ```
@@ -38,7 +37,7 @@ Create session. Supports local directory sessions and cloned-repo sessions.
   "clone_branch": "main",
   "shallow": false,
   "auto_branch": true,
-  "adapter": "claude_auto"
+  "adapter": "pi"
 }
 ```
 
@@ -244,7 +243,7 @@ Poll for events (user_input, approval_response). Params: `since_seq`.
 ## External Session Discovery (`/api/external-sessions`)
 
 ### `GET /api/external-sessions`
-List discoverable Claude Code, Codex, OpenCode, and Pi sessions on the local machine.
+List discoverable Pi, Claude Code, Codex, and OpenCode sessions on the local machine.
 Params: `limit`, `runner_type` (`claude_code`, `codex`, `opencode`, `pi`), `directory`.
 
 ### `GET /api/external-sessions/{id}/history`
@@ -254,7 +253,7 @@ Params: `runner_type`, `limit`.
 ### `POST /api/sessions/attach`
 Attach a discovered external session to Tether.
 ```json
-{"external_id": "...", "runner_type": "claude_code", "directory": "/path"}
+{"external_id": "...", "runner_type": "pi", "directory": "/path"}
 ```
 
 ### `POST /api/sessions/{id}/sync`

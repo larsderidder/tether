@@ -2,10 +2,10 @@
 
 The open source supervision layer for local AI coding agents.
 
-You run Claude Code, Codex, OpenCode, or Pi in your terminal. Tether sits alongside and lets you watch and control those sessions from anywhere: a mobile-first web UI, or Telegram, Slack, and Discord threads with live output and approval buttons.
+Tether supervises Pi coding-agent sessions from a mobile-first web UI, Telegram, Slack, or Discord, with live output and approval buttons. Claude Code, Codex, and OpenCode are also supported.
 
 ```
-Claude Code / Codex / OpenCode / Pi
+Pi / Claude Code / Codex / OpenCode
           |
           v
       Tether (local)
@@ -67,7 +67,7 @@ Bridge dependencies are optional extras:
 pip install tether-ai[telegram]   # or [slack] or [discord]
 ```
 
-Node.js is required for the Codex and OpenCode adapters. The sidecar bundles are included in the package and started automatically.
+Pi requires its `pi` CLI on your PATH. Install it with `npm install -g @earendil-works/pi-coding-agent`. Node.js is also required for the optional Codex and OpenCode adapters; their sidecar bundles are included in the package.
 
 ## Setup
 
@@ -97,7 +97,7 @@ artifact so fleet installs can pin the exact published build.
 
 ## Attaching external sessions
 
-Tether discovers sessions from Claude Code, Codex, OpenCode, and Pi that are already running on your machine. Use the external session browser in the web UI, or from the CLI:
+Tether discovers sessions from Pi, Claude Code, Codex, and OpenCode that are already running on your machine. Use the external session browser in the web UI, or from the CLI:
 
 ```bash
 tether list --external            # show all discoverable sessions
@@ -141,11 +141,11 @@ New sessions use Pi by default. Set `TETHER_DEFAULT_AGENT_ADAPTER` to choose ano
 
 | Adapter | Description |
 |---------|-------------|
+| `pi` | Default. Pi coding agent via JSON-RPC (`pi_rpc` remains compatible) |
 | `claude` | Claude Code, auto-detects OAuth or API key |
 | `claude_subprocess` | Claude via Agent SDK subprocess |
-| `opencode` | OpenCode via TypeScript sidecar (auto-managed) |
 | `codex` | Codex via TypeScript sidecar |
-| `pi` | Pi coding agent via JSON-RPC (`pi_rpc` remains compatible) |
+| `opencode` | OpenCode via TypeScript sidecar (auto-managed) |
 | `automation` | Script automations backed by local commands and manifests |
 | `litellm` | Any model via LiteLLM (experimental) |
 
@@ -159,7 +159,7 @@ tether start --port 9000
 tether verify                        # check server health and bridges
 
 # attach to agents already running on your machine
-tether list --external               # discover Claude Code / Codex / OpenCode / Pi sessions
+tether list --external               # discover Pi / Claude Code / Codex / OpenCode sessions
 tether attach                        # pick from sessions in current directory
 tether attach <id>                   # attach by ID prefix
 tether attach <id> -p telegram       # attach and bind a messaging thread

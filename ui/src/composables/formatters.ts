@@ -1,5 +1,27 @@
 import { formatDistanceToNow } from "date-fns";
 
+/** Display agent names consistently for adapters and discovered runners. */
+export function formatAgentName(type: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    pi: "Pi",
+    pi_rpc: "Pi",
+    claude: "Claude",
+    claude_code: "Claude",
+    claude_auto: "Claude",
+    claude_subprocess: "Claude",
+    "claude-local": "Claude",
+    "claude-subprocess": "Claude",
+    claude_api: "Claude API",
+    codex: "Codex",
+    codex_sdk_sidecar: "Codex",
+    opencode: "OpenCode",
+    opencode_sdk_sidecar: "OpenCode",
+    automation: "Automation",
+    litellm: "LiteLLM",
+  };
+  return labels[type || ""] || "Agent";
+}
+
 export function formatState(state: string | undefined): string {
   if (!state) return "";
   const labels: Record<string, string> = {

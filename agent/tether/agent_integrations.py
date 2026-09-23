@@ -55,7 +55,7 @@ _INTEGRATIONS: dict[str, IntegrationSpec] = {
 
 def known_integrations() -> list[str]:
     """Return the supported integration names."""
-    return sorted(_INTEGRATIONS)
+    return list(_INTEGRATIONS)
 
 
 def detected_integrations() -> list[str]:

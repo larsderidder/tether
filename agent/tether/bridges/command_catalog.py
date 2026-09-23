@@ -39,7 +39,7 @@ COMMANDS: tuple[BridgeCommand, ...] = (
     BridgeCommand(
         "list",
         "[page|search]",
-        "List external sessions (Claude Code, Codex)",
+        "List external sessions (Pi, Claude, Codex, OpenCode)",
         frozenset({"telegram", "slack", "discord"}),
         "global",
     ),

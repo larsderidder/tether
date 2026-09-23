@@ -105,9 +105,9 @@ New sessions announce their agent and model in the new topic or thread. If the r
 | `!verbosity <none|minimal|medium|high>` / `/verbosity <none|minimal|medium|high>` | Set bridge output verbosity for this session |
 | `!buffer` / `/buffer` | Show bridge output buffering for this session |
 | `!buffer <seconds|off>` / `/buffer <seconds|off>` | Set or clear the max buffer seconds for this session |
-| `!new` / `/new` inside a session thread or topic | Start a child session in the same directory with the same adapter and model |
+| `!new` / `/new` | Choose a directory. Inside a session, its current directory is always the first choice, followed by deduplicated history. New sessions use the configured default agent (Pi), not the parent's adapter. |
 | `!new [agent] [directory]` / `/new [agent] [directory]` | Start a session with Pi, OpenCode, Claude, or Codex. Pi is the default unless `TETHER_DEFAULT_AGENT_ADAPTER` overrides it. |
-| `!new recent` / `/new recent` | Choose a previously used directory, including external agent sessions. Also shown by bare `new` outside a session. Telegram uses paginated buttons; Slack and Discord show up to 10 choices selected with `!new [agent] #N`. |
+| `!new recent` / `/new recent` | Open the same directory picker, including external agent sessions. Telegram uses paginated buttons; Slack and Discord show up to 10 choices selected with `!new [agent] #N`. |
 | `!stop` / `/stop` | Interrupt the session |
 
 ## Bridge Git Commands

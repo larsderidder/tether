@@ -107,7 +107,7 @@ class TestTelegramBridgeIntegration:
 
     @pytest.mark.anyio
     async def test_new_inside_topic_inherits_model(self) -> None:
-        """Telegram /new inside a session topic keeps the current model."""
+        """An explicit Pi session in the same directory keeps a compatible model."""
         from agent_tether.base import BridgeCallbacks
         from tether.bridges.telegram.bot import TelegramBridge
 
@@ -143,7 +143,7 @@ class TestTelegramBridgeIntegration:
         update.message.message_thread_id = 123
         update.message.reply_text = AsyncMock()
         context = MagicMock()
-        context.args = []
+        context.args = ["pi", "/worktrees/demo"]
 
         await bridge._cmd_new(update, context)
 

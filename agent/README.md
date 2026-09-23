@@ -11,11 +11,11 @@ Tether runs on your machine and turns agent runs into something you can *supervi
 a mobile friendly web UI plus messaging bridges (Telegram, Slack, Discord) with approvals, input
 prompts, and live output streaming.
 
-If you're running Claude Code, Codex, OpenCode, or Pi locally and you want supervision (logs, state, diffs, approvals) in the places you
+If you're running Pi, Claude Code, Codex, or OpenCode locally and you want supervision (logs, state, diffs, approvals) in the places you
 already work, this is that layer.
 
 ```
-Claude Code / Codex / OpenCode / Pi / custom agent
+Pi / Claude Code / Codex / OpenCode / custom agent
           |   (adapter, MCP, or REST)
           v
       Tether (local control plane)
@@ -29,7 +29,7 @@ Claude Code / Codex / OpenCode / Pi / custom agent
 ```
 1. Start Tether on your machine (or a VM you control)
 2. Open the web UI, or connect a messaging bridge
-3. Run an agent session (Claude / Codex / custom)
+3. Run a Pi session, or explicitly select another supported agent
 4. Stream output + state in real time (web + messaging threads)
 5. Approve tool use, provide input, or interrupt when needed
 ```
@@ -47,7 +47,7 @@ Claude Code / Codex / OpenCode / Pi / custom agent
 2. Human in the loop: approve tool use, provide input, review diffs
 3. Observable: live streaming output and explicit session state (web and messaging)
 4. Messaging bridges: Telegram, Slack, and Discord with approvals and auto approve
-5. Multi adapter: Claude Code (OAuth or API key), Codex via sidecar, OpenCode via sidecar, Pi coding agent, plus LiteLLM (experimental)
+5. Pi is the primary and default agent. Optional adapters include Claude Code (OAuth or API key), Codex, OpenCode, and LiteLLM (experimental).
 6. External agent API: MCP server and REST API for custom agents and integrations
 7. Mobile first UI: PWA dashboard for monitoring and controlling sessions (experimental)
 8. CLI client: manage sessions, attach external agents, and send input from your terminal
@@ -62,7 +62,7 @@ tether start
 
 Then open `http://localhost:8787`.
 
-The `init` wizard generates an auth token, detects your `claude` CLI, and optionally
+The `init` wizard generates an auth token, defaults to Pi, and optionally
 configures a messaging bridge. Config is saved to `~/.config/tether/config.env`.
 
 ### Typical uses
@@ -138,14 +138,15 @@ See `docs/API_REFERENCE.md` for full endpoint documentation.
 
 ## Adapters (built in runners)
 
-Set `TETHER_DEFAULT_AGENT_ADAPTER` in `.env`:
+Pi is the default. Install its CLI with `npm install -g @earendil-works/pi-coding-agent`.
+Set `TETHER_DEFAULT_AGENT_ADAPTER` in `.env` to select another adapter:
 
-1. `claude_auto`: Auto detect (prefer OAuth, fallback to API key)
-2. `claude_subprocess`: Claude via Agent SDK in subprocess (OAuth or API key)
-3. `codex_sdk_sidecar`: Codex via TypeScript sidecar
-4. `opencode`: OpenCode via TypeScript sidecar (auto-managed, uses the OpenCode SDK)
-5. `pi_rpc`: [Pi coding agent](https://github.com/badlogic/pi-mono) via JSON-RPC subprocess
-6. `litellm`: Any model via LiteLLM (DeepSeek, Gemini, OpenRouter, etc.), experimental
+- `pi`: Pi coding agent via JSON-RPC subprocess (`pi_rpc` is also accepted)
+- `claude`: Auto detect Claude OAuth or API key (`claude_auto` is also accepted)
+- `claude_subprocess`: Claude via Agent SDK subprocess
+- `codex`: Codex via TypeScript sidecar (`codex_sdk_sidecar` is also accepted)
+- `opencode`: OpenCode via TypeScript sidecar (auto-managed)
+- `litellm`: Any model via LiteLLM (experimental)
 
 Sessions can override the default adapter at creation time. Multiple adapters can run simultaneously.
 
@@ -200,7 +201,7 @@ tether open                          # Open web UI in browser
 tether list                          # List Tether sessions
 tether list -s running               # Filter by state
 tether list -d .                     # Filter by directory
-tether list --external               # Discover Claude Code / Codex / OpenCode / Pi sessions
+tether list --external               # Discover Pi / Claude Code / Codex / OpenCode sessions
 tether attach <external-id>          # Attach an external session to Tether
 tether attach                        # Pick from external sessions in current dir
 tether attach <id> -p discord        # Attach and create a Discord thread
@@ -241,7 +242,7 @@ Tether loads config from layered sources (highest precedence first):
 Key settings:
 
 ```bash
-TETHER_DEFAULT_AGENT_ADAPTER=claude_auto  # Agent adapter
+TETHER_DEFAULT_AGENT_ADAPTER=pi         # Default agent
 TETHER_AGENT_TOKEN=               # Protect the API/UI with bearer auth
 TETHER_AGENT_HOST=0.0.0.0         # Bind address (default: 0.0.0.0)
 TETHER_AGENT_PORT=8787            # Port (default: 8787)

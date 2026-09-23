@@ -46,7 +46,7 @@ def test_install_integrations_writes_all_files(
 
     results = install_integrations(["all"])
 
-    assert {r.name for r in results} == {"pi", "claude", "codex"}
+    assert [r.name for r in results] == ["pi", "claude", "codex"]
     assert (tmp_path / ".pi" / "agent" / "extensions" / "tether-attach.ts").exists()
     assert (tmp_path / ".claude" / "commands" / "tether.md").exists()
     assert (tmp_path / ".codex" / "prompts" / "tether.md").exists()

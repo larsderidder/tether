@@ -100,7 +100,7 @@ async def test_thread_seeded_new_reuses_base_model_for_same_adapter(
     )
 
     adapter, directory = await bridge._parse_new_args(
-        "",
+        "pi",
         base_session_id="sess_existing",
     )
 

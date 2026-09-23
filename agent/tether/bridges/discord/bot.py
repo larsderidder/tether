@@ -244,8 +244,18 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
     async def _show_recent_directories(self, message: Any, agent: str | None) -> None:
         """Show numbered recent directory choices for a later !new #N command."""
 
+        base_id = self._session_for_thread(message.channel.id)
+        base = (
+            self._get_session_info(base_id)
+            if base_id and self._get_session_info
+            else None
+        )
         try:
-            directories = (await recent_directories(self._callbacks))[:10]
+            directories = (
+                await recent_directories(
+                    self._callbacks, current_directory=(base or {}).get("directory")
+                )
+            )[:10]
         except Exception:
             logger.exception("Failed to load Discord directory history")
             await message.channel.send("Could not load directories. Try !new again.")
@@ -262,7 +272,10 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
             return
 
         prefix = f"!new {agent} #" if agent else "!new #"
-        lines = ["Recent directories (up to 10):"]
+        label = self._adapter_label(
+            self._agent_to_adapter(agent) if agent else self._config.default_adapter
+        )
+        lines = [f"Choose a directory (up to 10). Agent: {label}."]
         for index, directory in enumerate(directories, 1):
             label = directory if len(directory) <= 140 else directory[:137] + "..."
             lines.append(f"{index}. `{self._safe_inline(label)}`")
@@ -1220,7 +1233,7 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
         base_session_id = (
             self._session_for_thread(channel_id or 0) if channel_id else None
         )
-        if not parts and not base_session_id:
+        if not parts:
             await self._show_recent_directories(message, None)
             return
 
@@ -1742,7 +1755,7 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
             agent_label = (
                 self._adapter_label(adapter)
                 or self._adapter_label(self._config.default_adapter)
-                or "Claude"
+                or "Pi"
             )
             runner_type = adapter_to_runner(adapter or self._config.default_adapter)
             session_name = self._make_external_thread_name(

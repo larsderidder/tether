@@ -217,3 +217,106 @@ async def test_notice_failure_does_not_repeat_successful_creation(bridge, callba
     )
     assert session["id"] == "sess_new"
     callbacks.create_session.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("args", [[], ["recent"], ["pi"]])
+async def test_new_in_claude_topic_pins_current_directory_and_defaults_to_pi(
+    bridge, callbacks, tmp_path, args
+):
+    """A parent supplies its directory, not its agent or incompatible model."""
+    current = tmp_path / "current project"
+    current.mkdir()
+    newer = tmp_path / "newer"
+    newer.mkdir()
+    callbacks.list_sessions.return_value = [{"directory": str(newer)}]
+    bridge._state.get_session_for_topic.return_value = "sess_parent"
+    bridge._get_session_info = lambda _: {
+        "directory": str(current),
+        "adapter": "claude_auto",
+        "model": "claude-only",
+    }
+    update = command_update(topic_id=10)
+
+    await bridge._cmd_new(update, SimpleNamespace(args=args))
+
+    callbacks.create_session.assert_not_awaited()
+    picker = next(iter(bridge._session_pickers.values()))
+    assert picker.choices == [str(current), str(newer)]
+    assert picker.adapter == "pi_rpc"
+    markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+    await bridge._handle_callback_query(
+        callback_update(update, markup.inline_keyboard[0][0].callback_data), None
+    )
+    assert callbacks.create_session.await_args.kwargs["directory"] == str(current)
+    assert callbacks.create_session.await_args.kwargs["adapter"] == "pi_rpc"
+    assert callbacks.create_session.await_args.kwargs.get("model") is None
+
+
+@pytest.mark.anyio
+async def test_current_directory_is_deduplicated_and_pinned_before_history_limit(
+    callbacks, tmp_path
+):
+    """An older workspace remains first even when the recent history is full."""
+    directories = []
+    for index in range(55):
+        directory = tmp_path / f"project{index:02}"
+        directory.mkdir()
+        directories.append(str(directory))
+    alias = tmp_path / "alias"
+    alias.symlink_to(directories[-1], target_is_directory=True)
+    callbacks.list_sessions.return_value = [{"directory": path} for path in directories]
+
+    choices = await recent_directories(callbacks, current_directory=str(alias))
+
+    assert choices[0] == directories[-1]
+    assert choices.count(directories[-1]) == 1
+    assert len(choices) == 50
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("agent", [None, "claude", "codex"])
+async def test_explicit_directory_uses_default_unless_agent_is_requested(
+    bridge, callbacks, tmp_path, agent
+):
+    """Starting from a Claude topic must not silently keep using Claude."""
+    bridge._state.get_session_for_topic.return_value = "sess_parent"
+    bridge._get_session_info = lambda _: {
+        "directory": str(tmp_path),
+        "adapter": "claude_auto",
+        "model": "parent-model",
+    }
+    args = [str(tmp_path)]
+    if agent:
+        args.insert(0, agent)
+
+    await bridge._cmd_new(command_update(topic_id=10), SimpleNamespace(args=args))
+
+    expected = {None: "pi_rpc", "claude": "claude_auto", "codex": "codex_sdk_sidecar"}[
+        agent
+    ]
+    assert callbacks.create_session.await_args.kwargs["adapter"] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["clone", "template"])
+async def test_extended_new_does_not_inherit_parent_agent_or_model(
+    bridge, callbacks, tmp_path, mode
+):
+    """Flags work on Telegram too, and templates retain their own agent settings."""
+    bridge._state.get_session_for_topic.return_value = "sess_parent"
+    bridge._get_session_info = lambda _: {
+        "directory": str(tmp_path),
+        "adapter": "claude_auto",
+        "model": "parent-model",
+    }
+    value = "https://example.com/repo.git" if mode == "clone" else "my-template"
+
+    await bridge._cmd_new(
+        command_update(topic_id=10), SimpleNamespace(args=[f"--{mode}", value])
+    )
+
+    callbacks.create_session.assert_awaited_once()
+    kwargs = callbacks.create_session.await_args.kwargs
+    assert kwargs.get("model") is None
+    assert kwargs.get("adapter") == ("pi_rpc" if mode == "clone" else None)

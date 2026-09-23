@@ -101,6 +101,7 @@ async def test_attach_external_platform_binding_supports_legacy_bridge_signature
     assert response.status_code == 201
     data = response.json()
     assert data["platform"] == "legacy"
+    assert data["adapter"] == "claude_auto"
     assert data["platform_thread_id"].startswith("legacy_sess_")
     assert len(bridge.thread_calls) == 1
 

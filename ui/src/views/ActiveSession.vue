@@ -166,6 +166,7 @@ import {
   type Session
 } from "../api"
 import { activeSessionId, requestInfo, requestRename } from "../state"
+import { formatAgentName } from "@/composables/formatters"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -222,14 +223,10 @@ const showDenyReason = ref(false)
 
 const agentLabel = computed(() => {
   const title = headerData.value?.title
-  if (title && title !== "Unknown") return title
-  const rt = session.value?.runner_type
-  if (!rt) return "Agent"
-  if (rt.includes("claude")) return "Claude"
-  if (rt === "codex") return "Codex"
-  if (rt === "opencode") return "OpenCode"
-  if (rt === "pi") return "Pi"
-  return "Agent"
+  if (title && title !== "Unknown") {
+    return title
+  }
+  return formatAgentName(session.value?.runner_type || session.value?.adapter)
 })
 
 // Directory warning state

@@ -9,6 +9,29 @@ import httpx
 import pytest
 
 from tether import cli_client
+from tether.cli import main
+
+
+@pytest.mark.parametrize("command", ["attach", "attach-current"])
+@pytest.mark.parametrize("runner", [None, "claude_code", "codex"])
+def test_attach_commands_default_to_pi_and_keep_explicit_runner(
+    command, runner, monkeypatch
+):
+    """CLI attachment defaults to Pi without removing other runner choices."""
+    target = MagicMock()
+    monkeypatch.setattr(cli_client, "cmd_" + command.replace("-", "_"), target)
+    monkeypatch.setattr("tether.config.load_config", lambda: None)
+    args = [command]
+    if runner:
+        args.extend(["--runner-type", runner])
+
+    main(args)
+
+    if command == "attach":
+        actual = target.call_args.args[1]
+    else:
+        actual = target.call_args.kwargs["runner_type"]
+    assert actual == (runner or "pi")
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +622,7 @@ class TestCmdNew:
         })
         with _patch_client({
             ("POST", "/api/sessions"): session_resp,
-            ("POST", f"/api/sessions/sess_abc123def456/start"): started_resp,
+            ("POST", "/api/sessions/sess_abc123def456/start"): started_resp,
         }):
             cli_client.cmd_new(str(tmp_path), adapter="claude_auto", prompt="fix tests")
 

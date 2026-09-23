@@ -1,10 +1,26 @@
 import { describe, it, expect } from 'vitest';
 import {
+  formatAgentName,
   formatState,
   formatTime,
   formatSessionId,
   getStatusDotClass
 } from '../formatters';
+
+describe('formatAgentName', () => {
+  it.each([
+    ['pi', 'Pi'],
+    ['pi_rpc', 'Pi'],
+    ['claude-local', 'Claude'],
+    ['claude_auto', 'Claude'],
+    ['codex_sdk_sidecar', 'Codex'],
+    ['opencode', 'OpenCode'],
+    [undefined, 'Agent'],
+    ['unknown', 'Agent'],
+  ])('labels %s as %s', (type, expected) => {
+    expect(formatAgentName(type)).toBe(expected);
+  });
+});
 
 describe('formatState', () => {
   it('returns empty string for undefined', () => {

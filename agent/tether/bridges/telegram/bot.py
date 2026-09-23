@@ -743,17 +743,23 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         base_id = self._session_id_for_topic_message(update.message)
         adapter = self._agent_to_adapter(args[0]) if args else None
         recent = args == ["recent"] or (adapter and args[1:] == ["recent"])
-        missing_directory = not base_id and (not args or (adapter and len(args) == 1))
+        missing_directory = not args or (adapter and len(args) == 1)
         if not recent and not missing_directory:
+            if not adapter and not args[0].startswith("-"):
+                context = SimpleNamespace(args=[self._config.default_adapter, *args])
             await super()._cmd_new(update, context)
             return
 
-        if not adapter and base_id and self._get_session_info:
-            base = self._get_session_info(base_id) or {}
-            adapter = base.get("adapter")
-        adapter = adapter or self._config.default_adapter or settings.adapter()
+        base = (
+            self._get_session_info(base_id)
+            if base_id and self._get_session_info
+            else None
+        )
+        adapter = adapter or self._config.default_adapter
         try:
-            choices = await recent_directories(self._callbacks)
+            choices = await recent_directories(
+                self._callbacks, current_directory=(base or {}).get("directory")
+            )
             if not choices:
                 await update.message.reply_text(
                     "No previous directories are available. Use /new [agent] /path/to/project."
@@ -817,7 +823,7 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         page = max(0, min(page, page_count - 1))
         label = self._adapter_label(picker.adapter) or picker.adapter or "default"
         if picker.kind == "directory":
-            text = f"Choose a previous directory. Agent: {label}.\n"
+            text = f"Choose a directory. Agent: {label}.\n"
         else:
             text = f"Agent: {label}\nCurrent model: {picker.active_model or 'agent default'}\n"
         text += f"Page {page + 1}/{page_count}\n"

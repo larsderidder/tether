@@ -4,9 +4,9 @@ Allows the CLI to check, install, push credentials for, and verify
 agent CLIs on the remote server - all without needing SSH access.
 
 Supported agents:
-  - claude_code: Claude Code CLI (binary: claude)
+  - pi: Pi coding agent (binary: pi), the default
   - opencode: OpenCode (binary: opencode)
-  - pi: pi agent (binary: pi)
+  - claude_code: Claude Code CLI (binary: claude)
 """
 
 from __future__ import annotations
@@ -31,6 +31,14 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _KNOWN_AGENTS: dict[str, dict] = {
+    "pi": {
+        "binary": "pi",
+        "install_command": "npm install -g @earendil-works/pi-coding-agent",
+        "install_requires": "npm",
+        "credentials_path": ".pi/agent/auth.json",
+        # Pi also supports providers authenticated through the environment.
+        "credentials_required": False,
+    },
     "claude_code": {
         "binary": "claude",
         "install_command": "npm install -g @anthropic-ai/claude-code",
@@ -41,12 +49,6 @@ _KNOWN_AGENTS: dict[str, dict] = {
         "binary": "opencode",
         "install_command": "npm install -g opencode-ai",
         "install_requires": "npm",
-        "credentials_path": None,
-    },
-    "pi": {
-        "binary": "pi",
-        "install_command": None,
-        "install_requires": None,
         "credentials_path": None,
     },
 }
@@ -159,9 +161,7 @@ def _probe_agent(name: str) -> AgentInfo:
     authenticated = _is_authenticated(name) if installed else False
     install_requires = info.get("install_requires")
     install_requires_met = (
-        shutil.which(install_requires) is not None
-        if install_requires
-        else True
+        shutil.which(install_requires) is not None if install_requires else True
     )
     return AgentInfo(
         name=name,
@@ -322,7 +322,10 @@ async def verify_agent(
             message=f"{name} is not installed.",
         )
 
-    creds_required = _KNOWN_AGENTS[name].get("credentials_path") is not None
+    agent = _KNOWN_AGENTS[name]
+    creds_required = agent.get(
+        "credentials_required", agent.get("credentials_path") is not None
+    )
     if creds_required and not info.authenticated:
         return VerifyResult(
             ok=False,
@@ -411,9 +414,7 @@ async def configure_bridge(
     if name not in _BRIDGE_ENV_VARS:
         raise_http_error("NOT_FOUND", f"Unknown bridge: {name}", 404)
 
-    required_keys = {
-        key for key, _, required in _BRIDGE_ENV_VARS[name] if required
-    }
+    required_keys = {key for key, _, required in _BRIDGE_ENV_VARS[name] if required}
     missing = required_keys - set(payload.env.keys())
     if missing:
         raise_http_error(
@@ -430,7 +431,9 @@ async def configure_bridge(
     # Schedule restart after response is sent.
     asyncio.get_event_loop().call_later(2.0, _restart_service)
 
-    return BridgeConfigResult(ok=True, bridge=name, message=f"{name} bridge configured.")
+    return BridgeConfigResult(
+        ok=True, bridge=name, message=f"{name} bridge configured."
+    )
 
 
 def _update_config_env(path: Path, updates: dict[str, str]) -> None:

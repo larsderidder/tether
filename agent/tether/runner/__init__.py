@@ -57,12 +57,12 @@ def get_runner(events: RunnerEvents, name: str | None = None) -> Runner:
         name: Adapter name override. Falls back to TETHER_DEFAULT_AGENT_ADAPTER.
 
     Uses TETHER_DEFAULT_AGENT_ADAPTER to select runner. Options:
+        - pi_rpc: Default. Pi coding agent via JSON-RPC subprocess
         - codex_sdk_sidecar: Codex SDK sidecar
         - claude_subprocess: Claude via Agent SDK in subprocess (OAuth or API key)
         - claude_auto: Auto-detect (requires OAuth or ANTHROPIC_API_KEY)
         - litellm: Any model via LiteLLM (DeepSeek, Kimi, Gemini, etc.)
         - opencode: OpenCode sidecar
-        - pi_rpc: Pi coding agent via JSON-RPC subprocess
         - automation: Local script automation subprocess
 
     Runners are imported lazily to speed up agent startup.

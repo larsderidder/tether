@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def block_unmocked_agent_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep setup tests away from real credentials, binaries, and installations."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with patch(
+        "tether.api.setup.subprocess.run",
+        side_effect=AssertionError("Mock subprocess.run explicitly in setup tests"),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +41,7 @@ class TestSetupAgentsListEndpoint:
         assert "claude_code" in names
         assert "opencode" in names
         assert "pi" in names
+        assert data["agents"][0]["name"] == "pi"
 
     @pytest.mark.anyio
     async def test_agent_fields_present(self, api_client: httpx.AsyncClient) -> None:
@@ -96,12 +107,29 @@ class TestSetupAgentsInstallEndpoint:
         assert response.status_code == 404
 
     @pytest.mark.anyio
-    async def test_install_pi_returns_400_no_command(
+    async def test_install_pi_uses_npm_package(
         self, api_client: httpx.AsyncClient
     ) -> None:
-        """'pi' has no install_command; should return 400."""
-        response = await api_client.post("/api/setup/agents/pi/install")
-        assert response.status_code == 400
+        """Pi can be provisioned like the other supported agents."""
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda cmd: "/usr/bin/npm" if cmd == "npm" else None,
+            ),
+            patch("subprocess.run") as run,
+        ):
+            run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="1.0.0", stderr=""),
+            ]
+            response = await api_client.post("/api/setup/agents/pi/install")
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert (
+            run.call_args_list[0].args[0]
+            == "npm install -g @earendil-works/pi-coding-agent"
+        )
 
     @pytest.mark.anyio
     async def test_install_claude_code_success(
@@ -155,28 +183,38 @@ class TestSetupAgentsCredentialsEndpoint:
         assert response.status_code == 404
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "agent, relative_path",
+        [
+            ("pi", ".pi/agent/auth.json"),
+            ("claude_code", ".claude/.credentials.json"),
+        ],
+    )
     async def test_writes_credentials_file(
         self,
         api_client: httpx.AsyncClient,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        agent: str,
+        relative_path: str,
     ) -> None:
         """Credentials are written to the correct path under home."""
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
 
         creds_content = json.dumps({"refreshToken": "tok123"})
         response = await api_client.post(
-            "/api/setup/agents/claude_code/credentials",
-            json={"files": {".claude/.credentials.json": creds_content}},
+            f"/api/setup/agents/{agent}/credentials",
+            json={"files": {relative_path: creds_content}},
         )
 
         assert response.status_code == 200
         data = response.json()
         assert data["ok"] is True
-        assert ".claude/.credentials.json" in data["files_written"]
+        assert relative_path in data["files_written"]
 
-        written = (tmp_path / ".claude" / ".credentials.json").read_text()
+        written = (tmp_path / relative_path).read_text()
         assert written == creds_content
+        assert (tmp_path / relative_path).stat().st_mode & 0o777 == 0o600
 
     @pytest.mark.anyio
     async def test_rejects_absolute_paths(
@@ -495,24 +533,33 @@ class TestCmdSetupAgents:
 
         assert result == {}
 
+    @pytest.mark.parametrize(
+        "agent, relative_path",
+        [
+            ("pi", ".pi/agent/auth.json"),
+            ("claude_code", ".claude/.credentials.json"),
+        ],
+    )
     def test_read_local_credentials_returns_content(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        agent: str,
+        relative_path: str,
     ) -> None:
         """_read_local_credentials returns file content when credentials file exists."""
         from tether.cli_client import _read_local_credentials
 
-        creds_dir = tmp_path / ".claude"
-        creds_dir.mkdir()
-        creds_file = creds_dir / ".credentials.json"
-        creds_file.write_text('{"refreshToken": "secret"}')
+        creds_file = tmp_path / relative_path
+        creds_file.parent.mkdir(parents=True)
+        creds_file.write_text("{}")
 
         # Point expanduser("~") to tmp_path so the function finds the file.
         monkeypatch.setenv("HOME", str(tmp_path))
 
-        result = _read_local_credentials("claude_code")
+        result = _read_local_credentials(agent)
 
-        assert ".claude/.credentials.json" in result
-        assert "refreshToken" in result[".claude/.credentials.json"]
+        assert result == {relative_path: "{}"}
 
     def test_read_local_credentials_unknown_agent_returns_empty(self) -> None:
         """_read_local_credentials returns {} for agents with no creds concept."""
@@ -521,5 +568,22 @@ class TestCmdSetupAgents:
         result = _read_local_credentials("opencode")
         assert result == {}
 
-        result = _read_local_credentials("pi")
-        assert result == {}
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("has_auth_file", [False, True])
+async def test_pi_setup_reports_auth_file_without_requiring_one(
+    api_client, tmp_path, has_auth_file
+):
+    """Pi can use an auth file or environment-based provider credentials."""
+    if has_auth_file:
+        auth = tmp_path / ".pi" / "agent" / "auth.json"
+        auth.parent.mkdir(parents=True)
+        auth.write_text("{}")
+    with (
+        patch("shutil.which", return_value="/usr/bin/pi"),
+        patch("subprocess.run") as run,
+    ):
+        run.return_value = MagicMock(returncode=0, stdout="1.0.0", stderr="")
+        response = await api_client.post("/api/setup/agents/pi/verify")
+    assert response.json()["ok"] is True
+    assert response.json()["authenticated"] is has_auth_file

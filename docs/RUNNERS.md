@@ -6,7 +6,7 @@ Runners are execution adapters that start and manage AI agent backends. Each run
 
 ```python
 class Runner(Protocol):
-    runner_type: str  # "claude", "codex", etc.
+    runner_type: str  # "pi", "claude", "codex", etc.
     async def start(session_id, prompt, approval_choice) -> None
     async def send_input(session_id, text) -> None
     async def stop(session_id) -> int | None
@@ -32,6 +32,13 @@ Callbacks from runner → session engine:
 Implemented by `ApiRunnerEvents` in `api/runner_events.py` which bridges to SSE events. `bridge_segments` is optional and lets runners send typed bridge output (`assistant`, `thinking`, `tool_call`, `tool_output`, `tool_result`, `tool_error`, `status`) while preserving plain text for the web UI and older consumers.
 
 ## Adapter Implementations
+
+### Pi RPC (`runner/pi_rpc.py`), the default
+- Starts the `pi` CLI as a JSON-RPC subprocess
+- Supports model selection, images, session resume, external history sync, and context compaction
+- Uses Pi's configured providers and credentials; no sidecar is needed
+- Public adapter name: `pi`; canonical implementation name: `pi_rpc`
+- Install the CLI with `npm install -g @earendil-works/pi-coding-agent`
 
 ### Claude Subprocess (`runner/claude_subprocess.py`)
 - Spawns one subprocess per query turn for full process isolation
@@ -136,6 +143,7 @@ Fresh Tether-owned pi RPC sessions are started with an initial `Tether: ` sessio
 
 - `agent/tether/runner/base.py` — Protocol definitions
 - `agent/tether/runner/__init__.py` — Auto-detection + factory
+- `agent/tether/runner/pi_rpc.py`: Primary Pi JSON-RPC adapter
 - `agent/tether/runner/claude_subprocess.py` — Claude subprocess adapter (parent side)
 - `agent/tether/runner/claude_sdk_worker.py` — Claude subprocess worker (child side)
 - `agent/tether/runner/codex_sdk_sidecar.py` — Codex sidecar adapter

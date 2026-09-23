@@ -52,7 +52,7 @@ async def list_external_sessions(
 
     Args:
         directory: Filter to sessions for this project directory.
-        runner_type: Filter to specific runner type ("claude_code" or "codex").
+        runner_type: Filter to Pi, Claude Code, Codex, or OpenCode sessions.
         limit: Maximum sessions to return.
 
     Returns:
@@ -124,7 +124,7 @@ async def get_external_session_history(
 
     Args:
         external_id: The external session UUID.
-        runner_type: Which runner created the session ("claude_code" or "codex").
+        runner_type: Source agent: pi, claude_code, codex, or opencode.
         limit: Maximum messages to return.
 
     Returns:
@@ -186,7 +186,7 @@ async def attach_to_external_session(
 
     Body:
         external_id: The external session UUID to attach to.
-        runner_type: Which runner created the session ("claude_code" or "codex").
+        runner_type: Source agent: pi, claude_code, codex, or opencode.
         directory: Working directory for the session.
 
     Returns:
@@ -326,6 +326,7 @@ async def attach_to_external_session(
     # Set runner type based on external session source
     if parsed_runner_type == ExternalRunnerType.CLAUDE_CODE:
         session.runner_type = "claude-local"
+        session.adapter = "claude_auto"
     elif parsed_runner_type == ExternalRunnerType.CODEX:
         session.runner_type = "codex"
         session.adapter = "codex_sdk_sidecar"
@@ -335,8 +336,6 @@ async def attach_to_external_session(
     elif parsed_runner_type == ExternalRunnerType.PI:
         session.runner_type = "pi"
         session.adapter = "pi_rpc"
-    else:
-        session.runner_type = "claude-local"  # Default fallback
 
     session.external_agent_id = external_id
     session.external_agent_type = parsed_runner_type.value

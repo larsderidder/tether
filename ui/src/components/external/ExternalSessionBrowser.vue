@@ -106,13 +106,9 @@
                       <!-- Runner type badge -->
                       <div
                         class="mt-0.5 flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium"
-                        :class="session.runner_type === 'claude_code'
-                          ? 'bg-violet-500/20 text-violet-300'
-                          : session.runner_type === 'pi'
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-blue-500/20 text-blue-300'"
+                        :class="runnerTypeClasses[session.runner_type]"
                       >
-                        {{ session.runner_type === 'claude_code' ? 'Claude' : session.runner_type === 'pi' ? 'Pi' : 'Codex' }}
+                        {{ formatAgentName(session.runner_type) }}
                       </div>
 
                       <div class="min-w-0 flex-1">
@@ -251,7 +247,7 @@ import {
   type ExternalSessionDetail,
   type ExternalRunnerType,
 } from "@/api";
-import { formatTime } from "@/composables/formatters";
+import { formatAgentName, formatTime } from "@/composables/formatters";
 
 const props = defineProps<{
   open: boolean;
@@ -277,10 +273,18 @@ const expandedDirectoryGroups = ref(new Set<string>());
 
 const runnerTypes = [
   { value: "all" as const, label: "All" },
+  { value: "pi" as const, label: "Pi" },
   { value: "claude_code" as const, label: "Claude" },
   { value: "codex" as const, label: "Codex" },
-  { value: "pi" as const, label: "Pi" },
+  { value: "opencode" as const, label: "OpenCode" },
 ];
+
+const runnerTypeClasses: Record<ExternalRunnerType, string> = {
+  pi: "bg-emerald-500/20 text-emerald-300",
+  claude_code: "bg-violet-500/20 text-violet-300",
+  codex: "bg-blue-500/20 text-blue-300",
+  opencode: "bg-blue-500/20 text-blue-300",
+};
 
 // Computed
 const filteredSessions = computed(() => {
@@ -336,10 +340,7 @@ const directoryGroups = computed((): DirectoryGroup[] => {
 });
 
 const assistantLabel = computed(() => {
-  const rt = sessionDetail.value?.runner_type;
-  if (rt === "codex") return "Codex";
-  if (rt === "pi") return "Pi";
-  return "Claude";
+  return formatAgentName(sessionDetail.value?.runner_type);
 });
 
 const isDirectoryGroupExpanded = (key: string) => {
