@@ -57,12 +57,15 @@ def _get_float(name: str, default: float = 0.0) -> float:
 
 
 def _load_pi_settings() -> dict:
-    """Load pi settings for pi_rpc model defaults."""
-    path = Path.home() / ".pi" / "agent" / "settings.json"
+    """Load saved Pi model preferences from the subprocess's agent directory."""
+    agent_dir = _get("PI_CODING_AGENT_DIR")
+    path = (
+        Path(agent_dir).expanduser() if agent_dir else Path.home() / ".pi" / "agent"
+    ) / "settings.json"
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -392,22 +395,21 @@ class Settings:
     def adapter_default_model(adapter: str | None) -> str:
         """Default model for new sessions created with an adapter.
 
-        Env: TETHER_<ADAPTER>_DEFAULT_MODEL, with runner-specific legacy
-        settings used as fallbacks where they already exist.
+        Pi's saved default takes precedence over legacy Tether overrides.
+        TETHER_<ADAPTER>_DEFAULT_MODEL remains a fallback for Pi and an override
+        for other adapters. Explicit model blocklists apply to either source.
         """
         key = Settings.adapter_model_key(adapter)
-        if key:
+        value = Settings.pi_settings_default_model() if key == "PI" else ""
+        if not value and key:
             value = _get(f"TETHER_{key}_DEFAULT_MODEL")
-            if value:
-                if Settings.is_adapter_model_blocked(adapter, value):
-                    return ""
-                return value
+        if value:
+            return "" if Settings.is_adapter_model_blocked(adapter, value) else value
+
         if key == "CLAUDE":
             value = Settings.claude_model()
         elif key == "CODEX":
             value = Settings.codex_sidecar_model()
-        elif key == "PI":
-            value = Settings.pi_settings_default_model()
         elif key == "LITELLM":
             value = Settings.litellm_model()
         else:
@@ -418,13 +420,14 @@ class Settings:
     def adapter_models(adapter: str | None) -> list[str]:
         """Configured model choices for an adapter.
 
-        Env: TETHER_<ADAPTER>_MODELS, comma-separated.
+        Pi's saved enabledModels scope takes precedence over TETHER_PI_MODELS.
+        Environment lists are fallbacks for Pi and overrides for other adapters.
         """
         key = Settings.adapter_model_key(adapter)
-        raw = _get(f"TETHER_{key}_MODELS") if key else ""
-        models = [item.strip() for item in raw.split(",") if item.strip()]
-        if not models and key == "PI":
-            models = Settings.pi_settings_models()
+        models = Settings.pi_settings_models() if key == "PI" else []
+        if not models:
+            raw = _get(f"TETHER_{key}_MODELS") if key else ""
+            models = [item.strip() for item in raw.split(",") if item.strip()]
         models = [
             item
             for item in models
