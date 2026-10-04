@@ -80,3 +80,50 @@ async def test_send_input_preserves_interactive_approval_when_starting(
     await glue._send_input("sess_123", "hello")
 
     assert requests[-1][1]["approval_choice"] == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "error_body, expected",
+    [
+        (
+            {
+                "error": {
+                    "code": "MODEL_NOT_AVAILABLE",
+                    "message": "Model 'old-provider/model' is not configured for pi_rpc.",
+                }
+            },
+            "Model 'old-provider/model' is not configured for pi_rpc. (MODEL_NOT_AVAILABLE)",
+        ),
+        (
+            {"detail": "directory must be an existing folder"},
+            "directory must be an existing folder",
+        ),
+    ],
+)
+async def test_create_session_reports_api_error_message(
+    monkeypatch: pytest.MonkeyPatch, error_body: dict, expected: str
+) -> None:
+    """New-session failures expose the validation reason without an HTTP help link."""
+    response = httpx.Response(
+        422,
+        json=error_body,
+        request=httpx.Request("POST", "http://test/api/sessions"),
+    )
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await glue._create_session(directory="/tmp/project", adapter="pi_rpc")
+
+    assert str(exc_info.value) == expected

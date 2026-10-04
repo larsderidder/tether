@@ -263,7 +263,8 @@ async def _create_session(**kwargs) -> dict:
             headers=_api_headers(),
             timeout=30.0,
         )
-        response.raise_for_status()
+    if response.is_error:
+        raise RuntimeError(_response_error_message(response))
     return response.json()
 
 
