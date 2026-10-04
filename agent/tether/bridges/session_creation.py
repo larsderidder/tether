@@ -109,6 +109,26 @@ class SessionCreationMixin(BridgeInterface):
         )
         return adapter, directory
 
+    def _model_for_child_session(
+        self, base_session_id: str | None, adapter: str | None
+    ) -> str | None:
+        """Reuse an explicitly selected parent's model only while it remains allowed."""
+        if not base_session_id or not adapter or not self._get_session_info:
+            return None
+        base = self._get_session_info(base_session_id) or {}
+        if normalize_adapter_name(base.get("adapter")) != normalize_adapter_name(
+            adapter
+        ):
+            return None
+        model = settings.normalize_adapter_model(adapter, base.get("model"))
+        if not model or settings.is_adapter_model_blocked(adapter, model):
+            return None
+
+        available_models = settings.adapter_models(adapter)
+        if available_models and model not in available_models:
+            return None
+        return model
+
     # Telegram's upstream bridge does not inherit TextCommandBridge.
     _parse_new_args_extended = TextCommandBridge._parse_new_args_extended
 

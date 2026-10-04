@@ -1,6 +1,7 @@
 """Tests for Telegram bridge integration."""
 
 from importlib.util import find_spec
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -106,10 +107,18 @@ class TestTelegramBridgeIntegration:
         assert create_session.await_args.kwargs["adapter"] == adapter
 
     @pytest.mark.anyio
-    async def test_new_inside_topic_inherits_model(self) -> None:
+    async def test_new_inside_topic_inherits_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An explicit Pi session in the same directory keeps a compatible model."""
         from agent_tether.base import BridgeCallbacks
         from tether.bridges.telegram.bot import TelegramBridge
+
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path))
+        monkeypatch.setenv("TETHER_PI_DEFAULT_MODEL", "")
+        monkeypatch.setenv("TETHER_PI_MODELS", "anthropic/claude-sonnet-4")
+        monkeypatch.delenv("TETHER_PI_BLOCKED_MODELS", raising=False)
+        monkeypatch.delenv("TETHER_PI_MODEL_BLACKLIST", raising=False)
 
         create_session = AsyncMock(
             return_value={"id": "sess_child", "platform_thread_id": "456"}
