@@ -5,5 +5,9 @@
     "sidecar-common",
     "codex-sdk-sidecar",
     "opencode-sdk-sidecar"
-  ]
+  ],
+  "overrides": {
+    "qs": "^6.16.0",
+    "esbuild": "^0.28.2"
+  }
 }

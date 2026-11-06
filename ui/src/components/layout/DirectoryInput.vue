@@ -2,7 +2,7 @@
   <div class="relative">
     <Input
       :model-value="modelValue"
-      @update:model-value="$emit('update:modelValue', $event)"
+      @update:model-value="$emit('update:modelValue', String($event))"
       placeholder="/path/to/project"
       :class="inputClass"
     />

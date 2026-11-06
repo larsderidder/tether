@@ -183,6 +183,7 @@ import InputBar from "@/components/session/InputBar.vue"
 import type { ChatMessage } from "@/components/session/MessageBubble.vue"
 import * as Diff2Html from "diff2html"
 import { useClipboard } from "@/composables/useClipboard"
+import { isSessionState } from "@/lib/sessionState"
 
 const { copy } = useClipboard({ legacy: true })
 
@@ -242,6 +243,7 @@ const MAX_RECONNECT_DELAY_MS = 30000
 
 const isSessionRunning = computed(() => session.value?.state === "RUNNING")
 
+
 const diffFileList = computed(() =>
   Array.isArray(diffFiles.value) ? diffFiles.value : []
 )
@@ -272,8 +274,6 @@ const buildDiffView = async (diffText: string, files: DiffFile[]) => {
     const file = parsedFiles[i]
     const path = (file.newName || file.oldName || "unknown").replace(/^b\//, "")
     const html = Diff2Html.html([file], {
-      inputFormat: "json",
-      showFiles: false,
       matching: "lines",
       outputFormat: "line-by-line"
     })
@@ -290,8 +290,6 @@ const buildDiffView = async (diffText: string, files: DiffFile[]) => {
     html:
       htmlByPath.get(file.path) ||
       Diff2Html.html(file.patch, {
-        inputFormat: "diff",
-        showFiles: false,
         matching: "lines",
         outputFormat: "line-by-line"
       })
@@ -533,8 +531,9 @@ const onEvent = (event: EventEnvelope) => {
   }
 
   if (event.type === "session_state") {
-    if (session.value) {
-      session.value.state = String((event.data as { state?: string }).state || "")
+    const nextState = (event.data as { state?: unknown }).state
+    if (session.value && isSessionState(nextState)) {
+      session.value.state = nextState
     }
   }
 
@@ -556,10 +555,9 @@ const onEvent = (event: EventEnvelope) => {
       if (payload.resolved_by !== "user" && payload.message) {
         // Add a temporary output message to show what happened
         messages.value.push({
-          id: `resolved-${payload.request_id}`,
-          kind: "step",
+          role: "assistant",
           final: `[Permission ${payload.resolved_by}: ${payload.message}]`,
-          thinking: null,
+          thinking: undefined,
         })
       }
     }

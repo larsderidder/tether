@@ -79,7 +79,7 @@ export function emitError(
   session: SessionState<any>,
   code: string,
   message: string,
-  logger?: pino.Logger,
+  logger?: Pick<pino.Logger, "error">,
 ): void {
   logger?.error({ session_id: session.id, code, message }, "Sidecar error");
   emit(session, { type: "error", data: { code, message } });

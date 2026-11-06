@@ -58,10 +58,12 @@ vi.mock("./settings.js", () => ({
 
 // Mock the Codex SDK
 vi.mock("../../codex-src/sdk/typescript/src/index.js", () => ({
-  Codex: vi.fn(() => ({
-    startThread: mockStartThread,
-    resumeThread: mockResumeThread,
-  })),
+  Codex: vi.fn(function () {
+    return {
+      startThread: mockStartThread,
+      resumeThread: mockResumeThread,
+    };
+  }),
 }));
 
 // Helper to create a test session

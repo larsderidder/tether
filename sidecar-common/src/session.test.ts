@@ -221,7 +221,7 @@ describe("emitError", () => {
     const session = createTestSession();
     const mockLogger = { error: vi.fn() };
 
-    emitError(session, "CODE", "msg", mockLogger as unknown as { error: (args: unknown) => void });
+    emitError(session, "CODE", "msg", mockLogger);
 
     expect(mockLogger.error).toHaveBeenCalledWith(
       { session_id: session.id, code: "CODE", message: "msg" },

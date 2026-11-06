@@ -1,82 +1,88 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mount } from '@vue/test-utils';
+import { defineComponent, h } from 'vue';
 import * as api from '@/api';
+import { useAuth } from '../useAuth';
 
-// Mock the API module
 vi.mock('@/api', () => ({
   AUTH_REQUIRED_EVENT: 'tether:auth-required',
-  getToken: vi.fn(() => ''),
+  getToken: vi.fn(() => 'stored-token'),
   setToken: vi.fn(),
 }));
 
-// Since useAuth uses onMounted/onUnmounted lifecycle hooks,
-// we test the core logic directly without the composable wrapper
-describe('useAuth core logic', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
-  });
+function mountAuth() {
+  return mount(defineComponent({
+    setup() {
+      return useAuth();
+    },
+    render() {
+      return h('div');
+    },
+  }));
+}
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('getToken retrieves stored token', () => {
-    vi.mocked(api.getToken).mockReturnValue('my-token');
-    expect(api.getToken()).toBe('my-token');
-  });
-
-  it('setToken stores token trimmed', () => {
-    api.setToken('  new-token  ');
-    // The mock captures the call - in real impl we'd trim
-    expect(api.setToken).toHaveBeenCalledWith('  new-token  ');
-  });
-
-  describe('token saved feedback', () => {
-    it('shows saved state temporarily', async () => {
-      let tokenSaved = false;
-
-      // Simulate the saveToken logic
-      tokenSaved = true;
-      expect(tokenSaved).toBe(true);
-
-      await vi.advanceTimersByTimeAsync(1200);
-      tokenSaved = false;
-
-      expect(tokenSaved).toBe(false);
-    });
-  });
+let wrapper: ReturnType<typeof mountAuth>;
+beforeEach(() => {
+  vi.mocked(api.getToken).mockReturnValue('stored-token');
+  wrapper = mountAuth();
 });
 
-// Integration test that imports the composable
-// Note: This will show Vue warnings about lifecycle hooks, but still tests core state
-describe('useAuth integration', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(api.getToken).mockReturnValue('');
+afterEach(() => {
+  vi.unstubAllGlobals();
+  wrapper.vm.closeModal();
+  wrapper.vm.authRequired = false;
+  wrapper.vm.tokenSaved = false;
+  wrapper.unmount();
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
+});
+
+describe('useAuth', () => {
+  it('opens the modal and refreshes the token after an auth-required event', () => {
+    vi.mocked(api.getToken).mockReturnValue('updated-token');
+    expect(wrapper.vm.authRequired).toBe(false);
+    expect(wrapper.vm.modalOpen).toBe(false);
+    window.dispatchEvent(new Event(api.AUTH_REQUIRED_EVENT));
+    expect(wrapper.vm.authRequired).toBe(true);
+    expect(wrapper.vm.modalOpen).toBe(true);
+    expect(wrapper.vm.tokenInput).toBe('updated-token');
   });
 
-  it('exports expected interface', async () => {
-    // Dynamic import to avoid lifecycle hook issues at module level
-    const { useAuth } = await import('../useAuth');
-    const auth = useAuth();
-
-    expect(auth).toHaveProperty('authRequired');
-    expect(auth).toHaveProperty('modalOpen');
-    expect(auth).toHaveProperty('tokenInput');
-    expect(auth).toHaveProperty('tokenSaved');
-    expect(auth).toHaveProperty('saveToken');
-    expect(auth).toHaveProperty('openModal');
-    expect(auth).toHaveProperty('closeModal');
+  it('refreshes the stored token when opening the modal manually', () => {
+    vi.mocked(api.getToken).mockReturnValue('replacement-token');
+    wrapper.vm.openModal();
+    expect(wrapper.vm.tokenInput).toBe('replacement-token');
+    expect(wrapper.vm.modalOpen).toBe(true);
   });
 
-  it('initializes with token from storage', async () => {
-    vi.mocked(api.getToken).mockReturnValue('stored-token');
+  it('saves a trimmed token and clears auth state before reloading', () => {
+    window.dispatchEvent(new Event(api.AUTH_REQUIRED_EVENT));
+    wrapper.vm.tokenInput = '  replacement-token  ';
+    const reload = vi.fn(() => {
+      expect(wrapper.vm.authRequired).toBe(false);
+      expect(wrapper.vm.modalOpen).toBe(false);
+      expect(wrapper.vm.tokenSaved).toBe(true);
+    });
+    vi.stubGlobal('window', { location: { reload } });
+    wrapper.vm.saveToken();
+    expect(api.setToken).toHaveBeenCalledWith('replacement-token');
+    expect(reload).toHaveBeenCalledOnce();
+  });
 
-    // Reset module cache to pick up new mock
-    vi.resetModules();
-    const { useAuth } = await import('../useAuth');
-    const { tokenInput } = useAuth();
+  it('closes the modal without storing a token', () => {
+    wrapper.vm.openModal();
+    wrapper.vm.closeModal();
+    expect(wrapper.vm.modalOpen).toBe(false);
+    expect(api.setToken).not.toHaveBeenCalled();
+  });
 
-    expect(tokenInput.value).toBe('stored-token');
+  it('removes the auth-required listener when the component unmounts', () => {
+    const remove = vi.spyOn(window, 'removeEventListener');
+    wrapper.unmount();
+    expect(remove).toHaveBeenCalledWith(api.AUTH_REQUIRED_EVENT, expect.any(Function));
+    window.dispatchEvent(new Event(api.AUTH_REQUIRED_EVENT));
+    expect(wrapper.vm.authRequired).toBe(false);
+    expect(wrapper.vm.modalOpen).toBe(false);
   });
 });

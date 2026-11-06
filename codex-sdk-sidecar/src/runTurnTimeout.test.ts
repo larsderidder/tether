@@ -53,10 +53,12 @@ vi.mock("./settings.js", () => ({
 }));
 
 vi.mock("../../codex-src/sdk/typescript/src/index.js", () => ({
-  Codex: vi.fn(() => ({
-    startThread: mockStartThread,
-    resumeThread: vi.fn(),
-  })),
+  Codex: vi.fn(function () {
+    return {
+      startThread: mockStartThread,
+      resumeThread: vi.fn(),
+    };
+  }),
 }));
 
 function createTestSession(): SessionState {

@@ -357,7 +357,7 @@ const toggleDirectoryGroup = (key: string) => {
 
 function formatDirectoryLabel(path: string): string {
   const segments = path.split("/").filter(Boolean);
-  return segments.at(-1) || path;
+  return segments[segments.length - 1] || path;
 }
 
 function formatSessionId(id: string): string {

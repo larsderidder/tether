@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+env:
+  CODEX_SDK_REF: 2338f99f58bdb120ff11e511b5a77328b68e61e8
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,9 +26,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install agent-sessions dependency from GitHub release tag
-        run: pip install "agent-sessions @ git+https://github.com/Adminrealagi/agent-sessions.git@v0.2.1"
 
       - name: Install dependencies
         working-directory: agent
@@ -39,12 +42,60 @@ jobs:
           files: agent/coverage.xml
           fail_ci_if_error: false
 
+  test-sidecars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the Codex SDK used by the sidecar
+        uses: actions/checkout@v4
+        with:
+          repository: openai/codex
+          ref: ${{ env.CODEX_SDK_REF }}
+          path: codex-src
+          sparse-checkout: sdk/typescript
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install sidecar dependencies
+        run: npm ci
+      - name: Check sidecar types
+        run: npm run typecheck --workspaces
+      - name: Run sidecar tests
+        run: npm test --workspaces
+
+  test-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+      - name: Check UI types
+        working-directory: ui
+        run: npm run typecheck
+      - name: Run UI tests
+        working-directory: ui
+        run: npm run test:run
+
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, test-sidecars, test-ui]
 
     steps:
       - uses: actions/checkout@v4
+      - name: Check out the same Codex SDK verified by the sidecar tests
+        uses: actions/checkout@v4
+        with:
+          repository: openai/codex
+          ref: ${{ env.CODEX_SDK_REF }}
+          path: codex-src
+          sparse-checkout: sdk/typescript
 
       - name: Set up Python
         uses: actions/setup-python@v5

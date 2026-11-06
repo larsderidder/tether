@@ -7,11 +7,12 @@
     "dev": "tsx src/index.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tether/sidecar-common": "*",
     "@opencode-ai/sdk": "^1.2.12",
+    "@tether/sidecar-common": "*",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "pino": "^9.4.0",
@@ -24,6 +25,6 @@
     "supertest": "^7.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.11"
   }
 }

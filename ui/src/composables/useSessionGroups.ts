@@ -15,7 +15,7 @@ function formatDirectoryLabel(dir: string | null): string {
   }
   const trimmed = dir.replace(/[\\/]+$/, "");
   const segments = trimmed.split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) || trimmed;
+  return segments[segments.length - 1] || trimmed;
 }
 
 export function useSessionGroups(

@@ -38,10 +38,11 @@ import {
   openEventStream,
   sendInput,
   startSession,
-  stopSession,
+  interruptSession,
   type EventEnvelope,
   type Session
 } from "../api";
+import { isSessionState } from '@/lib/sessionState';
 
 const route = useRoute();
 const sessionId = String(route.params.id);
@@ -80,7 +81,7 @@ const refresh = async () => {
 const stop = async () => {
   error.value = "";
   try {
-    session.value = await stopSession(sessionId);
+    session.value = await interruptSession(sessionId);
   } catch (err) {
     error.value = String(err);
   }
@@ -124,7 +125,10 @@ const onEvent = (event: EventEnvelope) => {
   }
   if (event.type === "session_state") {
     if (session.value) {
-      session.value.state = String((event.data as { state?: string }).state || "");
+      const state = (event.data as { state?: unknown } | undefined)?.state;
+      if (isSessionState(state)) {
+        session.value.state = state;
+      }
     }
   }
 };

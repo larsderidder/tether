@@ -5,7 +5,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import { createSidecarApp } from "./server.js";
 import { createSessionRegistry } from "./session.js";
-import type pino from "pino";
 import pino from "pino";
 
 // Silent logger for tests

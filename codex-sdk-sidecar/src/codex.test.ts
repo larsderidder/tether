@@ -74,22 +74,26 @@ describe("formatStep", () => {
   });
 
   it("formats file_change item", () => {
-    const item = {
+    const item: ThreadItem = {
       type: "file_change",
+      id: "files-1",
+      status: "completed",
       changes: [
-        { path: "src/index.ts", action: "create" },
-        { path: "src/utils.ts", action: "modify" },
+        { path: "src/index.ts", kind: "add" },
+        { path: "src/utils.ts", kind: "update" },
       ],
-    } as ThreadItem;
+    };
 
     expect(formatStep(item)).toBe("File change: 2 file(s)");
   });
 
   it("formats file_change item with empty changes", () => {
-    const item = {
+    const item: ThreadItem = {
       type: "file_change",
+      id: "files-2",
+      status: "completed",
       changes: [],
-    } as ThreadItem;
+    };
 
     expect(formatStep(item)).toBe("File change: 0 file(s)");
   });
@@ -138,7 +142,7 @@ describe("formatStep", () => {
   it("returns empty string for unknown types", () => {
     const item = {
       type: "unknown_type",
-    } as ThreadItem;
+    } as unknown as ThreadItem;
 
     expect(formatStep(item)).toBe("");
   });
@@ -263,7 +267,7 @@ describe("handleEvent", () => {
         item: {
           type: "unknown_type",
         },
-      } as ThreadEvent;
+      } as unknown as ThreadEvent;
 
       handleEvent(session, event, options);
 
@@ -361,7 +365,7 @@ describe("handleEvent", () => {
 
       const event = {
         type: "unknown_event",
-      } as ThreadEvent;
+      } as unknown as ThreadEvent;
 
       handleEvent(session, event, options);
 
