@@ -139,6 +139,42 @@ class BridgeTurnAccumulator:
             metadata={"bridge_segments": tool_segments, "tool_activity": True},
         )
 
+    def flush_assistant(self, session_id: str) -> BridgeFlush | None:
+        """Take progress prose without flushing thinking or tool telemetry."""
+        state = self._states.get(session_id)
+        if not state:
+            return None
+
+        segments: list[dict[str, str]] = []
+        remaining: list[_StreamItem] = []
+        for item in state.stream_items:
+            assistant_segments = [
+                segment
+                for segment in item.bridge_segments
+                if segment.get("kind") == "assistant"
+            ]
+            if not assistant_segments:
+                remaining.append(item)
+                continue
+            segments.extend(assistant_segments)
+            other_segments = [
+                segment
+                for segment in item.bridge_segments
+                if segment.get("kind") != "assistant"
+            ]
+            if other_segments:
+                text = "".join(segment.get("text", "") for segment in other_segments)
+                remaining.append(_StreamItem(text, other_segments))
+
+        state.stream_items = remaining
+        text = "".join(segment.get("text", "") for segment in segments)
+        if not text.strip():
+            return None
+        return BridgeFlush(
+            text=text,
+            metadata={"bridge_segments": segments, "stream_batch": True},
+        )
+
     def flush_stream(self, session_id: str) -> BridgeFlush | None:
         """Return buffered stream output and clear the stream buffer."""
 

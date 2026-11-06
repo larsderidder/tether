@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from collections import Counter
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -11,6 +14,7 @@ import structlog
 from tether.api.emit import emit_history_message
 from tether.api.errors import raise_http_error
 from tether.api.schemas import SyncResult
+from tether.bridges.retry import bridge_delivery_lease, send_bridge_delivery
 from tether.discovery import get_external_session_detail
 from tether.models import ExternalRunnerType, ExternalSessionMessage, Session
 from tether.settings import settings
@@ -25,7 +29,7 @@ _REPLAY_TOTAL_LIMIT = 1900
 _FORCE_SYNC_REPLAY_LIMIT = 75
 _BASELINE_RECOVERY_REPLAY_LIMIT = 25
 _VERBOSITIES = {"none", "minimal", "medium", "high"}
-_HISTORY_BUFFERS: dict[str, list[str]] = {}
+_HISTORY_BUFFERS: dict[str, list[tuple[str | None, str]]] = {}
 _HISTORY_FLUSH_TASKS: dict[str, asyncio.Task] = {}
 
 
@@ -89,25 +93,26 @@ def recent_attach_history(
     return messages[start:], start
 
 
-async def replay_recent_attach_history(
+async def queue_recent_attach_history(
     session: Session, messages: list[ExternalSessionMessage]
 ) -> None:
-    """Replay bounded Pi attachment history to the newly bound Telegram topic."""
-    bridge = get_bound_bridge(session)
-    recent, _base_index = recent_attach_history(messages)
+    """Queue bounded attachment history for background delivery without delaying attach."""
+    recent, base_index = recent_attach_history(messages)
     for index, message in enumerate(recent):
         is_final = message.role == "assistant" and (
             index + 1 == len(recent) or recent[index + 1].role == "user"
         )
         await relay_history_message_to_bridge(
             session=session,
-            bridge=bridge,
+            bridge=None,
             role=message.role,
             content=message.content,
             thinking=message.thinking,
             is_final=is_final,
+            message_index=base_index + index,
+            replay_id=session.platform_thread_id,
         )
-    await _flush_history_buffer(session, bridge)
+    await _flush_history_buffer(session, None)
 
 
 def _event_log_recovery_timestamp(session_id: str) -> datetime | None:
@@ -285,6 +290,56 @@ def _should_relay_history_chunk(session, metadata: dict) -> bool:
     return _history_verbosity(session) != "none"
 
 
+def _history_delivery_key(session, delivery_key: str | None) -> str:
+    """Use source identity when known, otherwise assign a fresh delivery key."""
+    platform = str(getattr(session, "platform", None) or "none")
+    if delivery_key:
+        return f"{session.id}:{platform}:{delivery_key}"
+    return f"{session.id}:{platform}:history:{uuid.uuid4().hex}"
+
+
+async def _drain_history_outbox(session, bridge: object | None) -> bool:
+    """Send pending external history deliveries in persisted order."""
+    if bridge is None or not session.platform:
+        return True
+    while True:
+        deliveries = store.claim_pending_bridge_deliveries(
+            session.id, session.platform, limit=1
+        )
+        if not deliveries:
+            return True
+        delivery = deliveries[0]
+        try:
+            payload = json.loads(delivery.payload)
+            if delivery.method == "on_approval_request":
+                request = (
+                    payload.get("request", {}) if isinstance(payload, dict) else {}
+                )
+                request_id = str(request.get("request_id") or "")
+                if not request_id or store.permission_request_stale(
+                    session.id, request_id
+                ):
+                    store.cancel_bridge_delivery(delivery.id)
+                    continue
+            async with bridge_delivery_lease(store, delivery.id):
+                await send_bridge_delivery(
+                    bridge,
+                    delivery.session_id,
+                    delivery.method,
+                    payload if isinstance(payload, dict) else {},
+                )
+                store.mark_bridge_delivery_sent(delivery.id)
+        except Exception as exc:
+            store.mark_bridge_delivery_failed(delivery.id, exc, retry_delay_s=0)
+            logger.exception(
+                "Failed to deliver external history outbox item",
+                session_id=session.id,
+                platform=session.platform,
+                delivery_id=delivery.id,
+            )
+            return False
+
+
 async def _flush_history_buffer(session, bridge: object | None) -> None:
     """Send buffered non-final external history to the bound bridge."""
     task = _HISTORY_FLUSH_TASKS.pop(session.id, None)
@@ -292,15 +347,20 @@ async def _flush_history_buffer(session, bridge: object | None) -> None:
         task.cancel()
 
     chunks = _HISTORY_BUFFERS.pop(session.id, [])
-    text = "\n\n".join(chunk for chunk in chunks if chunk.strip()).strip()
+    keys = [key for key, _text in chunks if key]
+    text = "\n\n".join(chunk for _key, chunk in chunks if chunk.strip()).strip()
     if not text:
         return
 
+    delivery_key = None
+    if keys:
+        delivery_key = f"history-buffer:{keys[0]}:{keys[-1]}"
     await _send_history_immediately(
         session=session,
         bridge=bridge,
         text=text,
         metadata={"is_history": True, "role": "assistant", "kind": "step"},
+        delivery_key=delivery_key,
     )
 
 
@@ -332,20 +392,21 @@ async def _send_history_immediately(
     bridge: object | None,
     text: str,
     metadata: dict,
+    delivery_key: str | None = None,
 ) -> None:
-    """Send one imported history chunk to the bound bridge thread."""
-    if bridge is None or not text.strip():
+    """Persist one imported history chunk and attempt ordered delivery."""
+    if not session.platform or not text.strip():
         return
 
-    try:
-        await bridge.on_output(session.id, text, metadata=metadata)
-    except Exception:
-        logger.exception(
-            "Failed to relay external session history to bridge",
-            session_id=session.id,
-            platform=session.platform,
-            metadata=metadata,
-        )
+    key = _history_delivery_key(session, delivery_key)
+    store.enqueue_bridge_delivery(
+        session_id=session.id,
+        platform=session.platform,
+        delivery_key=key,
+        method="on_output",
+        payload={"text": text, "metadata": metadata},
+    )
+    await _drain_history_outbox(session, bridge)
 
 
 async def send_history_to_bridge(
@@ -354,9 +415,10 @@ async def send_history_to_bridge(
     bridge: object | None,
     text: str,
     metadata: dict,
+    delivery_key: str | None = None,
 ) -> None:
     """Send or buffer one imported history chunk to the bound bridge thread."""
-    if bridge is None or not text.strip():
+    if not session.platform or not text.strip():
         return
 
     is_final = bool(metadata.get("final") or metadata.get("is_final"))
@@ -377,6 +439,7 @@ async def send_history_to_bridge(
             bridge=bridge,
             text=text,
             metadata=metadata,
+            delivery_key=delivery_key,
         )
         return
 
@@ -386,10 +449,11 @@ async def send_history_to_bridge(
             bridge=bridge,
             text=text,
             metadata=metadata,
+            delivery_key=delivery_key,
         )
         return
 
-    _HISTORY_BUFFERS.setdefault(session.id, []).append(text)
+    _HISTORY_BUFFERS.setdefault(session.id, []).append((delivery_key, text))
     await _schedule_history_flush(session, bridge)
 
 
@@ -401,14 +465,21 @@ async def relay_history_message_to_bridge(
     content: str,
     thinking: str | None = None,
     is_final: bool = False,
+    message_index: int | None = None,
+    replay_id: str | None = None,
 ) -> None:
     """Mirror one imported external-session message into the bridge thread."""
+    message_key = f"history:{message_index}"
+    if replay_id is not None:
+        message_key = f"attach:{replay_id}:{message_index}"
+    replay_metadata = {"replay": True} if replay_id is not None else {}
     if role == "user":
         await send_history_to_bridge(
             session=session,
             bridge=bridge,
             text=format_history_user_text(content),
-            metadata={"is_history": True, "role": "user"},
+            metadata={"is_history": True, "role": "user", **replay_metadata},
+            delivery_key=(f"{message_key}:user" if message_index is not None else None),
         )
         return
 
@@ -422,7 +493,11 @@ async def relay_history_message_to_bridge(
                 "role": "assistant",
                 "kind": "step",
                 "final": False,
+                **replay_metadata,
             },
+            delivery_key=(
+                f"{message_key}:thinking" if message_index is not None else None
+            ),
         )
 
     if content:
@@ -436,21 +511,30 @@ async def relay_history_message_to_bridge(
                 "role": "assistant",
                 "kind": kind,
                 "final": is_final,
+                **replay_metadata,
             },
+            delivery_key=(
+                f"{message_key}:content" if message_index is not None else None
+            ),
         )
 
 
 async def replay_stored_history_to_bridge(*, session, bridge: object | None) -> None:
-    """Replay already-emitted imported history into a newly created bridge thread."""
+    """Explicitly backfill the latest 100 imported messages into a new bridge thread."""
     if bridge is None:
         return
 
+    await _drain_history_outbox(session, bridge)
+
+    if not session.platform:
+        return
+    store.bridge_replay_cursor(session.id, session.platform)
     history_events = [
         event
-        for event in store.read_event_log(session.id, since_seq=0)
+        for event in store.read_event_log(session.id)
         if (event.get("data") or {}).get("is_history")
         and event.get("type") in {"user_input", "output"}
-    ]
+    ][-100:]
 
     for event in history_events:
         data = event.get("data") or {}
@@ -460,6 +544,7 @@ async def replay_stored_history_to_bridge(*, session, bridge: object | None) -> 
                 bridge=bridge,
                 text=format_history_user_text(str(data.get("text") or "")),
                 metadata={"is_history": True, "role": "user", "replay": True},
+                delivery_key=f"history-replay:{event.get('seq')}:user",
             )
             continue
 
@@ -474,6 +559,7 @@ async def replay_stored_history_to_bridge(*, session, bridge: object | None) -> 
                 "final": bool(data.get("final")),
                 "replay": True,
             },
+            delivery_key=f"history-replay:{event.get('seq')}:assistant",
         )
 
 
@@ -498,10 +584,13 @@ async def sync_external_session_delta(
         )
 
     runner_type = external_runner_type_for_session(session)
-    detail = get_external_session_detail(
+    # The persisted cursor is an absolute transcript index, not a tail offset.
+    # Providers already scan the full transcript; do not truncate that snapshot.
+    detail = await asyncio.to_thread(
+        get_external_session_detail,
         session_id=external_id,
         runner_type=runner_type,
-        limit=500,
+        limit=sys.maxsize,
     )
     if not detail:
         raise_http_error("NOT_FOUND", f"External session not found: {external_id}", 404)
@@ -585,25 +674,16 @@ async def sync_external_session_delta(
         logger.debug("No new messages to sync", session_id=session_id, source=source)
         return SyncResult(synced=0, total=len(messages))
 
-    if not force and synced_count == 0:
-        existing_history = [
-            event
-            for event in store.read_event_log(session_id, since_seq=0)
-            if (event.get("data") or {}).get("is_history")
-            and event.get("type") in {"user_input", "output"}
-        ]
-        if len(existing_history) >= len(messages):
-            turn_count = sum(1 for m in messages if m.role == "user")
-            store.set_synced_message_count(session_id, len(messages), turn_count)
-            return SyncResult(synced=len(new_messages), total=len(messages))
-
     history_bridge = get_bound_bridge(session)
     live_user_inputs = _live_user_input_counts(session.id)
+    turn_count = sum(1 for message in messages[:base_idx] if message.role == "user")
     for i, msg in enumerate(new_messages):
         if msg.role == "user":
+            turn_count += 1
             normalized_input = " ".join(str(msg.content or "").split())
             if live_user_inputs[normalized_input] > 0:
                 live_user_inputs[normalized_input] -= 1
+                store.set_synced_message_count(session_id, base_idx + i + 1, turn_count)
                 continue
 
         is_final = False
@@ -612,6 +692,16 @@ async def sync_external_session_delta(
             if next_idx >= len(messages) or messages[next_idx].role == "user":
                 is_final = True
 
+        await relay_history_message_to_bridge(
+            session=session,
+            bridge=history_bridge,
+            role=msg.role,
+            content=msg.content,
+            thinking=msg.thinking,
+            is_final=is_final,
+            message_index=base_idx + i,
+        )
+        await _flush_history_buffer(session, history_bridge)
         await emit_history_message(
             session,
             role=msg.role,
@@ -621,14 +711,8 @@ async def sync_external_session_delta(
             is_final=is_final,
             is_history=True,
         )
-        await relay_history_message_to_bridge(
-            session=session,
-            bridge=history_bridge,
-            role=msg.role,
-            content=msg.content,
-            thinking=msg.thinking,
-            is_final=is_final,
-        )
+        store.set_synced_message_count(session_id, base_idx + i + 1, turn_count)
+    await _flush_history_buffer(session, history_bridge)
 
     turn_count = sum(1 for m in messages if m.role == "user")
     store.set_synced_message_count(session_id, len(messages), turn_count)

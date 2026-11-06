@@ -32,7 +32,7 @@ The central entity. Represents one supervised agent run.
 | `model` | `str?` | Model selected when the session was created |
 | `bridge_verbosity` | `str?` | Per-session bridge verbosity override: `none`, `minimal`, `medium`, or `high` |
 | `bridge_buffer_max_seconds` | `float?` | Optional per-session max seconds before flushing buffered bridge activity. `None` means flush at final/end turn |
-| `synced_message_count` | `int?` | Durable cursor for messages imported from the external runner transcript |
+| `synced_message_count` | `int?` | Absolute index into the complete external runner transcript, independent of bounded display history. `null` establishes a baseline without replay on the first sync. |
 | `synced_turn_count` | `int?` | Durable count of imported user turns |
 | `external_agent_id` | `str?` | External agent identifier |
 | `external_agent_name` | `str?` | e.g., "Claude Code" |
@@ -117,6 +117,21 @@ Emitted after `on_awaiting_input` when `TETHER_GIT_AUTO_CHECKPOINT=true` and the
 }
 ```
 
+## Bridge Delivery Outbox
+
+`bridge_deliveries` stores durable messaging-platform sends. Important fields:
+
+- `delivery_key` - unique idempotency key derived from session, platform, delivery kind, and event sequence
+- `status` - `pending`, `sending`, `sent`, or `cancelled`
+- `event_seq` - source event sequence when available, used for idempotency and replay correlation
+- `delivery_seq` - per-session and per-platform FIFO sequence assigned at enqueue time. This is the authoritative delivery order, including events without `event_seq`.
+- `next_attempt_at` / `attempts` / `last_error` - retry bookkeeping
+
+Payloads are bounded before storage. Consumers claim only the FIFO head before sending, then mark it `sent` after the platform call returns. A `sending` row can be reclaimed after its claim deadline, which gives at-least-once recovery across crashes but cannot distinguish a send accepted by the platform from one that failed before acknowledgement.
+
+## Bridge Replay Cursors
+
+`bridge_replay_cursors` stores the durable event-log baseline and cursor for a session/platform binding. A first binding starts at the current maximum event sequence, avoiding automatic replay of legacy output into a newly attached chat. Existing bindings recover events after their cursor on restart. The in-memory consumed sequence can advance while output is buffered, but the durable cursor cannot pass unpersisted buffers, delayed status, or an event whose deliveries are only partly enqueued. Imported transcript checkpoints advance per source message only after its bridge rows and history events are persisted.
 ## Runtime State (in-memory)
 
 `SessionRuntime` in `store.py` — per-session volatile state:

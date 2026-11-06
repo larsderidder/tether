@@ -8,7 +8,7 @@ from sqlmodel import SQLModel
 from alembic import context
 
 # Import models to register them with SQLModel.metadata
-from tether.models import Session, Message  # noqa: F401
+from tether import models as _models  # noqa: F401
 from tether.db import get_db_url
 
 # this is the Alembic Config object, which provides

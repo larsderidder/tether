@@ -58,10 +58,11 @@ class MockBridge(BridgeInterface):
 
 
 class FailingBridge(BridgeInterface):
-    """Bridge that raises on every on_output call."""
+    """Bridge that raises once on output, then recovers."""
 
     def __init__(self):
         self.output_call_count = 0
+        self.failures_remaining = 1
         self.status_calls: list[dict] = []
         self.status_received = asyncio.Event()
 
@@ -69,7 +70,9 @@ class FailingBridge(BridgeInterface):
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
         self.output_call_count += 1
-        raise RuntimeError("Telegram API is down")
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise RuntimeError("Telegram API is down")
 
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
@@ -368,6 +371,7 @@ class TestBridgeSubscriberResilience:
             bridge_manager=manager,
             new_subscriber=fresh_store.new_subscriber,
             remove_subscriber=fresh_store.remove_subscriber,
+            outbox_retry_delay_s=0,
         )
 
         try:
@@ -420,6 +424,13 @@ class TestBridgeSubscriberResilience:
         session = fresh_store.create_session("external", None)
         session.platform = "mock"
         fresh_store.update_session(session)
+        fresh_store.add_pending_permission(
+            session.id,
+            "perm_sub",
+            "file_write",
+            {},
+            asyncio.get_running_loop().create_future(),
+        )
 
         from tether.bridges.subscriber import BridgeSubscriber as _BS
 

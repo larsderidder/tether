@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
-from sqlmodel import SQLModel, Field
+from sqlmodel import Field, SQLModel
 
 
 class SessionState(str, Enum):
@@ -108,6 +108,41 @@ class Session(SQLModel, table=True):
         """Set repo_ref from a RepoRef object."""
         self.repo_ref_type = value.type
         self.repo_ref_value = value.value
+
+
+class BridgeDelivery(SQLModel, table=True):
+    """Durable bridge delivery outbox row."""
+
+    __tablename__ = "bridge_deliveries"
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(foreign_key="sessions.id", index=True)
+    platform: str = Field(index=True)
+    delivery_key: str = Field(unique=True, index=True)
+    method: str
+    payload: str
+    event_seq: Optional[int] = Field(default=None, index=True)
+    status: str = Field(default="pending", index=True)
+    attempts: int = 0
+    next_attempt_at: Optional[str] = None
+    last_error: Optional[str] = None
+    created_at: str
+    sent_at: Optional[str] = None
+    delivery_seq: Optional[int] = Field(default=None, index=True)
+
+
+class BridgeReplayCursor(SQLModel, table=True):
+    """Durable bridge replay position for one session and platform."""
+
+    __tablename__ = "bridge_replay_cursors"
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(foreign_key="sessions.id", index=True)
+    platform: str = Field(index=True)
+    baseline_seq: int = 0
+    cursor_seq: int = 0
+    created_at: str
+    updated_at: str
 
 
 class Message(SQLModel, table=True):

@@ -15,15 +15,26 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 import structlog
-from sqlalchemy import func as sa_func
-from sqlmodel import select
+from sqlalchemy import func as sa_func, text
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import col, select
 
 from tether.db import get_session as get_db_session, init_db
 from tether.git import has_git_repository, normalize_directory_path
-from tether.models import Message, Session, SessionState
+from tether.models import (
+    BridgeDelivery,
+    BridgeReplayCursor,
+    Message,
+    Session,
+    SessionState,
+)
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
+_SUBSCRIBER_QUEUE_MAXSIZE = 1000
+_BRIDGE_DELIVERY_PAYLOAD_MAX_BYTES = 262_144
+_BRIDGE_DELIVERY_STRING_MAX_CHARS = 65_536
+_BRIDGE_DELIVERY_CLAIM_TIMEOUT_S = 30.0
 
 
 @dataclass
@@ -92,30 +103,41 @@ class SessionStore:
                     max_seq = self._get_max_seq_from_log(row.id)
                     self._runtime[row.id] = SessionRuntime(seq=max_seq)
 
+    def _event_log_paths(self, session_id: str) -> list[str]:
+        """Return event log paths in chronological read order."""
+        path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
+        rotated = f"{path}.1"
+        return [candidate for candidate in (rotated, path) if os.path.exists(candidate)]
+
+    def _iter_event_log(self, session_id: str):
+        """Yield JSON events from active and rotated event logs."""
+        for path in self._event_log_paths(session_id):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        if not line.strip():
+                            continue
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                continue
+
     def _get_max_seq_from_log(self, session_id: str) -> int:
-        """Read the max seq from the event log file.
+        """Read the max seq from active and rotated event log files.
 
         Used to initialize the seq counter after restart to avoid conflicts
         where new events get seq numbers that collide with old events.
         """
-        path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
-        if not os.path.exists(path):
-            return 0
         max_seq = 0
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = json.loads(line)
-                        seq = int(event.get("seq") or 0)
-                        if seq > max_seq:
-                            max_seq = seq
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-        except OSError:
-            pass
+        for event in self._iter_event_log(session_id):
+            try:
+                seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                continue
+            if seq > max_seq:
+                max_seq = seq
         return max_seq
 
     def _now(self) -> str:
@@ -213,6 +235,20 @@ class SessionStore:
                 ).all()
                 for msg in messages:
                     db.delete(msg)
+                deliveries = db.exec(
+                    select(BridgeDelivery).where(
+                        BridgeDelivery.session_id == session_id
+                    )
+                ).all()
+                for delivery in deliveries:
+                    db.delete(delivery)
+                cursors = db.exec(
+                    select(BridgeReplayCursor).where(
+                        BridgeReplayCursor.session_id == session_id
+                    )
+                ).all()
+                for cursor in cursors:
+                    db.delete(cursor)
                 # Delete session
                 db_session = db.get(Session, session_id)
                 if db_session:
@@ -229,6 +265,12 @@ class SessionStore:
                 messages = db.exec(select(Message)).all()
                 for msg in messages:
                     db.delete(msg)
+                deliveries = db.exec(select(BridgeDelivery)).all()
+                for delivery in deliveries:
+                    db.delete(delivery)
+                cursors = db.exec(select(BridgeReplayCursor)).all()
+                for cursor in cursors:
+                    db.delete(cursor)
                 # Delete all sessions
                 sessions = db.exec(select(Session)).all()
                 for sess in sessions:
@@ -258,7 +300,7 @@ class SessionStore:
         Args:
             session_id: Internal session identifier.
         """
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAXSIZE)
         runtime = self._get_runtime(session_id)
         runtime.subscribers.append(queue)
         logger.debug(
@@ -275,12 +317,7 @@ class SessionStore:
             runtime.subscribers.remove(queue)
 
     async def emit(self, session_id: str, event: dict) -> None:
-        """Broadcast an event payload to all session subscribers.
-
-        Args:
-            session_id: Internal session identifier.
-            event: Event payload to broadcast.
-        """
+        """Persist an event, then publish it to live subscribers."""
         runtime = self._runtime.get(session_id)
         subscribers = runtime.subscribers if runtime else []
         event_type = event.get("type")
@@ -291,9 +328,430 @@ class SessionStore:
                 event_type=event_type,
                 subscriber_count=len(subscribers),
             )
-        for queue in list(subscribers):
-            await queue.put(event)
+
         self._append_event_log(session_id, event)
+        for queue in list(subscribers):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                try:
+                    dropped = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    dropped = None
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    logger.warning(
+                        "Dropping live subscriber event because queue stayed full",
+                        session_id=session_id,
+                        event_type=event_type,
+                        maxsize=queue.maxsize,
+                    )
+                    continue
+                logger.warning(
+                    "Dropped oldest live subscriber event because queue is full",
+                    session_id=session_id,
+                    event_type=event_type,
+                    dropped_event_type=(
+                        dropped.get("type") if isinstance(dropped, dict) else None
+                    ),
+                    dropped_seq=(
+                        dropped.get("seq") if isinstance(dropped, dict) else None
+                    ),
+                    maxsize=queue.maxsize,
+                )
+
+    def _bridge_delivery_payload_json(self, payload: dict) -> str:
+        """Encode a bridge payload while bounding stored row size."""
+        payload_json = json.dumps(payload, separators=(",", ":"))
+        if len(payload_json.encode("utf-8")) <= _BRIDGE_DELIVERY_PAYLOAD_MAX_BYTES:
+            return payload_json
+
+        bounded_payload = self._truncate_bridge_payload(payload)
+        payload_json = json.dumps(bounded_payload, separators=(",", ":"))
+        if len(payload_json.encode("utf-8")) <= _BRIDGE_DELIVERY_PAYLOAD_MAX_BYTES:
+            return payload_json
+
+        fallback = {
+            "text": "[bridge payload omitted because it exceeded the persisted delivery limit]",
+            "metadata": {"truncated": True},
+        }
+        return json.dumps(fallback, separators=(",", ":"))
+
+    def _truncate_bridge_payload(self, value):
+        """Trim large strings inside a JSON-safe bridge delivery payload."""
+        if isinstance(value, str):
+            if len(value) <= _BRIDGE_DELIVERY_STRING_MAX_CHARS:
+                return value
+            return value[:_BRIDGE_DELIVERY_STRING_MAX_CHARS] + "...[truncated]"
+        if isinstance(value, dict):
+            return {
+                str(key): self._truncate_bridge_payload(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._truncate_bridge_payload(item) for item in value[:100]]
+        return value
+
+    def max_event_seq(self, session_id: str) -> int:
+        """Return the highest persisted event sequence for a session."""
+        return self._get_max_seq_from_log(session_id)
+
+    def bridge_replay_cursor(
+        self, session_id: str, platform: str
+    ) -> BridgeReplayCursor:
+        """Return or create the durable replay cursor for one bridge binding."""
+        cursor_id = f"{session_id}:{platform}"
+        now = self._now()
+        baseline_seq = self.max_event_seq(session_id)
+        with self._db_lock:
+            with get_db_session() as db:
+                db.exec(text("BEGIN IMMEDIATE"))
+                cursor = db.get(BridgeReplayCursor, cursor_id)
+                if cursor is None:
+                    cursor = BridgeReplayCursor(
+                        id=cursor_id,
+                        session_id=session_id,
+                        platform=platform,
+                        baseline_seq=baseline_seq,
+                        cursor_seq=baseline_seq,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    db.add(cursor)
+                db.commit()
+                db.refresh(cursor)
+                return BridgeReplayCursor(**cursor.model_dump())
+
+    def advance_bridge_replay_cursor(
+        self, session_id: str, platform: str, seq: int
+    ) -> None:
+        """Persist that a bridge binding durably handled events through seq."""
+        cursor_id = f"{session_id}:{platform}"
+        now = self._now()
+        with self._db_lock:
+            with get_db_session() as db:
+                db.exec(text("BEGIN IMMEDIATE"))
+                cursor = db.get(BridgeReplayCursor, cursor_id)
+                if cursor is None:
+                    cursor = BridgeReplayCursor(
+                        id=cursor_id,
+                        session_id=session_id,
+                        platform=platform,
+                        baseline_seq=seq,
+                        cursor_seq=seq,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                elif seq > cursor.cursor_seq:
+                    cursor.cursor_seq = seq
+                    cursor.updated_at = now
+                db.add(cursor)
+                db.commit()
+
+    def _next_bridge_delivery_seq(self, db, session_id: str, platform: str) -> int:
+        """Return the next FIFO sequence for a bridge binding inside a transaction."""
+        max_seq = db.exec(
+            select(sa_func.coalesce(sa_func.max(BridgeDelivery.delivery_seq), 0)).where(
+                BridgeDelivery.session_id == session_id,
+                BridgeDelivery.platform == platform,
+            )
+        ).one()
+        return int(max_seq or 0) + 1
+
+    def enqueue_bridge_delivery(
+        self,
+        *,
+        session_id: str,
+        platform: str,
+        delivery_key: str,
+        method: str,
+        payload: dict,
+        event_seq: int | None = None,
+    ) -> BridgeDelivery:
+        """Persist one bridge delivery before attempting network I/O."""
+        payload_json = self._bridge_delivery_payload_json(payload)
+        with self._db_lock:
+            with get_db_session() as db:
+                db.exec(text("BEGIN IMMEDIATE"))
+                delivery = BridgeDelivery(
+                    id=f"bd_{uuid.uuid4().hex[:12]}",
+                    session_id=session_id,
+                    platform=platform,
+                    delivery_key=delivery_key,
+                    method=method,
+                    payload=payload_json,
+                    event_seq=event_seq,
+                    delivery_seq=self._next_bridge_delivery_seq(
+                        db, session_id, platform
+                    ),
+                    status="pending",
+                    attempts=0,
+                    created_at=self._now(),
+                )
+                try:
+                    db.add(delivery)
+                    db.commit()
+                    db.refresh(delivery)
+                    return delivery
+                except IntegrityError:
+                    db.rollback()
+                    existing = db.exec(
+                        select(BridgeDelivery).where(
+                            BridgeDelivery.delivery_key == delivery_key
+                        )
+                    ).first()
+                    if existing is not None:
+                        return existing
+                    raise
+
+    def _bridge_delivery_due(self, delivery: BridgeDelivery, now: str) -> bool:
+        """Return true when a delivery can be claimed for sending."""
+        if delivery.status == "pending":
+            return not delivery.next_attempt_at or delivery.next_attempt_at <= now
+        if delivery.status == "sending":
+            return bool(delivery.next_attempt_at and delivery.next_attempt_at <= now)
+        return False
+
+    def _oldest_unsent_bridge_delivery(
+        self, db, session_id: str, platform: str
+    ) -> BridgeDelivery | None:
+        """Return the FIFO head for one bridge binding."""
+        return db.exec(
+            select(BridgeDelivery)
+            .where(
+                BridgeDelivery.session_id == session_id,
+                BridgeDelivery.platform == platform,
+                BridgeDelivery.status.in_(["pending", "sending"]),
+            )
+            .order_by(
+                BridgeDelivery.delivery_seq,
+                BridgeDelivery.created_at,
+                BridgeDelivery.id,
+            )
+        ).first()
+
+    def _claim_bridge_delivery_row(
+        self, delivery: BridgeDelivery, claim_deadline: datetime
+    ) -> BridgeDelivery:
+        """Mark a due bridge row as sending until claim_deadline."""
+        delivery.status = "sending"
+        delivery.next_attempt_at = claim_deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return delivery
+
+    def claim_bridge_delivery(self, delivery_id: str) -> BridgeDelivery | None:
+        """Claim the FIFO head when the requested row is eligible to send."""
+        now = self._now()
+        claim_deadline = datetime.now(timezone.utc) + timedelta(
+            seconds=_BRIDGE_DELIVERY_CLAIM_TIMEOUT_S
+        )
+        with self._db_lock:
+            with get_db_session() as db:
+                db.exec(text("BEGIN IMMEDIATE"))
+                delivery = db.get(BridgeDelivery, delivery_id)
+                if delivery is None:
+                    db.commit()
+                    return None
+                if delivery.status in {"sent", "cancelled"}:
+                    result = BridgeDelivery(**delivery.model_dump())
+                    db.commit()
+                    return result
+                head = self._oldest_unsent_bridge_delivery(
+                    db, delivery.session_id, delivery.platform
+                )
+                if (
+                    head is None
+                    or head.id != delivery.id
+                    or not self._bridge_delivery_due(head, now)
+                ):
+                    db.commit()
+                    return None
+                claimed = self._claim_bridge_delivery_row(head, claim_deadline)
+                db.add(claimed)
+                db.commit()
+                db.refresh(claimed)
+                return claimed
+
+    def claim_pending_bridge_deliveries(
+        self, session_id: str, platform: str, *, limit: int = 1
+    ) -> list[BridgeDelivery]:
+        """Atomically claim the due FIFO head for one bridge binding."""
+        if limit <= 0:
+            return []
+        now = self._now()
+        claim_deadline = datetime.now(timezone.utc) + timedelta(
+            seconds=_BRIDGE_DELIVERY_CLAIM_TIMEOUT_S
+        )
+        with self._db_lock:
+            with get_db_session() as db:
+                db.exec(text("BEGIN IMMEDIATE"))
+                head = self._oldest_unsent_bridge_delivery(db, session_id, platform)
+                if head is None or not self._bridge_delivery_due(head, now):
+                    db.commit()
+                    return []
+                claimed = self._claim_bridge_delivery_row(head, claim_deadline)
+                db.add(claimed)
+                db.commit()
+                db.refresh(claimed)
+                return [claimed]
+
+    def pending_bridge_deliveries(
+        self, session_id: str, platform: str, *, limit: int = 100
+    ) -> list[BridgeDelivery]:
+        """Return the due FIFO head without claiming it."""
+        if limit <= 0:
+            return []
+        now = self._now()
+        with self._db_lock:
+            with get_db_session() as db:
+                head = self._oldest_unsent_bridge_delivery(db, session_id, platform)
+        if head is None or not self._bridge_delivery_due(head, now):
+            return []
+        return [head]
+
+    def next_bridge_delivery_delay(
+        self, session_id: str, platform: str
+    ) -> float | None:
+        """Return seconds until the FIFO head can be claimed."""
+        now = datetime.now(timezone.utc)
+        with self._db_lock:
+            with get_db_session() as db:
+                head = self._oldest_unsent_bridge_delivery(db, session_id, platform)
+        if head is None:
+            return None
+        if not head.next_attempt_at:
+            return 0.0
+        try:
+            due_at = self._parse_ts(head.next_attempt_at)
+        except ValueError:
+            return 0.0
+        return max(0.0, (due_at - now).total_seconds())
+
+    def extend_bridge_delivery_claim(self, delivery_id: str) -> None:
+        """Extend a sending lease while a platform call is still in progress."""
+        claim_deadline = datetime.now(timezone.utc) + timedelta(
+            seconds=_BRIDGE_DELIVERY_CLAIM_TIMEOUT_S
+        )
+        with self._db_lock:
+            with get_db_session() as db:
+                delivery = db.get(BridgeDelivery, delivery_id)
+                if delivery is None or delivery.status != "sending":
+                    return
+                delivery.next_attempt_at = claim_deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
+                db.add(delivery)
+                db.commit()
+
+    def mark_bridge_delivery_sent(self, delivery_id: str) -> None:
+        """Mark a bridge delivery as sent."""
+        with self._db_lock:
+            with get_db_session() as db:
+                delivery = db.get(BridgeDelivery, delivery_id)
+                if delivery is None:
+                    return
+                delivery.status = "sent"
+                delivery.sent_at = self._now()
+                delivery.next_attempt_at = None
+                delivery.last_error = None
+                db.add(delivery)
+                db.commit()
+
+    def mark_bridge_delivery_failed(
+        self, delivery_id: str, error: BaseException, *, retry_delay_s: float = 5.0
+    ) -> None:
+        """Record a failed bridge delivery without dropping it."""
+        next_attempt = datetime.now(timezone.utc) + timedelta(
+            seconds=max(0.0, retry_delay_s)
+        )
+        with self._db_lock:
+            with get_db_session() as db:
+                delivery = db.get(BridgeDelivery, delivery_id)
+                if delivery is None or delivery.status in {"sent", "cancelled"}:
+                    return
+                delivery.status = "pending"
+                delivery.attempts += 1
+                delivery.last_error = str(error)[:1000]
+                delivery.next_attempt_at = next_attempt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                db.add(delivery)
+                db.commit()
+
+    def cancel_bridge_delivery(self, delivery_id: str) -> None:
+        """Cancel a pending delivery that is no longer valid."""
+        with self._db_lock:
+            with get_db_session() as db:
+                delivery = db.get(BridgeDelivery, delivery_id)
+                if delivery is None or delivery.status == "sent":
+                    return
+                delivery.status = "cancelled"
+                delivery.next_attempt_at = None
+                db.add(delivery)
+                db.commit()
+
+    def cancel_bridge_deliveries(self, session_id: str, platform: str) -> None:
+        """Discard queued and in-flight deliveries for a detached bridge binding."""
+        with self._db_lock:
+            with get_db_session() as db:
+                rows = db.exec(
+                    select(BridgeDelivery).where(
+                        BridgeDelivery.session_id == session_id,
+                        BridgeDelivery.platform == platform,
+                        col(BridgeDelivery.status).in_(["pending", "sending"]),
+                    )
+                ).all()
+                for delivery in rows:
+                    delivery.status = "cancelled"
+                    delivery.next_attempt_at = None
+                    db.add(delivery)
+                db.commit()
+
+    def cancel_pending_permission_deliveries(
+        self, session_id: str, platform: str, request_id: str
+    ) -> None:
+        """Cancel pending approval prompts for an already resolved request."""
+        with self._db_lock:
+            with get_db_session() as db:
+                rows = db.exec(
+                    select(BridgeDelivery).where(
+                        BridgeDelivery.session_id == session_id,
+                        BridgeDelivery.platform == platform,
+                        BridgeDelivery.method == "on_approval_request",
+                        BridgeDelivery.status.in_(["pending", "sending"]),
+                    )
+                ).all()
+                for delivery in rows:
+                    try:
+                        payload = json.loads(delivery.payload)
+                    except json.JSONDecodeError:
+                        continue
+                    request = (
+                        payload.get("request") if isinstance(payload, dict) else None
+                    )
+                    if (
+                        isinstance(request, dict)
+                        and request.get("request_id") == request_id
+                    ):
+                        delivery.status = "cancelled"
+                        delivery.next_attempt_at = None
+                        db.add(delivery)
+                db.commit()
+
+    def permission_request_resolved(self, session_id: str, request_id: str) -> bool:
+        """Return true when the event log already resolved a permission request."""
+        for event in self._iter_event_log(session_id):
+            if event.get("type") != "permission_resolved":
+                continue
+            data = event.get("data") or {}
+            if data.get("request_id") == request_id:
+                return True
+        return False
+
+    def permission_request_stale(self, session_id: str, request_id: str) -> bool:
+        """Reject answered prompts and requests without a recoverable live waiter."""
+        pending = self.get_pending_permission(session_id, request_id)
+        return (
+            pending is None
+            or pending.future.done()
+            or self.permission_request_resolved(session_id, request_id)
+        )
 
     def _persist_session(
         self, session: Session, *, allow_runner_session_id_change: bool = False
@@ -955,36 +1413,34 @@ class SessionStore:
             runtime.pending_permissions.clear()
 
     def read_event_log(
-        self, session_id: str, *, since_seq: int = 0, limit: int | None = None
+        self,
+        session_id: str,
+        *,
+        since_seq: int = 0,
+        before_seq: int | None = None,
+        limit: int | None = None,
     ) -> list[dict]:
         """Read persisted SSE events for a session.
 
         Args:
             session_id: Internal session identifier.
             since_seq: Only return events with seq greater than this value.
+            before_seq: Stop before events with seq greater than or equal to this value.
             limit: Optional maximum number of events to return.
         """
-        path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
-        if not os.path.exists(path):
-            return []
         events: list[dict] = []
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    seq = int(event.get("seq") or 0)
-                    if seq and seq <= since_seq:
-                        continue
-                    events.append(event)
-                    if limit and len(events) >= limit:
-                        break
-        except OSError:
-            return []
+        for event in self._iter_event_log(session_id):
+            try:
+                seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            if seq and seq <= since_seq:
+                continue
+            if before_seq is not None and seq and seq >= before_seq:
+                break
+            events.append(event)
+            if limit and len(events) >= limit:
+                break
         return events
 
     def session_usage(self, session_id: str) -> dict:
@@ -996,31 +1452,17 @@ class SessionStore:
         output_tokens = 0
         total_cost = 0.0
 
-        path = os.path.join(self._data_dir, "sessions", session_id, "events.jsonl")
-        if not os.path.exists(path):
-            return {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": 0.0}
-
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if event.get("type") != "metadata":
-                        continue
-                    data = event.get("data", {})
-                    key = data.get("key")
-                    value = data.get("value")
-                    if key == "tokens" and isinstance(value, dict):
-                        input_tokens += int(value.get("input", 0))
-                        output_tokens += int(value.get("output", 0))
-                    elif key == "cost" and isinstance(value, (int, float)):
-                        total_cost += float(value)
-        except OSError:
-            pass
+        for event in self._iter_event_log(session_id):
+            if event.get("type") != "metadata":
+                continue
+            data = event.get("data", {})
+            key = data.get("key")
+            value = data.get("value")
+            if key == "tokens" and isinstance(value, dict):
+                input_tokens += int(value.get("input", 0))
+                output_tokens += int(value.get("output", 0))
+            elif key == "cost" and isinstance(value, (int, float)):
+                total_cost += float(value)
 
         return {
             "input_tokens": input_tokens,

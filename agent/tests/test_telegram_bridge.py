@@ -476,7 +476,8 @@ class TestTelegramBridgeIntegration:
             fail_timeout,
         )
 
-        await bridge.on_output(session.id, "hello")
+        with pytest.raises(TimeoutError):
+            await bridge.on_output(session.id, "hello")
 
         assert attempts == 1
         assert mock_bot.send_message.await_count == 0
@@ -514,10 +515,10 @@ class TestTelegramBridgeIntegration:
             missing_thread,
         )
 
-        sent = await bridge._send_output_message(session.id, 12345, "First")
+        with pytest.raises(RuntimeError, match="Telegram topic 12345 is unavailable"):
+            await bridge._send_output_message(session.id, 12345, "First")
 
         updated = fresh_store.get_session(session.id)
-        assert sent is False
         assert bridge._state.get_topic_for_session(session.id) is None
         assert updated is not None
         assert updated.platform is None

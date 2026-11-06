@@ -28,6 +28,23 @@ def sse_event(data: dict) -> str:
     return f"data: {payload}\n\n"
 
 
+def _event_seq(event: dict) -> int:
+    """Return the integer sequence for a persisted event."""
+    try:
+        return int(event.get("seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_stale_permission_request(event: dict, pending_permission_ids: set[str]) -> bool:
+    """Return true when a replayed permission request has already resolved."""
+    if event.get("type") != "permission_request":
+        return False
+    data = event.get("data", {})
+    request_id = data.get("request_id")
+    return bool(request_id and request_id not in pending_permission_ids)
+
+
 async def sse_stream(
     session_id: str, *, since_seq: int = 0, limit: int | None = None
 ) -> AsyncIterator[bytes]:
@@ -43,24 +60,19 @@ async def sse_stream(
 
     try:
         for event in store.read_event_log(session_id, since_seq=since_seq, limit=limit):
-            seq = int(event.get("seq") or 0)
+            seq = _event_seq(event)
             if seq and seq <= last_seq:
                 continue
             if seq:
                 last_seq = seq
 
-            # Skip permission_request events that no longer have pending permissions
-            # (e.g., after backend restart or timeout)
-            if event.get("type") == "permission_request":
-                data = event.get("data", {})
-                request_id = data.get("request_id")
-                if request_id and request_id not in pending_permission_ids:
-                    logger.debug(
-                        "Skipping stale permission_request during replay",
-                        session_id=session_id,
-                        request_id=request_id,
-                    )
-                    continue
+            if _is_stale_permission_request(event, pending_permission_ids):
+                logger.debug(
+                    "Skipping stale permission_request during replay",
+                    session_id=session_id,
+                    request_id=(event.get("data") or {}).get("request_id"),
+                )
+                continue
 
             yield sse_event(event).encode("utf-8")
 
@@ -70,12 +82,33 @@ async def sse_stream(
             except asyncio.TimeoutError:
                 yield b": keepalive\n\n"
                 continue
-            seq = int(event.get("seq") or 0)
+            seq = _event_seq(event)
             if seq and seq <= last_seq:
                 continue
+            if seq and seq > last_seq + 1:
+                gap_pending_permission_ids = {
+                    p.request_id for p in store.get_all_pending_permissions(session_id)
+                }
+                for replayed in store.read_event_log(
+                    session_id, since_seq=last_seq, before_seq=seq
+                ):
+                    replayed_seq = _event_seq(replayed)
+                    if replayed_seq and replayed_seq <= last_seq:
+                        continue
+                    if _is_stale_permission_request(
+                        replayed, gap_pending_permission_ids
+                    ):
+                        continue
+                    if replayed_seq:
+                        last_seq = replayed_seq
+                    yield sse_event(replayed).encode("utf-8")
             if seq:
                 last_seq = seq
-            logger.debug("Yielding live event", session_id=session_id, event_type=event.get("type"))
+            logger.debug(
+                "Yielding live event",
+                session_id=session_id,
+                event_type=event.get("type"),
+            )
             yield sse_event(event).encode("utf-8")
     finally:
         logger.debug("SSE stream ended", session_id=session_id)

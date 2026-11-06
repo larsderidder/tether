@@ -3,3 +3,4 @@ recursive-include tether/static_ui *
 recursive-include tether/sidecars *.mjs
 recursive-include tether/integrations *
 include tether/py.typed
+recursive-include tether/db/migrations *.py *.mako

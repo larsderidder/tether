@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 import structlog
-from sqlmodel import SQLModel, create_engine, Session as DBSession
+from sqlmodel import create_engine, Session as DBSession
 from sqlalchemy import Engine
 
 from tether.settings import settings
@@ -73,16 +73,12 @@ def _run_migrations() -> None:
     inspector = inspect(engine)
     tables = inspector.get_table_names()
 
-    alembic_dir = Path(__file__).resolve().parent.parent.parent / "alembic"
-    ini_path = alembic_dir.parent / "alembic.ini"
-
-    if not ini_path.exists():
-        # Running from installed package without alembic dir — fall back
-        logger.debug("Alembic config not found, using create_all()")
-        SQLModel.metadata.create_all(bind=engine)
-        return
-
-    cfg = Config(str(ini_path))
+    # Migration scripts ship with the package so installed databases follow
+    # the same upgrade path as source checkouts.
+    migrations_dir = Path(__file__).resolve().parent / "migrations"
+    ini_path = Path(__file__).resolve().parents[2] / "alembic.ini"
+    cfg = Config(str(ini_path) if ini_path.exists() else None)
+    cfg.set_main_option("script_location", str(migrations_dir))
     cfg.set_main_option("sqlalchemy.url", get_db_url())
 
     has_tables = "sessions" in tables
@@ -96,7 +92,9 @@ def _run_migrations() -> None:
         # Case 2: DB was created by create_all(), no migration tracking.
         # Stamp the initial migration so Alembic knows the base schema exists,
         # then upgrade to pick up any subsequent migrations.
-        logger.info("Existing database without migration tracking, stamping initial revision")
+        logger.info(
+            "Existing database without migration tracking, stamping initial revision"
+        )
         command.stamp(cfg, "b011541f1109")
         command.upgrade(cfg, "head")
     else:
@@ -109,8 +107,10 @@ def init_db() -> None:
     try:
         _run_migrations()
     except Exception:
-        logger.warning("Alembic migration failed, falling back to create_all()", exc_info=True)
-        SQLModel.metadata.create_all(bind=_get_engine())
+        logger.exception(
+            "Database migration failed; refusing to open an incompatible schema"
+        )
+        raise
 
 
 __all__ = [

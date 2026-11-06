@@ -19,6 +19,7 @@ import time
 from typing import Any
 
 import structlog
+from agent_tether.base import ApprovalRequest
 from agent_tether.discord.bot import DiscordBridge as UpstreamDiscordBridge
 from agent_tether.discord.bot import DiscordConfig as UpstreamDiscordConfig
 from agent_tether.discord.pairing_state import save as save_pairing_state
@@ -203,9 +204,50 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
         session_id: str,
         metadata: dict | None,
     ) -> None:
-        """Send the upstream plain Discord error status."""
+        """Send a plain Discord error status through the local reliable path."""
 
-        await super().on_status_change(session_id, "error", metadata=metadata)
+        await self._send_status_message(session_id, "error")
+
+    async def _thread_for_delivery(self, session_id: str) -> Any:
+        """Return the Discord thread for a required outbound delivery."""
+
+        self._hydrate_thread_binding(session_id)
+        if not self._client:
+            raise RuntimeError("Discord client not initialized")
+
+        thread_id = self._thread_ids.get(session_id)
+        if not thread_id:
+            raise RuntimeError(f"No Discord thread mapping for session {session_id}")
+
+        thread = self._client.get_channel(thread_id)
+        if thread is None:
+            logger.debug(
+                "Discord thread not in cache, fetching from API",
+                session_id=session_id,
+                thread_id=thread_id,
+            )
+            thread = await self._client.fetch_channel(thread_id)
+        if thread is None:
+            raise RuntimeError(f"Discord thread {thread_id} not found")
+        return thread
+
+    async def _send_thread_message(self, session_id: str, text: str) -> Any:
+        """Send one Discord message to a bound session thread."""
+
+        thread = await self._thread_for_delivery(session_id)
+        return await thread.send(text[:_DISCORD_STARTER_TEXT_LIMIT])
+
+    async def _send_status_message(self, session_id: str, status: str) -> None:
+        """Send one plain Discord status message."""
+
+        emoji_map = {
+            "thinking": "💭",
+            "executing": "⚙️",
+            "done": "✅",
+            "error": "❌",
+        }
+        emoji = emoji_map.get(status, "ℹ️")
+        await self._send_thread_message(session_id, f"{emoji} Status: {status}")
 
     @staticmethod
     def _parse_thread_id(raw_thread_id: object) -> int | None:
@@ -745,54 +787,21 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
     ) -> None:
-        self._hydrate_thread_binding(session_id)
-        if not self._client:
-            logger.warning("Discord client not initialized")
-            return
+        """Send output text to Discord and propagate delivery failures."""
 
-        thread_id = self._thread_ids.get(session_id)
-        if not thread_id:
-            logger.warning("No Discord thread for session", session_id=session_id)
-            return
-
-        try:
-            thread = self._client.get_channel(thread_id)
-            if thread is None:
-                logger.debug(
-                    "Discord thread not in cache, fetching from API",
+        rendered_messages = render_discord_message_objects(
+            text,
+            metadata=metadata,
+        )
+        for message in rendered_messages or []:
+            sent_message = await self._send_thread_message(session_id, message.text)
+            if message.expansion_text and sent_message is not None:
+                await self._remember_output_expansion(
+                    sent_message,
                     session_id=session_id,
-                    thread_id=thread_id,
+                    content=message.expansion_text,
+                    filename=message.expansion_filename,
                 )
-                try:
-                    thread = await self._client.fetch_channel(thread_id)
-                except Exception:
-                    logger.warning(
-                        "Failed to fetch Discord thread",
-                        session_id=session_id,
-                        thread_id=thread_id,
-                    )
-                    return
-            if thread:
-                rendered_messages = render_discord_message_objects(
-                    text,
-                    metadata=metadata,
-                )
-                for message in rendered_messages or []:
-                    sent_message = await with_bridge_send_retry(
-                        "discord.output",
-                        lambda message=message: thread.send(
-                            message.text[:_DISCORD_STARTER_TEXT_LIMIT]
-                        ),
-                    )
-                    if message.expansion_text and sent_message is not None:
-                        await self._remember_output_expansion(
-                            sent_message,
-                            session_id=session_id,
-                            content=message.expansion_text,
-                            filename=message.expansion_filename,
-                        )
-        except Exception:
-            logger.exception("Failed to send Discord message", session_id=session_id)
 
         is_final = bool((metadata or {}).get("final"))
         status = "done" if is_final else "streaming"
@@ -843,37 +852,13 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
     ) -> None:
-        self._hydrate_thread_binding(session_id)
-        if status != "error" or not settings.debug_attach_logs():
-            await self._cancel_pending_error_attachment_task(session_id)
-            await super().on_status_change(session_id, status, metadata=metadata)
-            self._update_starter_state(
-                session_id,
-                status=status,
-                event=self._starter_event_text(status, metadata),
-            )
-            await self._sync_starter_message(session_id)
-            if status == "error":
-                await self._sync_dashboard_message()
+        """Send a Discord status update unless the status is intentionally suppressed."""
+
+        if status == "error" and not self._should_send_error_status(session_id):
             return
 
-        message = str((metadata or {}).get("message") or "").strip()
-        if message:
-            await self._cancel_pending_error_attachment_task(session_id)
-            handled = await self._send_error_attachment_bundle(
-                session_id,
-                metadata=metadata,
-            )
-            if not handled:
-                await super().on_status_change(session_id, status, metadata=metadata)
-            self._update_starter_state(
-                session_id,
-                status=status,
-                event=self._starter_event_text(status, metadata),
-            )
-            await self._sync_starter_message(session_id)
-            await self._sync_dashboard_message()
-            return
+        await self._cancel_pending_error_attachment_task(session_id)
+        await self._send_status_message(session_id, status)
 
         self._update_starter_state(
             session_id,
@@ -881,12 +866,47 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
             event=self._starter_event_text(status, metadata),
         )
         await self._sync_starter_message(session_id)
-        await self._sync_dashboard_message()
-        self._schedule_error_attachment_bundle(session_id, metadata=metadata)
+        if status == "error":
+            await self._sync_dashboard_message()
+            if settings.debug_attach_logs():
+                with contextlib.suppress(Exception):
+                    await self._send_error_attachment_bundle(
+                        session_id, metadata=metadata
+                    )
 
-    async def on_approval_request(self, session_id: str, request) -> None:
-        self._hydrate_thread_binding(session_id)
-        await super().on_approval_request(session_id, request)
+    async def on_approval_request(
+        self, session_id: str, request: ApprovalRequest
+    ) -> None:
+        """Send a Discord approval or choice prompt and propagate delivery failures."""
+
+        if request.kind == "choice":
+            self.set_pending_permission(session_id, request)
+            options = "\n".join(
+                f"{index}. {option}"
+                for index, option in enumerate(request.options, start=1)
+            )
+            text = (
+                f"⚠️ **{request.title}**\n\n{request.description}\n\n{options}\n\n"
+                "Reply with a number or an exact option label."
+            )
+            await self._send_thread_message(session_id, text)
+            return
+
+        reason: str | None = None
+        if request.kind == "permission":
+            reason = self.check_auto_approve(session_id, request.title)
+        if reason:
+            await self._auto_approve(session_id, request, reason=reason)
+            self.buffer_auto_approve_notification(session_id, request.title, reason)
+            return
+
+        self.set_pending_permission(session_id, request)
+        formatted = self.format_tool_input_markdown(request.description)
+        text = (
+            f"**⚠️ Approval Required**\n\n**{request.title}**\n\n{formatted}\n\n"
+            "Reply with `allow`/`proceed`, `deny`/`cancel`, `deny: <reason>`, `allow all`, or `allow {tool}`."
+        )
+        await self._send_thread_message(session_id, text)
 
     async def on_typing(self, session_id: str) -> None:
         self._hydrate_thread_binding(session_id)

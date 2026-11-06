@@ -80,7 +80,7 @@ logger = structlog.get_logger(__name__)
 _TELEGRAM_MEDIA_GROUP_DEBOUNCE_S = 0.7
 _TELEGRAM_OUTPUT_MIN_INTERVAL_S = 1.25
 _TELEGRAM_RATE_LIMIT_FALLBACK_PAUSE_S = 30.0
-_TELEGRAM_OUTPUT_SEND_ATTEMPTS = 20
+_TELEGRAM_OUTPUT_SEND_ATTEMPTS = 3
 
 
 @dataclass
@@ -246,7 +246,15 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         return user_id in self._allowed_user_ids
 
     async def _guard_update(self, update: Any, context: Any) -> None:
-        """Stop unauthorized Telegram users before command handlers run."""
+        """Honor topic closure before applying sender authorization to commands."""
+        message = getattr(update, "message", None)
+        if (
+            message is not None
+            and getattr(message, "chat_id", None) == self._forum_group_id
+            and getattr(message, "forum_topic_closed", None) is not None
+        ):
+            await self._detach_closed_topic(message.message_thread_id)
+            raise ApplicationHandlerStop
         if bool(getattr(self._update_user(update), "is_bot", False)):
             # ASVS 8.3.3: never treat an intermediary bot as the human originator.
             raise ApplicationHandlerStop
@@ -262,6 +270,25 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         elif getattr(update, "message", None):
             await update.message.reply_text("🔒 This Tether bridge is restricted.")
         raise ApplicationHandlerStop
+
+    async def _detach_closed_topic(self, topic_id: int) -> None:
+        """Detach a closed topic without stopping or deleting its agent session."""
+        from tether.bridges.glue import bridge_subscriber
+        from tether.store import store
+
+        session_id = self._state.get_session_for_topic(topic_id)
+        if not session_id or self._state.get_topic_for_session(session_id) != topic_id:
+            return
+
+        self._drop_missing_topic_binding(session_id, topic_id)
+        self._stop_typing(session_id)
+        store.cancel_bridge_deliveries(session_id, self.PLATFORM)
+        # Do not flush buffered output into the topic the user just closed.
+        await bridge_subscriber.unsubscribe(session_id)
+        await self.on_session_removed(session_id)
+        logger.info(
+            "Detached closed Telegram topic", session_id=session_id, topic_id=topic_id
+        )
 
     def _compact_callback_token(self, request_id: str) -> str:
         """Create a short Telegram callback token for long request IDs."""
@@ -285,51 +312,44 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
     async def on_approval_request(
         self, session_id: str, request: ApprovalRequest
     ) -> None:
-        """Send approval requests, keeping Telegram callback payloads short."""
-
-        if request.kind != "choice":
-            await super().on_approval_request(session_id, request)
-            return
+        """Send Telegram approval requests and propagate delivery failures."""
 
         self._stop_typing(session_id)
         if not self._app:
-            logger.warning("Telegram app not initialized")
-            return
+            raise RuntimeError("Telegram app not initialized")
 
         topic_id = self._state.get_topic_for_session(session_id)
         if not topic_id:
-            logger.warning("No Telegram topic for session", session_id=session_id)
-            return
+            raise RuntimeError(f"No Telegram topic mapping for session {session_id}")
 
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        except ImportError:
-            logger.error("python-telegram-bot not installed")
-            return
+        except ImportError as exc:
+            raise RuntimeError("python-telegram-bot not installed") from exc
 
-        self.set_pending_permission(session_id, request)
+        if request.kind == "choice":
+            self.set_pending_permission(session_id, request)
 
-        md = f"⚠️ *{request.title}*\n\n{request.description}"
-        html_text = markdown_to_telegram_html(md)
-        token = self._compact_callback_token(request.request_id)
-        self._approval_html[request.request_id] = html_text
+            md = f"⚠️ *{request.title}*\n\n{request.description}"
+            html_text = markdown_to_telegram_html(md)
+            token = self._compact_callback_token(request.request_id)
+            self._approval_html[request.request_id] = html_text
 
-        rows: list[list[InlineKeyboardButton]] = []
-        current: list[InlineKeyboardButton] = []
-        for index, label in enumerate(request.options, start=1):
-            current.append(
-                InlineKeyboardButton(
-                    f"{index}. {label}",
-                    callback_data=f"choice:{token}:{index}",
+            rows: list[list[InlineKeyboardButton]] = []
+            current: list[InlineKeyboardButton] = []
+            for index, label in enumerate(request.options, start=1):
+                current.append(
+                    InlineKeyboardButton(
+                        f"{index}. {label}",
+                        callback_data=f"choice:{token}:{index}",
+                    )
                 )
-            )
-            if len(current) == 2:
+                if len(current) == 2:
+                    rows.append(current)
+                    current = []
+            if current:
                 rows.append(current)
-                current = []
-        if current:
-            rows.append(current)
 
-        try:
             await self._app.bot.send_message(
                 chat_id=self._forum_group_id,
                 message_thread_id=topic_id,
@@ -337,12 +357,90 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                 reply_markup=InlineKeyboardMarkup(rows),
                 parse_mode="HTML",
             )
-        except Exception:
-            logger.exception(
-                "Failed to send choice request",
-                session_id=session_id,
-                request_id=request.request_id,
+            return
+
+        reason: str | None = None
+        if request.kind == "permission":
+            reason = self.check_auto_approve(session_id, request.title)
+        if reason:
+            await self._auto_approve(session_id, request, reason=reason)
+            self.buffer_auto_approve_notification(session_id, request.title, reason)
+            return
+
+        description, was_truncated = self._format_tool_input_html(request.description)
+        tool_name = request.title
+        request_id = request.request_id
+        tool_lower = tool_name.strip().lower()
+        is_task = any(
+            tool_lower.startswith(prefix) for prefix in self._NEVER_AUTO_APPROVE
+        )
+
+        if was_truncated:
+            self._pending_descriptions[request_id] = (tool_name, request.description)
+        self.set_pending_permission(session_id, request)
+
+        rows = [
+            [
+                InlineKeyboardButton(
+                    "Proceed" if is_task else "Allow",
+                    callback_data=f"approval:{request_id}:Allow",
+                ),
+                InlineKeyboardButton(
+                    "Cancel" if is_task else "Deny",
+                    callback_data=f"approval:{request_id}:Deny",
+                ),
+                InlineKeyboardButton(
+                    "Cancel ✏️" if is_task else "Deny ✏️",
+                    callback_data=f"approval:{request_id}:DenyWithReason",
+                ),
+            ]
+        ]
+        if not is_task:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"Allow {tool_name} (30m)",
+                        callback_data=f"approval:{request_id}:AllowTool:{tool_name}",
+                    ),
+                    InlineKeyboardButton(
+                        "Allow All (30m)",
+                        callback_data=f"approval:{request_id}:AllowAll",
+                    ),
+                ]
             )
+            session_directory = (
+                self._get_session_directory(session_id)
+                if self._get_session_directory
+                else None
+            )
+            if session_directory:
+                dir_short = session_directory.rstrip("/").rsplit("/", 1)[-1] or "dir"
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            f"Allow {dir_short}/ (30m)",
+                            callback_data=f"approval:{request_id}:AllowDir",
+                        )
+                    ]
+                )
+        if was_truncated:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "Show All", callback_data=f"approval:{request_id}:ShowAll"
+                    )
+                ]
+            )
+
+        text = f"⚠️ <b>{tool_name}</b>\n\n{description}"
+        self._approval_html[request_id] = text
+        await self._app.bot.send_message(
+            chat_id=self._forum_group_id,
+            message_thread_id=topic_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(rows),
+            parse_mode="HTML",
+        )
 
     async def _handle_callback_query(self, update: Any, context: Any) -> None:
         """Handle compact local callbacks before falling back to upstream."""
@@ -1423,7 +1521,7 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         return "can't parse entities" in str(exc).casefold()
 
     def _drop_missing_topic_binding(self, session_id: str, topic_id: int) -> None:
-        """Forget a Telegram binding after its forum topic was deleted."""
+        """Forget a Telegram binding after its forum topic was closed or deleted."""
         self._state.remove_session(session_id)
         try:
             from tether.external_session_watcher import external_session_watcher
@@ -1472,6 +1570,9 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
             if self._last_output_send_at and delay_s > 0:
                 await asyncio.sleep(delay_s)
 
+            if self._state.get_topic_for_session(session_id) != topic_id:
+                raise RuntimeError(f"Telegram topic {topic_id} is no longer bound")
+
             try:
                 send_kwargs: dict[str, Any] = {
                     "chat_id": self._forum_group_id,
@@ -1483,6 +1584,7 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                 await with_bridge_send_retry(
                     "telegram.output",
                     lambda: self._app.bot.send_message(**send_kwargs),
+                    attempts=1,
                     max_delay_s=60.0,
                 )
                 self._last_output_send_at = loop.time()
@@ -1495,7 +1597,9 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                         topic_id=topic_id,
                     )
                     self._drop_missing_topic_binding(session_id, topic_id)
-                    return False
+                    raise RuntimeError(
+                        f"Telegram topic {topic_id} is unavailable"
+                    ) from exc
                 retry_after = bridge_retry_after_s(exc)
                 if retry_after is None:
                     raise
@@ -1514,18 +1618,41 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
     ) -> None:
-        """Send useful Telegram errors while retaining upstream status handling."""
+        """Send Telegram status updates and propagate delivery failures."""
+
         message = str((metadata or {}).get("message") or "").replace("\x00", "").strip()
-        if status != "error" or not message:
-            await super().on_status_change(session_id, status, metadata=metadata)
+        if status == "error" and not self._should_send_error_status(session_id):
             return
-        if not self._app or not self._state.get_topic_for_session(session_id):
-            return
-        if not self._should_send_error_status(session_id):
+        if not self._app:
+            raise RuntimeError("Telegram app not initialized")
+
+        topic_id = self._state.get_topic_for_session(session_id)
+        if not topic_id:
+            raise RuntimeError(f"No Telegram topic mapping for session {session_id}")
+
+        if status == "error" and message:
+            text = f"❌ Error: {message[:3500]}"
+            await self._send_output_message(
+                session_id,
+                topic_id,
+                text,
+                parse_mode=None,
+            )
             return
 
-        # ASVS 16.5.1: show a bounded provider message, never attached diagnostics or stacks.
-        await self.on_output(session_id, f"❌ Error: {message[:3500]}")
+        emoji_map = {
+            "thinking": "💭",
+            "executing": "⚙️",
+            "done": "✅",
+            "error": "❌",
+        }
+        emoji = emoji_map.get(status, "ℹ️")
+        await self._send_output_message(
+            session_id,
+            topic_id,
+            f"{emoji} Status: {status}",
+            parse_mode=None,
+        )
 
     async def on_output(
         self, session_id: str, text: str, metadata: dict | None = None
@@ -1534,13 +1661,11 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         if is_final:
             self._stop_typing(session_id)
         if not self._app:
-            logger.warning("Telegram app not initialized")
-            return
+            raise RuntimeError("Telegram app not initialized")
 
         topic_id = self._state.get_topic_for_session(session_id)
         if not topic_id:
-            logger.warning("No Telegram topic for session", session_id=session_id)
-            return
+            raise RuntimeError(f"No Telegram topic mapping for session {session_id}")
 
         messages = self._compact_output_messages(
             render_telegram_messages(text, metadata=metadata) or [text]
@@ -1553,8 +1678,6 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                         session_id, topic_id, message
                     )
                     sent_any = sent_any or sent
-                    if not sent:
-                        break
                 except Exception as exc:
                     if not self._is_html_parse_error(exc):
                         logger.exception(
@@ -1562,7 +1685,7 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                             session_id=session_id,
                             topic_id=topic_id,
                         )
-                        break
+                        raise
                     try:
                         fallback = html.unescape(re.sub(r"<[^>]+>", "", message))[:4096]
                         sent = await self._send_output_message(
@@ -1572,13 +1695,15 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                             parse_mode=None,
                         )
                         sent_any = sent_any or sent
-                    except Exception:
+                    except Exception as fallback_exc:
                         logger.exception(
                             "Failed to send Telegram message",
                             session_id=session_id,
                             topic_id=topic_id,
                         )
-                        break
+                        raise RuntimeError(
+                            "Failed to send Telegram fallback message"
+                        ) from fallback_exc
 
         if sent_any:
             await self._send_output_attachments(session_id, topic_id, metadata=metadata)
@@ -1596,8 +1721,10 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
             metadata,
             max_count=MAX_IMAGES_PER_MESSAGE,
         )
-        if not attachments or not self._app:
+        if not attachments:
             return
+        if not self._app:
+            raise RuntimeError("Telegram app not initialized")
 
         for attachment in attachments:
             try:
@@ -1623,7 +1750,7 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                                 caption=attachment.caption,
                             ),
                         )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to send Telegram output attachment",
                     session_id=session_id,
@@ -1638,3 +1765,4 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
                             text=f"Attachment upload failed: {attachment.filename}",
                         ),
                     )
+                raise RuntimeError("Failed to send Telegram output attachment") from exc

@@ -9,6 +9,7 @@ import shlex
 from typing import Any
 
 import structlog
+from agent_tether.base import ApprovalRequest
 from agent_tether.slack.bot import SlackBridge as UpstreamSlackBridge
 from agent_tether.thread_naming import adapter_to_runner
 
@@ -93,27 +94,29 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
         self._pending_error_attachment_tasks: dict[str, asyncio.Task] = {}
         self._recent_new_directories: dict[tuple[str, str], list[str]] = {}
 
-    async def on_output(
-        self, session_id: str, text: str, metadata: dict | None = None
-    ) -> None:
+    async def _send_chat_message(self, *, session_id: str, text: str) -> None:
+        """Send one Slack message to a bound session thread."""
+
         if not self._client:
-            logger.warning("Slack client not initialized")
-            return
+            raise RuntimeError("Slack client not initialized")
 
         thread_ts = self._thread_ts.get(session_id)
         if not thread_ts:
-            logger.warning("No Slack thread for session", session_id=session_id)
-            return
+            raise RuntimeError(f"No Slack thread mapping for session {session_id}")
 
-        try:
-            for message in render_slack_messages(text, metadata=metadata) or [text]:
-                await self._client.chat_postMessage(
-                    channel=self._channel_id,
-                    thread_ts=thread_ts,
-                    text=message,
-                )
-        except Exception:
-            logger.exception("Failed to send Slack message", session_id=session_id)
+        await self._client.chat_postMessage(
+            channel=self._channel_id,
+            thread_ts=thread_ts,
+            text=text,
+        )
+
+    async def on_output(
+        self, session_id: str, text: str, metadata: dict | None = None
+    ) -> None:
+        """Send output text to Slack and propagate delivery failures."""
+
+        for message in render_slack_messages(text, metadata=metadata) or [text]:
+            await self._send_chat_message(session_id=session_id, text=message)
 
         await self._send_requested_output_attachments(session_id, metadata=metadata)
 
@@ -551,7 +554,7 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
         metadata: dict | None = None,
     ) -> None:
         if not self._client:
-            return
+            raise RuntimeError("Slack client not initialized")
 
         attachments = attachments_from_metadata(metadata)
         if not attachments:
@@ -559,7 +562,7 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
 
         thread_ts = self._thread_ts.get(session_id)
         if not thread_ts:
-            return
+            raise RuntimeError(f"No Slack thread mapping for session {session_id}")
 
         failures: list[str] = []
         for attachment in attachments:
@@ -580,17 +583,10 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
                 failures.append(attachment.filename)
 
         if failures:
-            try:
-                await self._client.chat_postMessage(
-                    channel=self._channel_id,
-                    thread_ts=thread_ts,
-                    text="Attachment upload failed: " + ", ".join(failures),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to send Slack attachment failure notice",
-                    session_id=session_id,
-                )
+            await self._send_chat_message(
+                session_id=session_id,
+                text="Attachment upload failed: " + ", ".join(failures),
+            )
 
     async def _send_error_attachment_bundle(
         self,
@@ -625,27 +621,17 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
                 first = False
 
             if first:
-                await self._client.chat_postMessage(
-                    channel=self._channel_id,
-                    thread_ts=thread_ts,
-                    text=bundle.message,
+                await self._send_chat_message(
+                    session_id=session_id, text=bundle.message
                 )
         except Exception:
             logger.exception(
                 "Failed to send Slack error attachment bundle",
                 session_id=session_id,
             )
-            try:
-                await self._client.chat_postMessage(
-                    channel=self._channel_id,
-                    thread_ts=thread_ts,
-                    text=":x: Status: error",
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to send Slack fallback error status",
-                    session_id=session_id,
-                )
+            await self._send_chat_message(
+                session_id=session_id, text=":x: Status: error"
+            )
         return True
 
     def _schedule_error_attachment_bundle(
@@ -660,16 +646,7 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
         async def _delayed_send() -> None:
             try:
                 await asyncio.sleep(_ERROR_ATTACHMENT_DELAY_S)
-                handled = await self._send_error_attachment_bundle(
-                    session_id,
-                    metadata=metadata,
-                )
-                if not handled:
-                    await super(SlackBridge, self).on_status_change(
-                        session_id,
-                        "error",
-                        metadata=metadata,
-                    )
+                await self._send_error_attachment_bundle(session_id, metadata=metadata)
             except asyncio.CancelledError:
                 return
             finally:
@@ -682,23 +659,61 @@ class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
     async def on_status_change(
         self, session_id: str, status: str, metadata: dict | None = None
     ) -> None:
-        if status != "error" or not settings.debug_attach_logs():
-            await self._cancel_pending_error_attachment_task(session_id)
-            await super().on_status_change(session_id, status, metadata=metadata)
+        """Send a Slack status update unless the status is intentionally suppressed."""
+
+        if status == "error" and not self._should_send_error_status(session_id):
             return
 
-        message = str((metadata or {}).get("message") or "").strip()
-        if message:
-            await self._cancel_pending_error_attachment_task(session_id)
-            handled = await self._send_error_attachment_bundle(
-                session_id,
-                metadata=metadata,
+        await self._cancel_pending_error_attachment_task(session_id)
+
+        emoji_map = {
+            "thinking": ":thought_balloon:",
+            "executing": ":gear:",
+            "done": ":white_check_mark:",
+            "error": ":x:",
+        }
+        emoji = emoji_map.get(status, ":information_source:")
+        await self._send_chat_message(
+            session_id=session_id, text=f"{emoji} Status: {status}"
+        )
+
+        if status == "error" and settings.debug_attach_logs():
+            with contextlib.suppress(Exception):
+                await self._send_error_attachment_bundle(session_id, metadata=metadata)
+
+    async def on_approval_request(
+        self, session_id: str, request: ApprovalRequest
+    ) -> None:
+        """Send a Slack approval or choice prompt and propagate delivery failures."""
+
+        if request.kind == "choice":
+            self.set_pending_permission(session_id, request)
+            options = "\n".join(
+                f"{index}. {option}"
+                for index, option in enumerate(request.options, start=1)
             )
-            if not handled:
-                await super().on_status_change(session_id, status, metadata=metadata)
+            text = (
+                f"*⚠️ {request.title}*\n\n{request.description}\n\n{options}\n\n"
+                "Reply with a number or an exact option label."
+            )
+            await self._send_chat_message(session_id=session_id, text=text)
             return
 
-        self._schedule_error_attachment_bundle(session_id, metadata=metadata)
+        reason: str | None = None
+        if request.kind == "permission":
+            reason = self.check_auto_approve(session_id, request.title)
+        if reason:
+            await self._auto_approve(session_id, request, reason=reason)
+            self.buffer_auto_approve_notification(session_id, request.title, reason)
+            return
+
+        self.set_pending_permission(session_id, request)
+        formatted = self.format_tool_input_markdown(request.description)
+        text = (
+            f"*⚠️ Approval Required*\n\n*{request.title}*\n\n{formatted}\n\n"
+            "Reply with `allow`/`proceed`, `deny`/`cancel`, `deny: <reason>`, `allow all`, or `allow {tool}`."
+        )
+        await self._send_chat_message(session_id=session_id, text=text)
 
     async def on_session_removed(self, session_id: str) -> None:
         await self._cancel_pending_error_attachment_task(session_id)

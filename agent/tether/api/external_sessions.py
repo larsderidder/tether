@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import structlog
@@ -23,11 +24,12 @@ from tether.discovery import (
 )
 from tether.external_session_watcher import external_session_watcher
 from tether.external_sync import (
+    _flush_history_buffer,
     external_runner_type_for_session,
     format_replay,
     get_bound_bridge,
     get_pi_metadata,
-    replay_recent_attach_history,
+    queue_recent_attach_history,
     relay_history_message_to_bridge,
     replay_stored_history_to_bridge,
     sync_external_session_delta,
@@ -240,7 +242,6 @@ async def attach_to_external_session(
                 store.update_session(existing_session)
                 try:
                     from tether.bridges.glue import (
-                        bridge_manager,
                         create_or_reuse_thread,
                         make_thread_name,
                         preferred_thread_name_for_platform,
@@ -265,7 +266,8 @@ async def attach_to_external_session(
                     actual_runner_type = external_runner_type_for_session(
                         existing_session
                     )
-                    detail = get_external_session_detail(
+                    detail = await asyncio.to_thread(
+                        get_external_session_detail,
                         session_id=external_id,
                         runner_type=actual_runner_type,
                         limit=sys.maxsize,
@@ -274,7 +276,13 @@ async def attach_to_external_session(
                         actual_runner_type == ExternalRunnerType.PI
                         and payload.platform == "telegram"
                     ):
-                        await replay_recent_attach_history(
+                        # A new topic gets the selected transcript, not the old binding's backlog.
+                        store.advance_bridge_replay_cursor(
+                            existing_session.id,
+                            payload.platform,
+                            store.max_event_seq(existing_session.id),
+                        )
+                        await queue_recent_attach_history(
                             existing_session, detail.messages if detail else []
                         )
                         if detail:
@@ -301,9 +309,13 @@ async def attach_to_external_session(
                             detail.messages if detail else [], metadata=pi_meta
                         )
                         if replay:
-                            await bridge_manager.send_replay(
-                                existing_session.id, replay, platform=payload.platform
-                            )
+                            bridge = get_bound_bridge(existing_session)
+                            if bridge:
+                                await bridge.on_output(
+                                    existing_session.id,
+                                    replay,
+                                    metadata={"is_history": True, "replay": True},
+                                )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("Failed to create platform thread", error=str(exc))
             if not existing_session.external_agent_id:
@@ -325,7 +337,8 @@ async def attach_to_external_session(
             return SessionResponse.from_session(existing_session, store)
 
     # Keep the cursor absolute while limiting the history displayed on attach.
-    detail = get_external_session_detail(
+    detail = await asyncio.to_thread(
+        get_external_session_detail,
         session_id=external_id,
         runner_type=parsed_runner_type,
         limit=sys.maxsize,
@@ -377,7 +390,6 @@ async def attach_to_external_session(
         store.update_session(session)
         try:
             from tether.bridges.glue import (
-                bridge_manager,
                 create_or_reuse_thread,
                 make_thread_name,
                 preferred_thread_name_for_platform,
@@ -447,9 +459,12 @@ async def attach_to_external_session(
                 content=msg.content,
                 thinking=msg.thinking,
                 is_final=is_final,
+                message_index=len(detail.messages) - len(messages) + i,
             )
     if recent_telegram_replay:
-        await replay_recent_attach_history(session, detail.messages)
+        await queue_recent_attach_history(session, detail.messages)
+    else:
+        await _flush_history_buffer(session, history_bridge)
 
     # Track how many messages have been synced (turn_count = user messages only)
     turn_count = sum(1 for m in detail.messages if m.role == "user")

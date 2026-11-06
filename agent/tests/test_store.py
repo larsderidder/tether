@@ -3,7 +3,11 @@
 import os
 import sqlite3
 
-from tether.models import SessionState
+import pytest
+from sqlmodel import select
+
+from tether.db import get_session as get_db_session
+from tether.models import BridgeDelivery, BridgeReplayCursor, SessionState
 from tether.store import SessionStore
 
 
@@ -193,6 +197,88 @@ class TestProcessBookkeeping:
         assert fresh_store.is_stop_requested(session.id) is False
 
 
+class TestBridgeDeliveryOutbox:
+    """Test durable bridge delivery ordering and cleanup."""
+
+    def test_failed_head_blocks_later_delivery(self, fresh_store: SessionStore) -> None:
+        """A later due row cannot overtake an earlier row in retry backoff."""
+        session = fresh_store.create_session("repo_test", "main")
+        first = fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="telegram",
+            delivery_key="first",
+            method="on_output",
+            payload={"text": "first"},
+        )
+        second = fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="telegram",
+            delivery_key="second",
+            method="on_output",
+            payload={"text": "second"},
+        )
+
+        claimed = fresh_store.claim_pending_bridge_deliveries(session.id, "telegram")
+        assert [row.id for row in claimed] == [first.id]
+        fresh_store.mark_bridge_delivery_failed(
+            first.id, RuntimeError("offline"), retry_delay_s=60
+        )
+
+        assert fresh_store.claim_pending_bridge_deliveries(session.id, "telegram") == []
+        assert fresh_store.claim_bridge_delivery(second.id) is None
+
+    def test_active_head_blocks_later_delivery_across_store_instances(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """A second store instance cannot claim behind an active FIFO head."""
+        session = fresh_store.create_session("repo_test", "main")
+        first = fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="telegram",
+            delivery_key="first-active",
+            method="on_output",
+            payload={"text": "first"},
+        )
+        second = fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="telegram",
+            delivery_key="second-active",
+            method="on_output",
+            payload={"text": "second"},
+        )
+
+        claimed = fresh_store.claim_pending_bridge_deliveries(session.id, "telegram")
+        assert [row.id for row in claimed] == [first.id]
+        reloaded_store = SessionStore()
+
+        assert (
+            reloaded_store.claim_pending_bridge_deliveries(session.id, "telegram") == []
+        )
+        assert reloaded_store.claim_bridge_delivery(second.id) is None
+
+    def test_session_delete_removes_bridge_delivery_and_cursor_rows(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Deleting a session removes durable bridge rows even without SQLite FK enforcement."""
+        session = fresh_store.create_session("repo_test", "main")
+        fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="telegram",
+            delivery_key="cleanup",
+            method="on_output",
+            payload={"text": "cleanup"},
+        )
+        fresh_store.bridge_replay_cursor(session.id, "telegram")
+
+        assert fresh_store.delete_session(session.id) is True
+
+        with get_db_session() as db:
+            deliveries = db.exec(select(BridgeDelivery)).all()
+            cursors = db.exec(select(BridgeReplayCursor)).all()
+        assert deliveries == []
+        assert cursors == []
+
+
 class TestEventSequence:
     """Test event sequence number management."""
 
@@ -221,6 +307,69 @@ class TestEventSequence:
 
         assert seq_s1 == 3
         assert seq_s2 == 1
+
+
+class TestEventLogDelivery:
+    """Test durable event persistence with bounded live queues."""
+
+    @pytest.mark.anyio
+    async def test_emit_persists_when_subscriber_queue_is_full(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """A saturated live queue must not block durable event persistence."""
+        session = fresh_store.create_session("repo_test", "main")
+        queue = fresh_store.new_subscriber(session.id)
+        for index in range(queue.maxsize):
+            queue.put_nowait({"type": "heartbeat", "seq": index + 1, "data": {}})
+
+        event = {
+            "session_id": session.id,
+            "seq": 2000,
+            "type": "output",
+            "data": {"text": "kept"},
+        }
+        await fresh_store.emit(session.id, event)
+
+        assert fresh_store.read_event_log(session.id, since_seq=1999) == [event]
+        fresh_store.remove_subscriber(session.id, queue)
+
+    def test_rotated_event_log_replay_and_usage(
+        self, fresh_store: SessionStore
+    ) -> None:
+        """Readers include the .1 rotated log before the active log."""
+        session = fresh_store.create_session("repo_test", "main")
+        fresh_store._append_event_log(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 1,
+                "type": "metadata",
+                "data": {"key": "tokens", "value": {"input": 10, "output": 3}},
+            },
+        )
+        active = os.path.join(
+            fresh_store._data_dir, "sessions", session.id, "events.jsonl"
+        )
+        os.replace(active, f"{active}.1")
+        fresh_store._append_event_log(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 2,
+                "type": "metadata",
+                "data": {"key": "cost", "value": 0.125},
+            },
+        )
+
+        assert [event["seq"] for event in fresh_store.read_event_log(session.id)] == [
+            1,
+            2,
+        ]
+        assert fresh_store.session_usage(session.id) == {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "total_cost_usd": 0.125,
+        }
 
 
 class TestMigrationEnforcement:

@@ -44,12 +44,13 @@ Shared helpers (in base class):
 Routes store events to bridge methods:
 - `output` events are filtered by the effective session verbosity before chat delivery
 - `none` delivers only final/end-turn output
-- `minimal` delivers thinking blocks plus final/end-turn output
-- `medium` delivers thinking blocks, tool call names, and final/end-turn output, without tool args or output contents
-- `high` delivers thinking blocks, tool calls, and truncated tool output/result snippets
-- non-final bridge activity is held until final/end turn unless `bridge_buffer_max_seconds` or `TETHER_BRIDGE_BUFFER_MAX_SECONDS` is set
+- `minimal` delivers assistant progress messages, thinking blocks, and final/end-turn output
+- `medium` adds tool call names, without tool args or output contents
+- `high` adds tool args and truncated tool output/result snippets
+- assistant progress is sent when the next tool call begins, without flushing buffered thinking or tool telemetry. The unfinished assistant stream is replaced by `output_final`, avoiding a duplicate final answer with default buffering.
+- other non-final bridge activity is held until final/end turn unless `bridge_buffer_max_seconds` or `TETHER_BRIDGE_BUFFER_MAX_SECONDS` is set
 - `output` with `final=True` → skipped because `output_final` carries the final blob
-- `output_final` → flushes allowed buffered activity first, then sends the final assistant message once
+- `output_final` flushes allowed buffered activity without the streamed assistant copy, then sends the final assistant message once
 - `permission_request` → flushes prior buffered output in event order, builds `ApprovalRequest`, calls `on_approval_request()`
 - `Waiting for confirmation:` tool output → suppressed because the approval prompt already carries the actionable state
 - `session_state` RUNNING → `on_typing()`
@@ -57,13 +58,20 @@ Routes store events to bridge methods:
 - `error` → replaces the pending fallback and calls `on_status_change("error", metadata)` once
 - `warning` bridge segments → delivered immediately regardless of verbosity or turn buffering
 
+Bridge sends use the `bridge_deliveries` outbox table. Rows are persisted before network I/O and claimed in FIFO enqueue order per session/platform. A failed or actively sending head row blocks later deliveries. Live and imported-history sends renew their claim during slow platform I/O, and acknowledge it only after successful handling. Pending rows survive restart.
+
+Platform methods must raise when a requested output, approval, choice, or status send fails after bounded local handling. Missing clients, topics, threads, or bindings are failures, not successful delivery. Methods may suppress output deliberately for verbosity, duplicate rendering, or status updates with nothing to change. Answered permissions and prompts without a live waiter are cancelled before dispatch.
+
+Delivery is at least once, not exactly once. A crash after platform acceptance but before acknowledgement can produce a duplicate. Recovery of events not yet converted to outbox rows depends on the retained event log, which contains the active file and one rotated generation.
+
 ## Platform Implementations
 
 ### Telegram (`agent/tether/bridges/telegram/`)
 - **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/sync`, `/usage`, `/compact`, `/help`
 - Error notifications include the bounded runner message instead of the generic `Status: error` text
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
-- Attaching a Pi session to Telegram replays at most 50 transcript messages from the last 30 minutes. Both limits are configurable below and apply together, without expanding to complete a turn. Replay stops at an old, missing, or invalid timestamp. Long messages can span multiple Telegram posts.
+- Closing a bound topic detaches Telegram delivery, discards queued updates, and leaves the agent session running. Reattach explicitly to resume delivery in a new topic.
+- Attaching a Pi session to Telegram replays at most 50 transcript messages from the last 30 minutes. Both limits are configurable below and apply together, without expanding to complete a turn. Replay stops at an old, missing, or invalid timestamp. Long messages can span multiple Telegram posts. Replay uses the paced background outbox so attachment does not wait for Telegram sends.
 - Background cleanup closes recorded Telegram topics once their backing Tether session no longer exists. Chat history is preserved. Existing sessions, including idle or detached sessions, are left alone.
 - Cleanup runs separately from session maintenance, paces Telegram requests, and retries failures without discarding pending mappings. It also handles orphaned mappings left by earlier pruning.
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`

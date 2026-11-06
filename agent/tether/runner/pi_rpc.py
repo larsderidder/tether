@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import time
+import sys
 import uuid
 from pathlib import Path
 
@@ -1179,7 +1180,7 @@ class PiRpcRunner:
             detail = await asyncio.to_thread(
                 get_pi_session_detail,
                 external_id,
-                500,
+                sys.maxsize,
             )
         except Exception:
             logger.exception(

@@ -67,7 +67,10 @@ def fake_bridge():
 
 
 def _make_subscriber(
-    fresh_store: SessionStore, fake_bridge: FakeBridge
+    fresh_store: SessionStore,
+    fake_bridge: FakeBridge,
+    *,
+    outbox_retry_delay_s: float = 5.0,
 ) -> BridgeSubscriber:
     """Create a BridgeSubscriber wired to a BridgeManager with the fake bridge registered."""
     mgr = BridgeManager()
@@ -76,6 +79,7 @@ def _make_subscriber(
         bridge_manager=mgr,
         new_subscriber=fresh_store.new_subscriber,
         remove_subscriber=fresh_store.remove_subscriber,
+        outbox_retry_delay_s=outbox_retry_delay_s,
     )
 
 
@@ -153,7 +157,7 @@ class TestSubscriberLifecycle:
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         sub._buffer_output(session.id, "pending")
-        await sub._schedule_flush(session.id, fake_bridge, 60)
+        await sub._schedule_flush(session.id, "fake", fake_bridge, 60)
         flush_task = sub._output_flush_tasks[session.id]
 
         await sub.unsubscribe(session.id)
@@ -171,6 +175,95 @@ class TestEventRouting:
     ) -> None:
         await store.emit(session_id, event)
         await asyncio.sleep(0.05)
+
+    @pytest.mark.anyio
+    async def test_first_bridge_binding_does_not_replay_old_output(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """A new bridge binding starts at the current event-log tail."""
+        session = fresh_store.create_session("test", "main")
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": fresh_store.next_seq(session.id),
+                "type": "output_final",
+                "data": {"text": "old transcript", "final": True},
+            },
+        )
+
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.05)
+
+        assert fake_bridge.output_calls == []
+
+        await self._emit_and_wait(
+            fresh_store,
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": fresh_store.next_seq(session.id),
+                "type": "output_final",
+                "data": {"text": "new answer", "final": True},
+            },
+        )
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == ["new answer"]
+
+    @pytest.mark.anyio
+    async def test_restart_before_outbox_enqueue_recovers_logged_event(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """An established binding replays events logged after its durable baseline."""
+        session = fresh_store.create_session("test", "main")
+        fresh_store.bridge_replay_cursor(session.id, "fake")
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": fresh_store.next_seq(session.id),
+                "type": "output_final",
+                "data": {"text": "after baseline", "final": True},
+            },
+        )
+
+        reloaded_store = SessionStore()
+        sub = _make_subscriber(reloaded_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.05)
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == ["after baseline"]
+
+    @pytest.mark.anyio
+    async def test_failed_pending_delivery_survives_store_reload(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Failed outbox rows remain pending and send after a store reload."""
+        session = fresh_store.create_session("test", "main")
+        delivery = fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="fake",
+            delivery_key="failed-pending",
+            method="on_output",
+            payload={"text": "retry me", "metadata": None},
+            event_seq=1,
+        )
+        claimed = fresh_store.claim_pending_bridge_deliveries(session.id, "fake")
+        assert [row.id for row in claimed] == [delivery.id]
+        fresh_store.mark_bridge_delivery_failed(
+            delivery.id, RuntimeError("offline"), retry_delay_s=0
+        )
+
+        reloaded_store = SessionStore()
+        sub = _make_subscriber(reloaded_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.05)
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == ["retry me"]
 
     @pytest.mark.anyio
     async def test_final_output_event_waits_for_output_final(
@@ -488,6 +581,86 @@ class TestEventRouting:
         assert fake_bridge.output_calls[0]["metadata"]["bridge_segments"] == [
             {"kind": "thinking", "label": "thinking", "text": "checking state"}
         ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("verbosity", ["none", "minimal", "medium", "high"])
+    async def test_assistant_progress_flushes_before_tool_execution(
+        self,
+        fresh_store: SessionStore,
+        fake_bridge: FakeBridge,
+        monkeypatch: pytest.MonkeyPatch,
+        verbosity: str,
+    ) -> None:
+        """Tool boundaries deliver complete progress prose without streaming the final."""
+        monkeypatch.setenv("TETHER_BRIDGE_VERBOSITY", verbosity)
+        monkeypatch.delenv("TETHER_BRIDGE_BUFFER_MAX_SECONDS", raising=False)
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        try:
+            for seq, segment in enumerate(
+                [
+                    {"kind": "thinking", "text": "checking state"},
+                    {"kind": "assistant", "text": "Checking "},
+                    {"kind": "assistant", "text": "the shop."},
+                    {"kind": "tool_call", "label": "bash", "text": "secret args"},
+                ],
+                start=1,
+            ):
+                await sub._route_event(
+                    session.id,
+                    "fake",
+                    fake_bridge,
+                    {
+                        "seq": seq,
+                        "type": "output",
+                        "data": {
+                            "text": segment["text"],
+                            "final": False,
+                            "bridge_segments": [segment],
+                        },
+                    },
+                )
+                if seq < 4:
+                    assert fake_bridge.output_calls == []
+
+            expected = [] if verbosity == "none" else ["Checking the shop."]
+            assert [call["text"] for call in fake_bridge.output_calls] == expected
+
+            await sub._route_event(
+                session.id,
+                "fake",
+                fake_bridge,
+                {
+                    "seq": 5,
+                    "type": "output",
+                    "data": {
+                        "text": "The shop is available.",
+                        "bridge_segments": [
+                            {"kind": "assistant", "text": "The shop is available."}
+                        ],
+                    },
+                },
+            )
+            await sub._route_event(
+                session.id,
+                "fake",
+                fake_bridge,
+                {
+                    "seq": 6,
+                    "type": "output_final",
+                    "data": {"text": "The shop is available."},
+                },
+            )
+            prose = [
+                segment["text"]
+                for call in fake_bridge.output_calls
+                for segment in (call["metadata"] or {}).get("bridge_segments", [])
+                if segment["kind"] == "assistant"
+            ]
+            assert "".join(prose) == "".join(expected)
+            assert fake_bridge.output_calls[-1]["text"] == "The shop is available."
+        finally:
+            await sub.unsubscribe(session.id)
 
     @pytest.mark.anyio
     async def test_medium_verbosity_keeps_tool_names_without_contents(
@@ -835,6 +1008,9 @@ class TestEventRouting:
     ) -> None:
         """Buffered thinking stays before tool activity when a permission prompt arrives."""
         session = fresh_store.create_session("test", "main")
+        fresh_store.add_pending_permission(
+            session.id, "perm_1", "Read", {}, asyncio.get_running_loop().create_future()
+        )
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
@@ -900,6 +1076,9 @@ class TestEventRouting:
         self, fresh_store: SessionStore, fake_bridge: FakeBridge
     ) -> None:
         session = fresh_store.create_session("test", "main")
+        fresh_store.add_pending_permission(
+            session.id, "perm_1", "Read", {}, asyncio.get_running_loop().create_future()
+        )
         sub = _make_subscriber(fresh_store, fake_bridge)
         sub.subscribe(session.id, "fake")
         await asyncio.sleep(0.02)
@@ -1086,7 +1265,7 @@ class TestEventRouting:
     ) -> None:
         """If bridge.on_output raises, consumer continues processing."""
         session = fresh_store.create_session("test", "main")
-        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub = _make_subscriber(fresh_store, fake_bridge, outbox_retry_delay_s=0)
 
         call_count = 0
         original_on_output = fake_bridge.on_output
@@ -1124,8 +1303,10 @@ class TestEventRouting:
 
         await sub.unsubscribe(session.id)
 
-        assert len(fake_bridge.output_calls) == 1
-        assert fake_bridge.output_calls[0]["text"] == "recovery message"
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "failing message",
+            "recovery message",
+        ]
 
     @pytest.mark.anyio
     async def test_session_state_awaiting_input_ignored(
@@ -1148,3 +1329,505 @@ class TestEventRouting:
         await sub.unsubscribe(session.id)
         assert len(fake_bridge.typing_calls) == 0
         assert len(fake_bridge.status_calls) == 0
+
+    @pytest.mark.anyio
+    async def test_full_live_queue_preserves_tail_event_without_reconnect(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """The newest event must wake the subscriber and trigger persisted catchup."""
+        session = fresh_store.create_session("test", "main")
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        fresh_store._get_runtime(session.id).subscribers.append(queue)
+        first_send_started = asyncio.Event()
+        release_first_send = asyncio.Event()
+        original_on_output = fake_bridge.on_output
+
+        async def blocking_output(session_id: str, text: str, metadata=None):
+            if text == "first":
+                first_send_started.set()
+                await release_first_send.wait()
+            await original_on_output(session_id, text, metadata)
+
+        fake_bridge.on_output = blocking_output
+        task = asyncio.create_task(sub._consume(session.id, "fake", queue))
+        await asyncio.sleep(0.02)
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 1,
+                "type": "output_final",
+                "data": {"text": "first", "turn_id": "turn-1"},
+            },
+        )
+        await asyncio.wait_for(first_send_started.wait(), timeout=1.0)
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 2,
+                "type": "session_state",
+                "data": {"state": "RUNNING"},
+            },
+        )
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 3,
+                "type": "output_final",
+                "data": {"text": "tail", "turn_id": "turn-2"},
+            },
+        )
+        release_first_send.set()
+        await asyncio.sleep(0.1)
+        task.cancel()
+        await task
+
+        assert [call["text"] for call in fake_bridge.output_calls] == ["first", "tail"]
+
+    @pytest.mark.anyio
+    async def test_replays_logged_event_after_queue_was_not_consumed(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """A persisted event is recovered even if the first live queue is discarded."""
+        session = fresh_store.create_session("test", "main")
+        fresh_store.bridge_replay_cursor(session.id, "fake")
+        queue = fresh_store.new_subscriber(session.id)
+        event = {
+            "session_id": session.id,
+            "seq": 1,
+            "type": "output_final",
+            "data": {"text": "recovered after cancel", "turn_id": "turn-1"},
+        }
+        await fresh_store.emit(session.id, event)
+        fresh_store.remove_subscriber(session.id, queue)
+
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.05)
+        await sub.unsubscribe(session.id)
+
+        assert [call["text"] for call in fake_bridge.output_calls] == [
+            "recovered after cancel"
+        ]
+
+    @pytest.mark.anyio
+    async def test_permission_resolved_before_replay_skips_prompt(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Replay must not resurrect permission prompts that were already resolved."""
+        session = fresh_store.create_session("test", "main")
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 1,
+                "type": "permission_request",
+                "data": {
+                    "request_id": "perm_1",
+                    "tool_name": "Read",
+                    "tool_input": {"path": "/tmp/a"},
+                },
+            },
+        )
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 2,
+                "type": "permission_resolved",
+                "data": {"request_id": "perm_1", "allowed": True},
+            },
+        )
+
+        sub = _make_subscriber(fresh_store, fake_bridge)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.05)
+        await sub.unsubscribe(session.id)
+
+        assert fake_bridge.approval_calls == []
+
+    @pytest.mark.anyio
+    async def test_failed_outbox_retries_without_reconnect(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """A failed pending delivery is retried while the subscriber stays running."""
+        session = fresh_store.create_session("test", "main")
+        calls = 0
+        original_on_output = fake_bridge.on_output
+
+        async def fail_once(session_id: str, text: str, metadata=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("temporary failure")
+            await original_on_output(session_id, text, metadata)
+
+        fake_bridge.on_output = fail_once
+        sub = _make_subscriber(fresh_store, fake_bridge, outbox_retry_delay_s=0.0)
+        sub.subscribe(session.id, "fake")
+        await asyncio.sleep(0.02)
+        await fresh_store.emit(
+            session.id,
+            {
+                "session_id": session.id,
+                "seq": 1,
+                "type": "output_final",
+                "data": {"text": "eventual", "turn_id": "turn-1"},
+            },
+        )
+        await asyncio.sleep(0.1)
+        await sub.unsubscribe(session.id)
+
+        assert calls == 2
+        assert [call["text"] for call in fake_bridge.output_calls] == ["eventual"]
+
+    @pytest.mark.anyio
+    async def test_concurrent_outbox_drains_send_once(
+        self, fresh_store: SessionStore, fake_bridge: FakeBridge
+    ) -> None:
+        """Subscriber and history drains cannot claim the same pending row."""
+        from tether.external_sync import _drain_history_outbox
+
+        session = fresh_store.create_session("test", "main")
+        session.platform = "fake"
+        fresh_store.update_session(session)
+        fresh_store.enqueue_bridge_delivery(
+            session_id=session.id,
+            platform="fake",
+            delivery_key="one-output",
+            method="on_output",
+            payload={"text": "only once", "metadata": None},
+            event_seq=1,
+        )
+        sub = _make_subscriber(fresh_store, fake_bridge)
+
+        await asyncio.gather(
+            sub._drain_pending_deliveries(session.id, "fake", fake_bridge),
+            _drain_history_outbox(session, fake_bridge),
+        )
+
+        assert [call["text"] for call in fake_bridge.output_calls] == ["only once"]
+
+
+@pytest.mark.anyio
+async def test_live_buffered_events_are_processed_once(
+    fresh_store: SessionStore, fake_bridge: FakeBridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unflushed durable cursor must not look like a live queue gap."""
+    session = fresh_store.create_session("test", "main")
+    session.bridge_verbosity = "high"
+    fresh_store.update_session(session)
+    sub = _make_subscriber(fresh_store, fake_bridge)
+    processed: asyncio.Queue[int] = asyncio.Queue()
+    original_route = sub._route_event
+
+    async def observe_route(session_id, platform, bridge, event):
+        result = await original_route(session_id, platform, bridge, event)
+        processed.put_nowait(event["seq"])
+        return result
+
+    monkeypatch.setattr(sub, "_route_event", observe_route)
+    sub.subscribe(session.id, "fake")
+    try:
+        for seq, text in enumerate(["A", "B"], start=1):
+            await fresh_store.emit(
+                session.id,
+                {
+                    "seq": seq,
+                    "type": "output",
+                    "data": {
+                        "text": text,
+                        "kind": "step",
+                        "bridge_segments": [{"kind": "thinking", "text": text}],
+                    },
+                },
+            )
+            while await asyncio.wait_for(processed.get(), timeout=1) != seq:
+                pass
+        await sub._flush_output(session.id, "fake", fake_bridge)
+        assert len(fake_bridge.output_calls) == 1
+        assert [
+            segment["text"]
+            for segment in fake_bridge.output_calls[0]["metadata"]["bridge_segments"]
+        ] == ["A", "B"]
+    finally:
+        await sub.unsubscribe(session.id, platform="fake")
+
+
+@pytest.mark.anyio
+async def test_timer_flush_does_not_cancel_its_own_platform_send(
+    fresh_store: SessionStore, fake_bridge: FakeBridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed flush must survive a real asynchronous transport boundary."""
+    session = fresh_store.create_session("test", "main")
+    sub = _make_subscriber(fresh_store, fake_bridge)
+    original_output = fake_bridge.on_output
+
+    async def asynchronous_output(*args, **kwargs):
+        await asyncio.sleep(0)
+        await original_output(*args, **kwargs)
+
+    monkeypatch.setattr(fake_bridge, "on_output", asynchronous_output)
+    sub._buffer_output(session.id, "buffered", event_seq=1)
+    await sub._schedule_flush(session.id, "fake", fake_bridge, 0)
+    task = sub._output_flush_tasks[session.id]
+    await asyncio.wait_for(task, timeout=1)
+    assert [call["text"] for call in fake_bridge.output_calls] == ["buffered"]
+
+
+@pytest.mark.anyio
+async def test_restart_recovers_final_after_pre_final_flush_only(
+    fresh_store: SessionStore, fake_bridge: FakeBridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persisting a prefix delivery cannot checkpoint an incomplete final event."""
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    session = fresh_store.create_session("test", "main")
+    session.bridge_verbosity = "high"
+    fresh_store.update_session(session)
+    fresh_store.bridge_replay_cursor(session.id, "fake")
+    sub = _make_subscriber(fresh_store, fake_bridge)
+    step = {
+        "seq": 1,
+        "type": "output",
+        "data": {
+            "text": "prefix",
+            "kind": "step",
+            "bridge_segments": [{"kind": "thinking", "text": "prefix"}],
+        },
+    }
+    final = {
+        "seq": 2,
+        "type": "output_final",
+        "data": {"text": "complete", "turn_id": "one"},
+    }
+    await fresh_store.emit(session.id, step)
+    await sub._route_event(session.id, "fake", fake_bridge, step)
+    await fresh_store.emit(session.id, final)
+    original_enqueue = fresh_store.enqueue_bridge_delivery
+
+    def crash_before_final(**kwargs):
+        if (kwargs["payload"].get("metadata") or {}).get("final"):
+            raise SimulatedCrash
+        return original_enqueue(**kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fresh_store, "enqueue_bridge_delivery", crash_before_final)
+        with pytest.raises(SimulatedCrash):
+            await sub._route_event(session.id, "fake", fake_bridge, final)
+
+    restarted_store = SessionStore()
+    restarted = _make_subscriber(restarted_store, fake_bridge)
+    await restarted._replay_logged_events(
+        session.id,
+        "fake",
+        fake_bridge,
+        since_seq=restarted_store.bridge_replay_cursor(session.id, "fake").cursor_seq,
+    )
+    assert [
+        call["text"]
+        for call in fake_bridge.output_calls
+        if (call.get("metadata") or {}).get("final")
+    ] == ["complete"]
+    assert len(fake_bridge.output_calls) == 2
+
+
+@pytest.mark.anyio
+async def test_ignored_resolution_cannot_checkpoint_buffered_output(
+    fresh_store: SessionStore, fake_bridge: FakeBridge
+) -> None:
+    """Events with no send still cannot advance past an unpersisted buffer."""
+    session = fresh_store.create_session("test", "main")
+    session.bridge_verbosity = "high"
+    fresh_store.update_session(session)
+    fresh_store.bridge_replay_cursor(session.id, "fake")
+    sub = _make_subscriber(fresh_store, fake_bridge)
+    await fresh_store.emit(
+        session.id,
+        {
+            "seq": 1,
+            "type": "output",
+            "data": {
+                "text": "buffered",
+                "kind": "step",
+                "bridge_segments": [{"kind": "thinking", "text": "buffered"}],
+            },
+        },
+    )
+    await fresh_store.emit(
+        session.id,
+        {"seq": 2, "type": "permission_resolved", "data": {"request_id": "old"}},
+    )
+    try:
+        await sub._replay_logged_events(session.id, "fake", fake_bridge, since_seq=0)
+        assert fresh_store.bridge_replay_cursor(session.id, "fake").cursor_seq == 0
+    finally:
+        await sub.unsubscribe(session.id, platform="fake")
+
+
+@pytest.mark.anyio
+async def test_restart_cancels_approval_without_recoverable_waiter(
+    fresh_store: SessionStore, fake_bridge: FakeBridge
+) -> None:
+    """An orphaned durable prompt is not a usable permission decision after restart."""
+    session = fresh_store.create_session("test", "main")
+    fresh_store.bridge_replay_cursor(session.id, "fake")
+    future = asyncio.get_running_loop().create_future()
+    fresh_store.add_pending_permission(session.id, "orphan", "Edit", {}, future)
+    await fresh_store.emit(
+        session.id,
+        {
+            "seq": 1,
+            "type": "permission_request",
+            "data": {"request_id": "orphan", "tool_name": "Edit", "tool_input": {}},
+        },
+    )
+    restarted_store = SessionStore()
+    sub = _make_subscriber(restarted_store, fake_bridge)
+    await sub._replay_logged_events(session.id, "fake", fake_bridge, since_seq=0)
+    assert fake_bridge.approval_calls == []
+    assert restarted_store.get_pending_permission(session.id, "orphan") is None
+    future.cancel()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("replayed", [False, True], ids=["live", "replay"])
+async def test_failed_enqueue_cannot_checkpoint_past_heartbeat(
+    fresh_store: SessionStore,
+    fake_bridge: FakeBridge,
+    monkeypatch: pytest.MonkeyPatch,
+    replayed: bool,
+) -> None:
+    """A failed route remains replayable after later events and resubscription."""
+    session = fresh_store.create_session("test", "main")
+    fresh_store.bridge_replay_cursor(session.id, "fake")
+    sub = _make_subscriber(fresh_store, fake_bridge)
+    processed: asyncio.Queue[int] = asyncio.Queue()
+    original_route = sub._route_event
+    original_enqueue = fresh_store.enqueue_bridge_delivery
+    enqueue_attempts = 0
+
+    async def observe_route(
+        session_id: str, platform: str, bridge: FakeBridge, event: dict
+    ) -> bool:
+        """Wait for actual routing rather than guessing when the consumer ran."""
+        result = await original_route(session_id, platform, bridge, event)
+        processed.put_nowait(event["seq"])
+        return result
+
+    def fail_first_enqueue(**kwargs):
+        """Fail persistence before any delivery row exists."""
+        nonlocal enqueue_attempts
+        enqueue_attempts += 1
+        if enqueue_attempts == 1:
+            raise OSError("outbox temporarily unavailable")
+        return original_enqueue(**kwargs)
+
+    monkeypatch.setattr(sub, "_route_event", observe_route)
+    monkeypatch.setattr(fresh_store, "enqueue_bridge_delivery", fail_first_enqueue)
+    events = [
+        {"seq": 1, "type": "output_final", "data": {"text": "recover me"}},
+        {"seq": 2, "type": "heartbeat", "data": {}},
+    ]
+    if replayed:
+        for event in events:
+            await fresh_store.emit(session.id, event)
+
+    sub.subscribe(session.id, "fake")
+    try:
+        if not replayed:
+            # Let startup replay finish before emitting genuinely live events.
+            await asyncio.sleep(0)
+            for event in events:
+                await fresh_store.emit(session.id, event)
+        for seq in (1, 2):
+            assert await asyncio.wait_for(processed.get(), timeout=1) == seq
+
+        assert enqueue_attempts == 1
+        assert fake_bridge.output_calls == []
+        assert fresh_store.pending_bridge_deliveries(session.id, "fake") == []
+        assert fresh_store.bridge_replay_cursor(session.id, "fake").cursor_seq == 0
+    finally:
+        await sub.unsubscribe(session.id, platform="fake")
+
+    sub.subscribe(session.id, "fake")
+    try:
+        for seq in (1, 2):
+            assert await asyncio.wait_for(processed.get(), timeout=1) == seq
+        assert [call["text"] for call in fake_bridge.output_calls] == ["recover me"]
+        assert fresh_store.bridge_replay_cursor(session.id, "fake").cursor_seq == 2
+    finally:
+        await sub.unsubscribe(session.id, platform="fake")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("deferred_kind", ["output", "error"])
+@pytest.mark.parametrize("enqueue_fails", [False, True], ids=["persisted", "failed"])
+async def test_deferred_delivery_checkpoint_tracks_persistence(
+    fresh_store: SessionStore,
+    fake_bridge: FakeBridge,
+    monkeypatch: pytest.MonkeyPatch,
+    deferred_kind: str,
+    enqueue_fails: bool,
+) -> None:
+    """Deferred work releases its checkpoint only after successful persistence."""
+    monkeypatch.delenv("TETHER_BRIDGE_BUFFER_MAX_SECONDS", raising=False)
+    session = fresh_store.create_session("test", "main")
+    session.bridge_verbosity = "high"
+    fresh_store.update_session(session)
+    fresh_store.bridge_replay_cursor(session.id, "fake")
+    sub = _make_subscriber(fresh_store, fake_bridge)
+    data = (
+        {
+            "text": "buffered",
+            "bridge_segments": [{"kind": "thinking", "text": "buffered"}],
+        }
+        if deferred_kind == "output"
+        else {"state": "ERROR"}
+    )
+    await fresh_store.emit(
+        session.id,
+        {
+            "seq": 1,
+            "type": "output" if deferred_kind == "output" else "session_state",
+            "data": data,
+        },
+    )
+    await fresh_store.emit(session.id, {"seq": 2, "type": "heartbeat", "data": {}})
+
+    def fail_enqueue(**kwargs) -> None:
+        """Fail the scheduled persistence outside the event-routing handler."""
+        raise OSError("outbox temporarily unavailable")
+
+    try:
+        await sub._replay_logged_events(session.id, "fake", fake_bridge, since_seq=0)
+        assert fresh_store.bridge_replay_cursor(session.id, "fake").cursor_seq == 0
+        if enqueue_fails:
+            monkeypatch.setattr(fresh_store, "enqueue_bridge_delivery", fail_enqueue)
+        if deferred_kind == "output":
+            await sub._schedule_flush(session.id, "fake", fake_bridge, 0)
+            task = sub._output_flush_tasks[session.id]
+        else:
+            task = sub._error_status_tasks[session.id]
+
+        if enqueue_fails:
+            with pytest.raises(OSError, match="outbox temporarily unavailable"):
+                await asyncio.wait_for(task, timeout=1)
+        else:
+            await asyncio.wait_for(task, timeout=1)
+            assert fresh_store.bridge_replay_cursor(session.id, "fake").cursor_seq == 1
+
+        await fresh_store.emit(session.id, {"seq": 3, "type": "heartbeat", "data": {}})
+        await sub._replay_logged_events(session.id, "fake", fake_bridge, since_seq=2)
+        expected_cursor = 0 if enqueue_fails else 3
+        assert (
+            fresh_store.bridge_replay_cursor(session.id, "fake").cursor_seq
+            == expected_cursor
+        )
+    finally:
+        await sub.unsubscribe(session.id)

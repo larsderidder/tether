@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, strategies as st
+from unittest.mock import AsyncMock
 
-from tether.bridges.retry import with_bridge_send_retry
+from tether.bridges.retry import send_bridge_delivery, with_bridge_send_retry
 
 
 class RetryableError(Exception):
@@ -89,3 +91,18 @@ async def test_with_bridge_send_retry_does_not_retry_400(monkeypatch) -> None:
         await with_bridge_send_retry("test", send)
     assert calls == 1
     assert sleeps == []
+
+
+@pytest.mark.anyio
+@given(st.text(min_size=1).filter(lambda kind: kind not in {"permission", "choice"}))
+async def test_approval_delivery_rejects_unknown_kinds(kind: str) -> None:
+    """Unknown approval kinds must never reach a platform decision handler."""
+    bridge = AsyncMock()
+    with pytest.raises(ValueError):
+        await send_bridge_delivery(
+            bridge,
+            "session",
+            "on_approval_request",
+            {"request": {"kind": kind, "request_id": "request"}},
+        )
+    bridge.on_approval_request.assert_not_awaited()
