@@ -12,7 +12,7 @@ from tether.api.emit import emit_history_message
 from tether.api.errors import raise_http_error
 from tether.api.schemas import SyncResult
 from tether.discovery import get_external_session_detail
-from tether.models import ExternalRunnerType
+from tether.models import ExternalRunnerType, ExternalSessionMessage, Session
 from tether.settings import settings
 from tether.store import store
 
@@ -66,6 +66,48 @@ def _messages_within_lookback(
         if timestamp and timestamp >= cutoff:
             return messages[index:], index
     return [], len(messages)
+
+
+def recent_attach_history(
+    messages: list[ExternalSessionMessage],
+) -> tuple[list[ExternalSessionMessage], int]:
+    """Return the latest messages within both configured Telegram replay limits."""
+    max_messages = settings.telegram_attach_history_max_messages()
+    minutes = settings.telegram_attach_history_minutes()
+    if not max_messages or not minutes:
+        return [], len(messages)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    start = len(messages)
+    count_start = max(0, len(messages) - max_messages)
+    for index in range(len(messages) - 1, count_start - 1, -1):
+        timestamp = _parse_timestamp(messages[index].timestamp)
+        # Unknown timestamps must not bypass the age limit.
+        if timestamp is None or timestamp < cutoff:
+            break
+        start = index
+    return messages[start:], start
+
+
+async def replay_recent_attach_history(
+    session: Session, messages: list[ExternalSessionMessage]
+) -> None:
+    """Replay bounded Pi attachment history to the newly bound Telegram topic."""
+    bridge = get_bound_bridge(session)
+    recent, _base_index = recent_attach_history(messages)
+    for index, message in enumerate(recent):
+        is_final = message.role == "assistant" and (
+            index + 1 == len(recent) or recent[index + 1].role == "user"
+        )
+        await relay_history_message_to_bridge(
+            session=session,
+            bridge=bridge,
+            role=message.role,
+            content=message.content,
+            thinking=message.thinking,
+            is_final=is_final,
+        )
+    await _flush_history_buffer(session, bridge)
 
 
 def _event_log_recovery_timestamp(session_id: str) -> datetime | None:

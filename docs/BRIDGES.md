@@ -63,6 +63,7 @@ Routes store events to bridge methods:
 - **bot.py** — Full-featured: forum topics, inline keyboards, HTML formatting, replay, `/attach`, `/list`, `/stop`, `/sync`, `/usage`, `/compact`, `/help`
 - Error notifications include the bounded runner message instead of the generic `Status: error` text
 - **state.py** — Persists session↔topic mappings to JSON, `remove_session()` for cleanup
+- Attaching a Pi session to Telegram replays at most 50 transcript messages from the last 30 minutes. Both limits are configurable below and apply together, without expanding to complete a turn. Replay stops at an old, missing, or invalid timestamp. Long messages can span multiple Telegram posts.
 - Background cleanup closes recorded Telegram topics once their backing Tether session no longer exists. Chat history is preserved. Existing sessions, including idle or detached sessions, are left alone.
 - Cleanup runs separately from session maintenance, paces Telegram requests, and retries failures without discarding pending mappings. It also handles orphaned mappings left by earlier pruning.
 - **formatting.py** — `markdown_to_telegram_html()`, `strip_tool_markers()`, `_markdown_table_to_pre()`, `chunk_message()`
@@ -161,6 +162,8 @@ Stored in base class as in-memory dicts:
 | `TETHER_BRIDGE_BUFFER_MAX_SECONDS` | Default max seconds before flushing non-final bridge activity. Unset means final/end-turn only (range: 0-300) |
 | `TETHER_BRIDGE_TOOL_ACTIVITY_COMBINE_MESSAGES` | Render a buffered tool activity bundle as one platform message when possible (default: 1) |
 | `TETHER_TELEGRAM_OUTPUT_MAX_MESSAGES` | Optional cap for one Telegram output batch. Default `0` sends all chunks slowly. When capped, Tether keeps the final chunk visible. |
+| `TETHER_TELEGRAM_ATTACH_HISTORY_MAX_MESSAGES` | Maximum transcript messages replayed when attaching Pi to Telegram (default: 50, range: 0-10000). Set to `0` to skip replay. |
+| `TETHER_TELEGRAM_ATTACH_HISTORY_MINUTES` | Maximum age in minutes of Pi attachment history (default: 30, range: 0-1440). Applies together with the message limit; `0` skips replay. |
 
 Bridges auto-initialize in `main.py` lifespan if tokens are configured.
 

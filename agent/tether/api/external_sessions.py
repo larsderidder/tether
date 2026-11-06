@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import structlog
 from fastapi import APIRouter, Depends, Query
 
@@ -25,6 +27,7 @@ from tether.external_sync import (
     format_replay,
     get_bound_bridge,
     get_pi_metadata,
+    replay_recent_attach_history,
     relay_history_message_to_bridge,
     replay_stored_history_to_bridge,
     sync_external_session_delta,
@@ -265,9 +268,25 @@ async def attach_to_external_session(
                     detail = get_external_session_detail(
                         session_id=external_id,
                         runner_type=actual_runner_type,
-                        limit=100,
+                        limit=sys.maxsize,
                     )
-                    if actual_runner_type == ExternalRunnerType.CODEX:
+                    if (
+                        actual_runner_type == ExternalRunnerType.PI
+                        and payload.platform == "telegram"
+                    ):
+                        await replay_recent_attach_history(
+                            existing_session, detail.messages if detail else []
+                        )
+                        if detail:
+                            store.set_synced_message_count(
+                                existing_session.id,
+                                len(detail.messages),
+                                sum(
+                                    message.role == "user"
+                                    for message in detail.messages
+                                ),
+                            )
+                    elif actual_runner_type == ExternalRunnerType.CODEX:
                         await replay_stored_history_to_bridge(
                             session=existing_session,
                             bridge=get_bound_bridge(existing_session),
@@ -305,11 +324,11 @@ async def attach_to_external_session(
             # Return the existing session instead of creating a duplicate
             return SessionResponse.from_session(existing_session, store)
 
-    # Verify external session exists and get full history
+    # Keep the cursor absolute while limiting the history displayed on attach.
     detail = get_external_session_detail(
         session_id=external_id,
         runner_type=parsed_runner_type,
-        limit=100,  # Get full history to display in session
+        limit=sys.maxsize,
     )
     if not detail:
         raise_http_error("NOT_FOUND", f"External session not found: {external_id}", 404)
@@ -399,7 +418,10 @@ async def attach_to_external_session(
     # Emit the external session's history messages so they appear in the session view
     # For each turn, the last assistant message should be marked as final
     # A turn ends when the next message is from user, or at end of messages
-    messages = detail.messages
+    recent_telegram_replay = (
+        parsed_runner_type == ExternalRunnerType.PI and session.platform == "telegram"
+    )
+    messages = detail.messages[-100:]
     for i, msg in enumerate(messages):
         is_final = False
         if msg.role == "assistant":
@@ -417,14 +439,17 @@ async def attach_to_external_session(
             is_final=is_final,
             is_history=True,
         )
-        await relay_history_message_to_bridge(
-            session=session,
-            bridge=history_bridge,
-            role=msg.role,
-            content=msg.content,
-            thinking=msg.thinking,
-            is_final=is_final,
-        )
+        if not recent_telegram_replay:
+            await relay_history_message_to_bridge(
+                session=session,
+                bridge=history_bridge,
+                role=msg.role,
+                content=msg.content,
+                thinking=msg.thinking,
+                is_final=is_final,
+            )
+    if recent_telegram_replay:
+        await replay_recent_attach_history(session, detail.messages)
 
     # Track how many messages have been synced (turn_count = user messages only)
     turn_count = sum(1 for m in detail.messages if m.role == "user")

@@ -617,6 +617,26 @@ class Settings:
         )
 
     @staticmethod
+    def telegram_attach_history_max_messages() -> int:
+        """Maximum transcript messages replayed on Pi attachment; zero disables replay."""
+        return _get_bounded_int(
+            "TETHER_TELEGRAM_ATTACH_HISTORY_MAX_MESSAGES",
+            50,
+            minimum=0,
+            maximum=10000,
+        )
+
+    @staticmethod
+    def telegram_attach_history_minutes() -> int:
+        """Maximum age of Pi attachment history in minutes; zero disables replay."""
+        return _get_bounded_int(
+            "TETHER_TELEGRAM_ATTACH_HISTORY_MINUTES",
+            30,
+            minimum=0,
+            maximum=1440,
+        )
+
+    @staticmethod
     def git_auto_checkpoint() -> bool:
         """Auto-commit dirty git worktrees after each completed turn.
 

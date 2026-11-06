@@ -133,6 +133,31 @@ class TestIntSettings:
         assert Settings.bridge_verbosity() == "minimal"
         assert Settings.bridge_buffer_max_seconds() == 300.0
 
+    def test_telegram_attach_history_defaults(self, clean_env) -> None:
+        """Attachment replay defaults to 50 messages from the last 30 minutes."""
+        assert Settings.telegram_attach_history_max_messages() == 50
+        assert Settings.telegram_attach_history_minutes() == 30
+
+    @pytest.mark.parametrize(
+        ("raw", "messages", "minutes"),
+        [
+            ("12", 12, 12),
+            ("0", 0, 0),
+            ("-1", 0, 0),
+            ("invalid", 50, 30),
+            ("999999", 10000, 1440),
+        ],
+    )
+    def test_telegram_attach_history_configuration(
+        self, clean_env, raw: str, messages: int, minutes: int
+    ) -> None:
+        """Replay limits accept overrides, clamp bounds, and default on invalid input."""
+        clean_env.setenv("TETHER_TELEGRAM_ATTACH_HISTORY_MAX_MESSAGES", raw)
+        clean_env.setenv("TETHER_TELEGRAM_ATTACH_HISTORY_MINUTES", raw)
+
+        assert Settings.telegram_attach_history_max_messages() == messages
+        assert Settings.telegram_attach_history_minutes() == minutes
+
 
 class TestStringSettings:
     """Test string environment variable parsing."""
