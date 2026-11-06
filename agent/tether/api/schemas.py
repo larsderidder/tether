@@ -12,6 +12,7 @@ from tether.models import (
     SessionState,
 )
 from tether.settings import settings
+from tether.runner.capabilities import permission_capabilities_for_adapter
 
 if TYPE_CHECKING:
     from tether.models import Session
@@ -152,6 +153,28 @@ class UpdateBridgeOutputRequest(BaseModel):
 # --- Response Models ---
 
 
+class PermissionCapabilitiesResponse(BaseModel):
+    """Permission and approval capabilities exposed by a runner adapter."""
+
+    adapter: str
+    approval_modes_supported: bool
+    initial_approval_policy_supported: bool
+    approval_mode_updates: Literal["live", "next_turn", "unsupported"]
+    ordinary_tool_approvals: bool
+    ordinary_tool_approval_timing: Literal[
+        "pre_execution", "post_start_notification", "not_applicable"
+    ]
+    extension_ui_permissions: bool
+    unsupported_approval_mode_message: str | None = None
+
+
+class ConfigCapabilitiesResponse(BaseModel):
+    """Discoverable server capabilities for clients."""
+
+    default_adapter: str | None
+    permission_capabilities: dict[str, PermissionCapabilitiesResponse]
+
+
 class SessionResponse(BaseModel):
     """Session data returned by API endpoints."""
 
@@ -178,6 +201,7 @@ class SessionResponse(BaseModel):
     effective_bridge_verbosity: str
     bridge_buffer_max_seconds: float | None  # None = use global default
     effective_bridge_buffer_max_seconds: float | None
+    permission_capabilities: PermissionCapabilitiesResponse
     # External agent fields
     external_agent_name: str | None = None
     external_agent_type: str | None = None
@@ -222,6 +246,11 @@ class SessionResponse(BaseModel):
                 getattr(session, "bridge_buffer_max_seconds", None)
                 if getattr(session, "bridge_buffer_max_seconds", None) is not None
                 else settings.bridge_buffer_max_seconds()
+            ),
+            permission_capabilities=PermissionCapabilitiesResponse.model_validate(
+                permission_capabilities_for_adapter(
+                    session.adapter or settings.adapter()
+                ).to_public_dict()
             ),
             external_agent_name=session.external_agent_name,
             external_agent_type=session.external_agent_type,

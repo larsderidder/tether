@@ -59,6 +59,20 @@ Implemented by `ApiRunnerEvents` in `api/runner_events.py` which bridges to SSE 
 - Event streaming
 - Adapter name: `opencode`
 
+## Permission and Approval Capabilities
+
+Adapters publish permission capability metadata through `GET /api/config` and every `SessionResponse.permission_capabilities`. Clients must use those fields instead of assuming that an approval-mode number means a human approval gate exists.
+
+| Adapter | Ordinary Tether tool approvals | Initial backend policy | Active policy update | Notes |
+| --- | --- | --- | --- | --- |
+| `pi_rpc` | No | No | Unsupported | Pi `tool_execution_start` events arrive after ordinary bash, write, or edit execution starts. Tether shows them as activity only. Pi extension UI confirmations still create real pending permission requests. |
+| `claude_subprocess` | Yes | Yes | Live | Claude SDK decisions are routed through Tether permission callbacks. |
+| `codex_sdk_sidecar` | No | Yes | Unsupported | The sidecar accepts an initial approval policy, but it does not send tool approval requests back to Tether and `update_permission_mode()` is a no-op. Cached sidecar threads keep their initial policy. |
+| `opencode` | No | No | Unsupported | The current sidecar auto-approves permissions, so Tether cannot enforce interactive approvals. |
+| `automation` / `litellm` | No | No | Unsupported | These adapters do not expose an interactive tool approval gate. |
+
+A non-null `approval_mode` on a session is therefore not proof that Tether can approve tools. It may be an initial backend policy, or unsupported historical state. Use `ordinary_tool_approvals` and `approval_mode_updates` for UI controls.
+
 ### Script Automations (`runner/automation.py`)
 - Runs local YAML-defined automations as subprocess steps
 - Adapter name: `automation`

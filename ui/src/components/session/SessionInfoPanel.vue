@@ -3,6 +3,11 @@ import type { Session } from "@/api"
 import { formatAgentName } from "@/composables/formatters"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  permissionCapabilitiesForSession,
+  permissionCapabilityDescription,
+  permissionCapabilityLabel,
+} from "@/composables/usePermissionCapabilities"
 
 interface HeaderData {
   title: string
@@ -29,6 +34,10 @@ const runnerTypeStyles = () => {
   }
   return "border-emerald-500/60 bg-emerald-900/30 text-emerald-300"
 }
+
+const permissionCapabilities = () => permissionCapabilitiesForSession(props.session)
+const permissionCapabilityTitle = () => permissionCapabilityLabel(permissionCapabilities())
+const permissionCapabilityText = () => permissionCapabilityDescription(permissionCapabilities())
 </script>
 
 <template>
@@ -59,6 +68,13 @@ const runnerTypeStyles = () => {
         >
           <p>Git</p>
           <p class="mt-1 text-xs font-semibold">Detected</p>
+        </div>
+        <div class="rounded-xl border border-stone-700/80 bg-stone-900/40 px-3 py-2">
+          <p class="text-xxs uppercase tracking-[0.2em] text-stone-400">Approvals</p>
+          <p class="mt-1 text-xs font-semibold text-stone-50">{{ permissionCapabilityTitle() }}</p>
+          <p class="mt-1 max-w-[24ch] text-[11px] normal-case tracking-normal text-stone-400">
+            {{ permissionCapabilityText() }}
+          </p>
         </div>
       </div>
     </CardHeader>

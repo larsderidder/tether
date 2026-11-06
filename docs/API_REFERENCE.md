@@ -11,6 +11,32 @@ Complete REST API and SSE specification. All agents should read this.
 Bearer token via `Authorization: Bearer <token>` when `TETHER_AGENT_TOKEN` is set.
 If unset, auth is disabled. Enforced by `agent/tether/api/deps.py:require_token()`.
 
+## Config Discovery
+
+### `GET /api/config`
+
+Returns server capability metadata that clients must use before showing approval controls.
+
+```json
+{
+  "default_adapter": "pi_rpc",
+  "permission_capabilities": {
+    "pi_rpc": {
+      "adapter": "pi_rpc",
+      "approval_modes_supported": false,
+      "initial_approval_policy_supported": false,
+      "approval_mode_updates": "unsupported",
+      "ordinary_tool_approvals": false,
+      "ordinary_tool_approval_timing": "post_start_notification",
+      "extension_ui_permissions": true,
+      "unsupported_approval_mode_message": "..."
+    }
+  }
+}
+```
+
+Clients must fail closed when this field is absent or an adapter is missing. Do not assume approval support from the adapter name.
+
 ---
 
 ## Session Endpoints (`/api/sessions`)
@@ -56,7 +82,7 @@ Create session. Supports local directory sessions and cloned-repo sessions.
 | `bridge_verbosity` | `str?` | Optional bridge verbosity override: `none`, `minimal`, `medium`, or `high` |
 | `bridge_buffer_max_seconds` | `float?` | Optional max seconds before flushing buffered bridge activity. `null` means flush at final/end turn |
 
-**Response** includes `clone_url`, `clone_branch`, and `working_branch` fields.
+**Response** includes `clone_url`, `clone_branch`, `working_branch`, and `permission_capabilities`. `permission_capabilities` is the adapter-specific source of truth for whether Tether can route ordinary tool approvals, only pass an initial backend policy, or handle Pi extension UI confirmations.
 
 ### `GET /api/sessions/{id}`
 Get single session.
@@ -69,6 +95,8 @@ Start session with prompt.
 ```json
 {"prompt": "Implement feature X", "approval_choice": 1}
 ```
+
+`approval_choice` is preserved only when `permission_capabilities.initial_approval_policy_supported` is true. For Pi it is ignored for ordinary tools because Pi reports `tool_execution_start` after execution begins. For Codex sidecar it is an initial backend policy only, not a Tether-routed human approval channel.
 
 ### `POST /api/sessions/{id}/input`
 Send user input to AWAITING_INPUT session.
@@ -94,6 +122,8 @@ Request runner context compaction for an idle session. Currently supported by `p
 ```json
 {"approval_mode": 1}
 ```
+
+Returns 422 `APPROVAL_MODE_UNSUPPORTED` when the session adapter cannot support dynamic Tether approval-mode changes. Pi, Codex sidecar, OpenCode, automation, and LiteLLM reject non-null updates. Sending `null` clears a stored override. Clearing Pi's stored mode does not auto-approve Pi extension UI confirmations, which remain separate pending permission requests.
 
 ### `PATCH /api/sessions/{id}/bridge-output`
 Set or clear per-session bridge verbosity and buffering.

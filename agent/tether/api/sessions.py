@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -62,6 +63,7 @@ from tether import workspace as _workspace
 from tether.workspace import WorkspaceError
 from tether.git_ops import git_create_branch
 from tether.runner.base import RunnerUnavailableError
+from tether.runner.capabilities import permission_capabilities_for_adapter
 from tether.settings import settings
 from tether.store import store
 
@@ -111,6 +113,31 @@ async def _warn_if_remote_bypass_permissions(
         "REMOTE_BYPASS_PERMISSIONS",
         f"Full auto-approve is enabled for this {platform} session. Remote messages can trigger tool use without prompts.",
     )
+
+
+async def _warn_if_unsupported_permission_mode(
+    session, approval_choice: int | None
+) -> None:
+    """Warn when the adapter cannot honor a requested approval mode."""
+    if approval_choice is None or approval_choice == 2:
+        return
+
+    capabilities = permission_capabilities_for_adapter(
+        session.adapter or settings.adapter()
+    )
+    if capabilities.initial_approval_policy_supported:
+        return
+
+    message = capabilities.unsupported_approval_mode_message or (
+        "This adapter does not support interactive approval modes."
+    )
+    logger.warning(
+        "Adapter cannot honor requested approval mode",
+        session_id=session.id,
+        adapter=capabilities.adapter,
+        approval_choice=approval_choice,
+    )
+    await emit_warning(session, "APPROVAL_MODE_UNSUPPORTED", message)
 
 
 def _make_working_branch_name(session_id: str, pattern: str) -> str:
@@ -211,6 +238,7 @@ async def create_session(
 
     requested_adapter = normalize_adapter_name(payload.adapter)
     adapter_for_model = requested_adapter or settings.adapter()
+    permission_capabilities = permission_capabilities_for_adapter(adapter_for_model)
     model = settings.normalize_adapter_model(
         adapter_for_model, payload.model.strip() if payload.model else ""
     )
@@ -277,9 +305,17 @@ async def create_session(
     if payload.session_name:
         session.name = payload.session_name
     if payload.approval_mode is not None:
-        session.approval_mode = payload.approval_mode
-    elif payload.platform:
-        # ASVS 8.2.1 and 8.3.1: remote bridge sessions start with least privilege.
+        if permission_capabilities.initial_approval_policy_supported:
+            session.approval_mode = payload.approval_mode
+        else:
+            logger.warning(
+                "Ignoring unsupported approval mode during session creation",
+                session_id=session.id,
+                adapter=permission_capabilities.adapter,
+                approval_mode=payload.approval_mode,
+            )
+    elif payload.platform and permission_capabilities.initial_approval_policy_supported:
+        # Remote bridge sessions use the least privileged initial backend policy when the adapter can honor one.
         session.approval_mode = 0
     if payload.bridge_verbosity is not None:
         session.bridge_verbosity = payload.bridge_verbosity
@@ -524,10 +560,17 @@ async def start_session(
             )
             approval_choice = payload.approval_choice
 
-            # Persist approval mode so the runner can recover it after restart
-            session.approval_mode = approval_choice
+            capabilities = permission_capabilities_for_adapter(
+                session.adapter or settings.adapter()
+            )
+            if capabilities.initial_approval_policy_supported:
+                # Persist the initial backend policy only when the adapter can honor it.
+                session.approval_mode = approval_choice
+            else:
+                session.approval_mode = None
             store.update_session(session)
             await _warn_if_remote_bypass_permissions(session, approval_choice)
+            await _warn_if_unsupported_permission_mode(session, approval_choice)
 
             # Clear stale state from previous runs
             # NOTE: Do NOT clear runner_session_id here - it may contain an attached
@@ -1086,19 +1129,29 @@ async def update_approval_mode(
         if not session:
             raise_http_error("NOT_FOUND", "Session not found", 404)
 
+        capabilities = permission_capabilities_for_adapter(
+            session.adapter or settings.adapter()
+        )
+        if (
+            payload.approval_mode is not None
+            and not capabilities.approval_modes_supported
+        ):
+            message = capabilities.unsupported_approval_mode_message or (
+                "This adapter does not support interactive approval modes."
+            )
+            raise_http_error("APPROVAL_MODE_UNSUPPORTED", message, 422)
+
         session.approval_mode = payload.approval_mode
         store.update_session(session)
         await _warn_if_remote_bypass_permissions(session, payload.approval_mode)
 
-        # Update runner's permission mode if session is active
-        if session.state in (SessionState.RUNNING, SessionState.AWAITING_INPUT):
+        if (
+            payload.approval_mode is not None
+            and capabilities.approval_mode_runner_update
+            and session.state in (SessionState.RUNNING, SessionState.AWAITING_INPUT)
+        ):
             runner = get_api_runner(session.adapter)
-            if payload.approval_mode is not None:
-                runner.update_permission_mode(session_id, payload.approval_mode)
-            else:
-                # If clearing the override, we can't really change the running mode
-                # The next start will use the global default
-                pass
+            runner.update_permission_mode(session_id, payload.approval_mode)
 
         logger.info(
             "Session approval mode updated",

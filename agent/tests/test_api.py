@@ -54,10 +54,10 @@ class TestSessionsEndpoints:
         assert session["bridge_buffer_max_seconds"] is None
 
     @pytest.mark.anyio
-    async def test_bridge_session_defaults_to_interactive_approval(
+    async def test_bridge_pi_session_does_not_claim_interactive_ordinary_tool_approval(
         self, api_client: httpx.AsyncClient
     ) -> None:
-        """Bridge-controlled sessions default to interactive approval."""
+        """Bridge-controlled Pi sessions do not store a false ordinary-tool gate."""
         with patch(
             "tether.api.sessions.create_or_reuse_thread",
             new_callable=AsyncMock,
@@ -69,7 +69,10 @@ class TestSessionsEndpoints:
             )
 
         assert response.status_code == 201
-        assert response.json()["approval_mode"] == 0
+        data = response.json()
+        assert data["approval_mode"] is None
+        assert data["permission_capabilities"]["ordinary_tool_approvals"] is False
+        assert data["permission_capabilities"]["extension_ui_permissions"] is True
 
     @pytest.mark.anyio
     async def test_session_bridge_output_endpoint(
@@ -104,6 +107,118 @@ class TestSessionsEndpoints:
         assert cleared["bridge_buffer_max_seconds"] is None
 
     @pytest.mark.anyio
+    async def test_pi_approval_mode_update_is_rejected(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Pi cannot honestly switch ordinary tool execution into approval mode."""
+        create_resp = await api_client.post(
+            "/api/sessions", json={"repo_id": "test_repo", "adapter": "pi_rpc"}
+        )
+        session_id = create_resp.json()["id"]
+
+        response = await api_client.patch(
+            f"/api/sessions/{session_id}/approval-mode",
+            json={"approval_mode": 0},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "APPROVAL_MODE_UNSUPPORTED"
+
+    @pytest.mark.anyio
+    async def test_config_capabilities_describe_pi_and_opencode_truthfully(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Config capabilities expose real adapter permission behavior."""
+        response = await api_client.get("/api/config")
+
+        assert response.status_code == 200
+        capabilities = response.json()["permission_capabilities"]
+        assert capabilities["pi_rpc"]["ordinary_tool_approvals"] is False
+        assert capabilities["pi_rpc"]["extension_ui_permissions"] is True
+        assert capabilities["opencode"]["approval_modes_supported"] is False
+        assert capabilities["claude_subprocess"]["ordinary_tool_approvals"] is True
+        assert capabilities["codex_sdk_sidecar"]["ordinary_tool_approvals"] is False
+        assert (
+            capabilities["codex_sdk_sidecar"]["approval_mode_updates"] == "unsupported"
+        )
+        assert (
+            capabilities["codex_sdk_sidecar"]["initial_approval_policy_supported"]
+            is True
+        )
+        assert capabilities["claude_subprocess"]["approval_modes_supported"] is True
+
+    @pytest.mark.anyio
+    async def test_session_response_includes_fail_closed_permission_capabilities(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Session responses include adapter-specific permission capabilities."""
+        response = await api_client.post(
+            "/api/sessions",
+            json={"repo_id": "test_repo", "adapter": "codex_sdk_sidecar"},
+        )
+
+        assert response.status_code == 201
+        capabilities = response.json()["permission_capabilities"]
+        assert capabilities["adapter"] == "codex_sdk_sidecar"
+        assert capabilities["ordinary_tool_approvals"] is False
+        assert capabilities["approval_mode_updates"] == "unsupported"
+        assert capabilities["initial_approval_policy_supported"] is True
+
+    @pytest.mark.anyio
+    async def test_codex_approval_mode_update_is_rejected_but_initial_policy_is_stored(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Codex can receive an initial backend policy but not dynamic Tether approvals."""
+        create_resp = await api_client.post(
+            "/api/sessions",
+            json={
+                "repo_id": "test_repo",
+                "adapter": "codex_sdk_sidecar",
+                "approval_mode": 0,
+            },
+        )
+        assert create_resp.status_code == 201
+        session = create_resp.json()
+        assert session["approval_mode"] == 0
+        assert session["permission_capabilities"]["ordinary_tool_approvals"] is False
+
+        patch_resp = await api_client.patch(
+            f"/api/sessions/{session['id']}/approval-mode",
+            json={"approval_mode": 1},
+        )
+
+        assert patch_resp.status_code == 422
+        assert patch_resp.json()["error"]["code"] == "APPROVAL_MODE_UNSUPPORTED"
+
+    @pytest.mark.anyio
+    async def test_bridge_codex_session_defaults_to_initial_interactive_policy(
+        self, api_client: httpx.AsyncClient
+    ) -> None:
+        """Bridge Codex sessions keep an initial backend policy without claiming Tether approvals."""
+        with patch(
+            "tether.api.sessions.create_or_reuse_thread",
+            new_callable=AsyncMock,
+            return_value={"thread_id": "thread-codex", "created": True},
+        ):
+            response = await api_client.post(
+                "/api/sessions",
+                json={
+                    "repo_id": "test_repo",
+                    "adapter": "codex_sdk_sidecar",
+                    "platform": "telegram",
+                },
+            )
+
+        assert response.status_code == 201
+        session = response.json()
+        assert session["approval_mode"] == 0
+        assert session["permission_capabilities"]["ordinary_tool_approvals"] is False
+        assert (
+            session["permission_capabilities"]["initial_approval_policy_supported"]
+            is True
+        )
+
+    @pytest.mark.anyio
     async def test_create_session_with_directory(
         self, api_client: httpx.AsyncClient, tmp_path
     ) -> None:
@@ -121,19 +236,23 @@ class TestSessionsEndpoints:
 
     @pytest.mark.anyio
     async def test_create_session_with_model(
-        self, api_client: httpx.AsyncClient
+        self, api_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Create session stores and returns the requested model."""
+        monkeypatch.setenv("TETHER_PI_MODELS", "openai/gpt-test")
         response = await api_client.post(
-            "/api/sessions", json={"repo_id": "test_repo", "model": "claude-opus"}
+            "/api/sessions", json={"repo_id": "test_repo", "model": "openai/gpt-test"}
         )
 
         assert response.status_code == 201
-        assert response.json()["model"] == "claude-opus"
+        assert response.json()["model"] == "openai/gpt-test"
 
     @pytest.mark.anyio
-    async def test_session_model_endpoints(self, api_client: httpx.AsyncClient) -> None:
+    async def test_session_model_endpoints(
+        self, api_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Session model endpoints show and update the active model."""
+        monkeypatch.setenv("TETHER_PI_MODELS", "model-a,model-b")
         create_resp = await api_client.post(
             "/api/sessions", json={"repo_id": "test_repo", "model": "model-a"}
         )
@@ -920,10 +1039,15 @@ class TestStartSessionPersistsApprovalMode:
         test_dir = tmp_path / "test_repo"
         test_dir.mkdir()
 
-        create_resp = await api_client.post(
-            "/api/sessions",
-            json={"directory": str(test_dir)},
-        )
+        mock_registry = MagicMock()
+        mock_registry.validate_adapter = MagicMock()
+        with patch(
+            "tether.api.sessions.get_runner_registry", return_value=mock_registry
+        ):
+            create_resp = await api_client.post(
+                "/api/sessions",
+                json={"directory": str(test_dir), "adapter": "claude_subprocess"},
+            )
         session_id = create_resp.json()["id"]
 
         # Mock runner to avoid actually launching anything

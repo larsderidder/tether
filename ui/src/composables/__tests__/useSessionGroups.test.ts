@@ -25,6 +25,15 @@ const createSession = (overrides: Partial<Session> = {}): Session => ({
   effective_bridge_verbosity: 'minimal',
   bridge_buffer_max_seconds: null,
   effective_bridge_buffer_max_seconds: null,
+  permission_capabilities: {
+    adapter: 'pi_rpc',
+    approval_modes_supported: false,
+    approval_mode_updates: 'unsupported',
+    ordinary_tool_approvals: false,
+    ordinary_tool_approval_timing: 'post_start_notification',
+    extension_ui_permissions: true,
+    unsupported_approval_mode_message: null,
+  },
   ...overrides,
 });
 

@@ -13,6 +13,8 @@ export type Session = {
   runner_header: string | null;
   runner_type: string | null;
   runner_session_id: string | null;
+  adapter?: string | null;
+  model?: string | null;
   directory: string | null;
   directory_has_git: boolean;
   message_count: number;
@@ -22,6 +24,7 @@ export type Session = {
   effective_bridge_verbosity: BridgeVerbosity;
   bridge_buffer_max_seconds: number | null;
   effective_bridge_buffer_max_seconds: number | null;
+  permission_capabilities?: PermissionCapabilities;
 };
 
 export type EventEnvelope = {
@@ -133,6 +136,22 @@ export type ApprovalMode = 0 | 1 | 2;
 
 export type BridgeVerbosity = "none" | "minimal" | "medium" | "high";
 
+export type PermissionCapabilities = {
+  adapter: string;
+  approval_modes_supported: boolean;
+  initial_approval_policy_supported?: boolean;
+  approval_mode_updates: "live" | "next_turn" | "unsupported";
+  ordinary_tool_approvals: boolean;
+  ordinary_tool_approval_timing: "pre_execution" | "post_start_notification" | "not_applicable";
+  extension_ui_permissions: boolean;
+  unsupported_approval_mode_message: string | null;
+};
+
+export type ConfigCapabilities = {
+  default_adapter: string | null;
+  permission_capabilities: Record<string, PermissionCapabilities>;
+};
+
 export function getBaseUrl(): string {
   return localStorage.getItem(BASE_KEY) || localStorage.getItem(LEGACY_BASE_KEY_V1) || "";
 }
@@ -177,12 +196,12 @@ function notifyAuthRequired(): void {
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    ...(init?.headers || {})
-  };
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
   const res = await fetch(buildUrl(path), { ...init, headers });
   if (!res.ok) {
@@ -196,6 +215,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function listSessions(): Promise<Session[]> {
   return await fetchJson<Session[]>("/api/sessions");
+}
+
+export async function getConfigCapabilities(): Promise<ConfigCapabilities> {
+  return await fetchJson<ConfigCapabilities>("/api/config");
 }
 
 export type CreateSessionOptions = {
@@ -237,9 +260,9 @@ export async function interruptSession(id: string): Promise<Session> {
 
 export function interruptSessionKeepalive(id: string): void {
   const token = getToken();
-  const headers: HeadersInit = {};
+  const headers = new Headers();
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
   try {
     fetch(buildUrl(`/api/sessions/${id}/interrupt`), {
@@ -423,9 +446,9 @@ export async function openEventStream(
   options?: { since?: number }
 ): Promise<() => void> {
   const token = getToken();
-  const headers: HeadersInit = {};
+  const headers = new Headers();
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
   const params = new URLSearchParams();
   if (options?.since && options.since > 0) {

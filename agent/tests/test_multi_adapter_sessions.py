@@ -257,37 +257,37 @@ async def test_session_adapter_routing_on_interrupt(
 
 
 async def test_session_adapter_routing_on_approval_mode(
-    api_client, fresh_store, tmpdir, mock_runner
+    api_client, fresh_store, tmpdir, mock_claude_runner
 ):
-    """Test that approval mode update routes to correct runner."""
+    """Supported live approval mode updates route to the adapter runner."""
     test_dir = str(tmpdir.mkdir("test_project"))
 
-    with patch("tether.api.runner_events.get_runner_registry") as mock_get_registry:
+    with patch("tether.api.sessions.get_runner_registry") as mock_get_registry:
         mock_registry = MagicMock(spec=RunnerRegistry)
-        mock_registry.get_runner.return_value = mock_runner
+        mock_registry.get_runner.return_value = mock_claude_runner
         mock_registry.validate_adapter = MagicMock()
         mock_get_registry.return_value = mock_registry
 
-        # Create session
-        response = await api_client.post(
-            "/api/sessions",
-            json={"directory": test_dir, "adapter": "codex_sdk_sidecar"},
-        )
-        session_id = response.json()["id"]
+        with patch(
+            "tether.api.sessions.get_api_runner", return_value=mock_claude_runner
+        ):
+            response = await api_client.post(
+                "/api/sessions",
+                json={"directory": test_dir, "adapter": "claude_subprocess"},
+            )
+            session_id = response.json()["id"]
 
-        # Manually set session to RUNNING state
-        session = fresh_store.get_session(session_id)
-        session.state = SessionState.RUNNING
-        fresh_store.update_session(session)
+            session = fresh_store.get_session(session_id)
+            session.state = SessionState.RUNNING
+            fresh_store.update_session(session)
 
-        # Update approval mode
-        approval_response = await api_client.patch(
-            f"/api/sessions/{session_id}/approval-mode",
-            json={"approval_mode": 1},
-        )
+            approval_response = await api_client.patch(
+                f"/api/sessions/{session_id}/approval-mode",
+                json={"approval_mode": 1},
+            )
 
-        assert approval_response.status_code == 200
-        assert mock_runner.update_permission_mode.called
+    assert approval_response.status_code == 200
+    assert mock_claude_runner.update_permission_mode.called
 
 
 async def test_backward_compatibility_null_adapter(api_client, tmpdir, mock_runner):
