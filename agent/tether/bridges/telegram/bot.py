@@ -8,6 +8,7 @@ import contextlib
 from dataclasses import dataclass, field
 from datetime import timedelta
 import html
+from pathlib import Path
 import re
 from typing import Any
 from types import SimpleNamespace
@@ -112,6 +113,8 @@ class _TelegramSessionPicker:
 
 class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
     """Render tool calls and pass Telegram images through to sessions."""
+
+    PLATFORM = "telegram"
 
     @staticmethod
     def _agent_to_adapter(raw: str) -> str | None:
@@ -745,9 +748,39 @@ class TelegramBridge(SessionCreationMixin, UpstreamTelegramBridge):
         recent = args == ["recent"] or (adapter and args[1:] == ["recent"])
         missing_directory = not args or (adapter and len(args) == 1)
         if not recent and not missing_directory:
-            if not adapter and not args[0].startswith("-"):
-                context = SimpleNamespace(args=[self._config.default_adapter, *args])
-            await super()._cmd_new(update, context)
+            try:
+                if args[0].startswith("-"):
+                    parsed = self._parse_new_args_extended(" ".join(args))
+                    reply = await self._handle_new_extended(
+                        update, parsed, platform=self.PLATFORM, base_session_id=base_id
+                    )
+                    await update.message.reply_text(reply)
+                    return
+                selected_adapter, directory = await self._parse_new_args(
+                    " ".join(args), base_session_id=base_id
+                )
+                model = self._model_for_child_session(base_id, adapter)
+                session_name = self._make_external_topic_name(
+                    directory=directory,
+                    session_id="",
+                    runner_type=adapter_label(selected_adapter),
+                )
+                session = await self._create_session_via_api(
+                    directory=directory,
+                    adapter=selected_adapter,
+                    platform=self.PLATFORM,
+                    session_name=session_name,
+                    model=model,
+                )
+                reply = f"✅ New {adapter_label(selected_adapter)} session created in {Path(directory).name}."
+                topic_id = int(session.get("platform_thread_id") or 0)
+                if topic_id:
+                    chat_id = str(self._forum_group_id).removeprefix("-100")
+                    reply += f"\nhttps://t.me/c/{chat_id}/{topic_id}"
+                await update.message.reply_text(reply)
+            except Exception as exc:
+                logger.exception("Failed to create session via /new")
+                await update.message.reply_text(f"Failed to create session: {exc}")
             return
 
         base = (

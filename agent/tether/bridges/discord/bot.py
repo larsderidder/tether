@@ -126,6 +126,8 @@ class DiscordBridge(SessionCreationMixin, UpstreamDiscordBridge):
     fall back to upstream behavior unchanged.
     """
 
+    PLATFORM = "discord"
+
     @staticmethod
     def _agent_to_adapter(raw: str) -> str | None:
         """Map user-facing agent names to canonical adapter names."""

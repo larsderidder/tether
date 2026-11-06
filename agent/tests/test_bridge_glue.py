@@ -82,6 +82,21 @@ async def test_send_input_preserves_interactive_approval_when_starting(
     assert requests[-1][1]["approval_choice"] == 0
 
 
+def test_bridge_callbacks_extend_the_published_interface() -> None:
+    """Production startup can wire Git callbacks with released agent-tether."""
+    from agent_tether import BridgeCallbacks
+
+    callbacks = glue.make_bridge_callbacks()
+    assert isinstance(callbacks, BridgeCallbacks)
+    assert callbacks.create_session is glue._create_session
+    assert callbacks.git_status is glue._git_status
+    assert callbacks.git_commit is glue._git_commit
+    assert callbacks.git_push is glue._git_push
+    assert callbacks.git_pr is glue._git_pr
+    assert callbacks.git_diff is glue._git_diff
+    assert callbacks.git_log is glue._git_log
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "error_body, expected",

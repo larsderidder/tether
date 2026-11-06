@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 from agent_tether.base import BridgeCallbacks, BridgeInterface
-from agent_tether.text_command_bridge import TextCommandBridge
 
-from tether.adapter_names import adapter_label, normalize_adapter_name
+from tether.adapter_names import (
+    adapter_label,
+    bridge_agent_to_adapter,
+    normalize_adapter_name,
+)
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -129,8 +133,56 @@ class SessionCreationMixin(BridgeInterface):
             return None
         return model
 
-    # Telegram's upstream bridge does not inherit TextCommandBridge.
-    _parse_new_args_extended = TextCommandBridge._parse_new_args_extended
+    def _parse_new_args_extended(self, args: str) -> dict:
+        """Parse Tether's workspace and template flags independently of bridges."""
+        tokens = iter(shlex.split(args or ""))
+        parsed: dict = {
+            "clone_url": None,
+            "template": None,
+            "clone_branch": None,
+            "adapter": None,
+            "message": None,
+            "auto_branch": False,
+            "shallow": False,
+            "directory_raw": None,
+        }
+        value_flags = {
+            "--clone": "clone_url",
+            "-c": "clone_url",
+            "--template": "template",
+            "-t": "template",
+            "--branch": "clone_branch",
+            "-b": "clone_branch",
+            "--adapter": "adapter",
+            "-a": "adapter",
+            "--message": "message",
+            "-m": "message",
+        }
+        positional: list[str] = []
+        for token in tokens:
+            if token in value_flags:
+                value = next(tokens, None)
+                if value is None or value.startswith("-"):
+                    raise ValueError(f"{token} requires a value")
+                key = value_flags[token]
+                if key == "adapter":
+                    adapter = bridge_agent_to_adapter(value)
+                    if adapter is None:
+                        raise ValueError(f"Unknown adapter: {value}")
+                    parsed[key] = adapter
+                else:
+                    parsed[key] = value
+            elif token in ("--auto-branch", "--shallow"):
+                parsed[token[2:].replace("-", "_")] = True
+            elif token.startswith("-"):
+                raise ValueError(f"Unknown flag: {token}")
+            else:
+                positional.append(token)
+        if parsed["clone_url"] and parsed["template"]:
+            raise ValueError("--clone and --template are mutually exclusive")
+        if positional:
+            parsed["directory_raw"] = " ".join(positional)
+        return parsed
 
     async def _handle_new_extended(
         self,
@@ -140,17 +192,74 @@ class SessionCreationMixin(BridgeInterface):
         platform: str,
         base_session_id: str | None = None,
     ) -> str:
-        """Use explicit flags or template settings, not the parent agent/model."""
-        parsed = dict(parsed)
-        if not parsed.get("adapter") and not parsed.get("template"):
-            parsed["adapter"] = self._config.default_adapter
-        return await TextCommandBridge._handle_new_extended(
-            self, event_ctx, parsed, platform=platform, base_session_id=None
+        """Create a Tether workspace without inheriting the parent agent/model."""
+        callbacks = self._callbacks
+        if callbacks is None:
+            return "Failed to create session: bridge callbacks are not configured"
+        adapter = parsed.get("adapter")
+        template = parsed.get("template")
+        if not adapter and not template:
+            adapter = self._config.default_adapter
+        kwargs: dict = {"platform": platform}
+        if adapter:
+            kwargs["adapter"] = adapter
+        clone_url = parsed.get("clone_url")
+        directory_raw = parsed.get("directory_raw")
+        try:
+            if clone_url:
+                kwargs.update(
+                    clone_url=clone_url,
+                    clone_branch=parsed.get("clone_branch"),
+                    shallow=bool(parsed.get("shallow")),
+                    auto_branch=bool(parsed.get("auto_branch")),
+                )
+            elif template:
+                kwargs["template"] = template
+                for key in ("clone_branch", "shallow", "auto_branch"):
+                    if parsed.get(key):
+                        kwargs[key] = parsed[key]
+            elif directory_raw:
+                kwargs["directory"] = await self._resolve_directory_arg(
+                    directory_raw, base_directory=None
+                )
+            else:
+                return "Usage: !new --clone <url> | --template <name> | [agent] [directory]"
+            session = await self._create_session_via_api(**kwargs)
+        except Exception as exc:
+            return f"Failed to create session: {exc}"
+
+        label = adapter_label(
+            adapter or session.get("adapter") or self._config.default_adapter
         )
+        if clone_url:
+            name = clone_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+            result = f"✅ Cloned {name} and started {label} session."
+        elif template:
+            name = session.get("name") or template
+            result = f"✅ Started {label} session from template '{name}'."
+        else:
+            name = Path(kwargs["directory"]).name or "Session"
+            result = f"✅ New {label} session created in {name}."
+        branch = session.get("working_branch") or parsed.get("clone_branch")
+        if branch:
+            result += f" Branch: `{branch}`."
+        if parsed.get("message"):
+            try:
+                await callbacks.send_input(session["id"], parsed["message"])
+            except Exception as exc:
+                result += f"\n⚠️ Failed to start with prompt: {exc}"
+        return result
 
     async def _create_session_via_api(self, **kwargs: Any) -> dict:
         """Create once; a failed notice must not turn success into a retry."""
-        session = await super()._create_session_via_api(**kwargs)
+        callbacks = self._callbacks
+        if callbacks is None:
+            raise RuntimeError("Bridge callbacks are not configured")
+        # Workspace/template options belong to the host callback contract, not
+        # the published bridge base class's narrower creation signature.
+        session = await callbacks.create_session(
+            **{key: value for key, value in kwargs.items() if value is not None}
+        )
         adapter = session.get("adapter") or kwargs.get("adapter") or settings.adapter()
         model = session.get("model") or settings.adapter_default_model(adapter)
         label = adapter_label(adapter) or adapter

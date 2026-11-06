@@ -46,6 +46,8 @@ _ERROR_ATTACHMENT_DELAY_S = 0.35
 class SlackBridge(SessionCreationMixin, UpstreamSlackBridge):
     """Local Slack wrapper that adds reaction-driven session creation."""
 
+    PLATFORM = "slack"
+
     @staticmethod
     def _agent_to_adapter(raw: str) -> str | None:
         """Map user-facing agent names to canonical adapter names."""

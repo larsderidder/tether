@@ -11,8 +11,9 @@ import asyncio
 import httpx
 import structlog
 
-from agent_tether import BridgeCallbacks, BridgeConfig, BridgeManager
+from agent_tether import BridgeConfig, BridgeManager
 from agent_tether.thread_naming import format_thread_name
+from tether.bridges.callbacks import BridgeCallbacks
 from tether.bridges.subscriber import BridgeSubscriber
 from tether.session_titles import is_auto_session_name
 from tether.settings import settings

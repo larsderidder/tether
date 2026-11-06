@@ -290,12 +290,14 @@ async def test_explicit_directory_uses_default_unless_agent_is_requested(
     if agent:
         args.insert(0, agent)
 
-    await bridge._cmd_new(command_update(topic_id=10), SimpleNamespace(args=args))
+    update = command_update(topic_id=10)
+    await bridge._cmd_new(update, SimpleNamespace(args=args))
 
     expected = {None: "pi_rpc", "claude": "claude_auto", "codex": "codex_sdk_sidecar"}[
         agent
     ]
     assert callbacks.create_session.await_args.kwargs["adapter"] == expected
+    assert update.message.reply_text.await_args.args[0].startswith("✅ New")
 
 
 @pytest.mark.anyio
