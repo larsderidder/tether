@@ -127,12 +127,17 @@ class ClaudeSubprocessRunner:
         )
 
     async def stop(self, session_id: str) -> int | None:
+        proc = self._processes.get(session_id)
+        reader = self._readers.get(session_id)
+        disposed = bool(proc or reader or self._pending_inputs.get(session_id))
+        if not disposed:
+            store.clear_stop_requested(session_id)
+            return None
+
         store.request_stop(session_id)
         store.clear_pending_permissions(session_id)
 
-        proc = self._processes.get(session_id)
         if proc and proc.returncode is None:
-            # Send stop command first
             self._write_cmd(proc, {"cmd": "stop"})
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -146,7 +151,6 @@ class ClaudeSubprocessRunner:
                 except asyncio.TimeoutError:
                     pass
 
-        # Cancel the reader task
         reader = self._readers.pop(session_id, None)
         if reader and not reader.done():
             reader.cancel()
@@ -160,6 +164,16 @@ class ClaudeSubprocessRunner:
         self._assistant_marker_needed.pop(session_id, None)
         store.clear_stop_requested(session_id)
         return 0
+
+    async def dispose_session(self, session_id: str) -> bool:
+        """Dispose subprocess resources owned for one session."""
+        return await self.stop(session_id) is not None
+
+    async def shutdown(self) -> None:
+        """Stop all worker subprocesses and reader tasks owned by this runner."""
+        session_ids = set(self._processes) | set(self._readers)
+        for session_id in list(session_ids):
+            await self.dispose_session(session_id)
 
     def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
         permission_mode = self._map_permission_mode(approval_choice)

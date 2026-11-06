@@ -77,7 +77,7 @@ Send user input to AWAITING_INPUT session.
 ```
 
 ### `POST /api/sessions/{id}/interrupt`
-Interrupt running session. Transitions RUNNING -> INTERRUPTING -> AWAITING_INPUT.
+Interrupt a running session. Successful stops transition RUNNING -> INTERRUPTING -> AWAITING_INPUT. Runner stop has a bounded deadline; timeout returns HTTP 504 with `RUNNER_STOP_FAILED`, leaves the session in ERROR, cancels pending approval waiters, and retains process handles for later cleanup.
 
 ### `POST /api/sessions/{id}/compact`
 Request runner context compaction for an idle session. Currently supported by `pi_rpc`.

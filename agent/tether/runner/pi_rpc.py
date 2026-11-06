@@ -44,8 +44,7 @@ _TETHER_SESSION_NAME_PREFIX = "Tether: "
 _TETHER_SESSION_NAME_MAX = 80
 _CONTEXT_WARNING_PERCENT = 80.0
 
-# Pi tool calls that should trigger permission requests in Tether
-_PERMISSION_TOOLS = {"bash", "write", "edit"}
+_PI_STDERR_CAPTURE_CHARS = 4000
 
 
 def _truncate_tool_output(
@@ -133,6 +132,9 @@ class PiRpcRunner:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._readers: dict[str, asyncio.Task] = {}
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._stderr_tasks: dict[str, asyncio.Task] = {}
+        self._stderr_buffers: dict[str, str] = {}
+        self._extension_waiters: dict[str, set[asyncio.Task]] = {}
         self._session_files: dict[str, str] = {}  # tether session_id -> pi session file
         self._pending_inputs: dict[str, list[str]] = {}
         self._is_streaming: dict[str, bool] = {}
@@ -215,12 +217,40 @@ class PiRpcRunner:
             await self._send_prompt(session_id, text, images=images)
 
     async def stop(self, session_id: str) -> int | None:
+        """Abort an owned Pi subprocess for one session."""
         store.request_stop(session_id)
+        await self.dispose_session(session_id)
+        store.clear_stop_requested(session_id)
+        return 0
+
+    async def recover_session(self, session_id: str) -> bool:
+        """Pi RPC cannot recover an owned live subprocess after Tether restart."""
+        return False
+
+    async def dispose_session(self, session_id: str) -> bool:
+        """Dispose Pi resources owned by this runner for one Tether session."""
+        disposed = any(
+            session_id in resources
+            for resources in (
+                self._processes,
+                self._readers,
+                self._heartbeat_tasks,
+                self._stderr_tasks,
+                self._extension_waiters,
+            )
+        )
         store.clear_pending_permissions(session_id)
+
+        waiters = self._extension_waiters.pop(session_id, set())
+        for task in waiters:
+            if not task.done():
+                task.cancel()
+        for task in waiters:
+            with suppress(asyncio.CancelledError):
+                await task
 
         proc = self._processes.get(session_id)
         if proc and proc.returncode is None:
-            # Send abort
             self._write_cmd(proc, {"type": "abort"})
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -232,18 +262,40 @@ class PiRpcRunner:
                 proc.kill()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=2.0)
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError as exc:
                     raise RunnerUnavailableError(
                         "pi process did not stop after being killed"
-                    )
+                    ) from exc
 
         reader = self._readers.get(session_id)
         self._cleanup(session_id)
         if reader and reader is not asyncio.current_task():
             with suppress(asyncio.CancelledError):
                 await reader
-        store.clear_stop_requested(session_id)
-        return 0
+        return disposed
+
+    async def shutdown(self) -> None:
+        """Dispose every Pi subprocess, reader, heartbeat, and waiter owned here."""
+        session_ids = sorted(
+            set(self._processes)
+            | set(self._readers)
+            | set(self._heartbeat_tasks)
+            | set(self._stderr_tasks)
+            | set(self._extension_waiters)
+        )
+        results = await asyncio.gather(
+            *(self.dispose_session(session_id) for session_id in session_ids),
+            return_exceptions=True,
+        )
+        failures = [
+            session_id
+            for session_id, result in zip(session_ids, results)
+            if isinstance(result, BaseException)
+        ]
+        if failures:
+            raise RunnerUnavailableError(
+                "Pi cleanup failed for sessions: " + ", ".join(failures)
+            )
 
     def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
         logger.info(
@@ -392,6 +444,9 @@ class PiRpcRunner:
         self._is_streaming[session_id] = False
         store.set_process(session_id, proc)
 
+        stderr_task = asyncio.create_task(self._drain_stderr(session_id, proc))
+        self._stderr_tasks[session_id] = stderr_task
+
         # Start event reader
         task = asyncio.create_task(self._read_events(session_id, proc))
         self._readers[session_id] = task
@@ -487,6 +542,19 @@ class PiRpcRunner:
         if hb and not hb.done():
             hb.cancel()
 
+        stderr_task = self._stderr_tasks.pop(session_id, None)
+        if (
+            stderr_task
+            and stderr_task is not asyncio.current_task()
+            and not stderr_task.done()
+        ):
+            stderr_task.cancel()
+
+        for task in self._extension_waiters.pop(session_id, set()):
+            if not task.done():
+                task.cancel()
+        store.clear_pending_permissions(session_id)
+
         self._processes.pop(session_id, None)
         self._pending_inputs.pop(session_id, None)
         self._is_streaming.pop(session_id, False)
@@ -499,6 +567,7 @@ class PiRpcRunner:
         self._auto_compaction_enabled.pop(session_id, None)
         self._context_warning_sent.discard(session_id)
         store.clear_process(session_id)
+        self._stderr_buffers.pop(session_id, None)
 
     async def _emit_output(
         self,
@@ -538,6 +607,63 @@ class PiRpcRunner:
             pass
 
     # ------------------------------------------------------------------
+
+    async def _drain_stderr(
+        self, session_id: str, proc: asyncio.subprocess.Process
+    ) -> None:
+        """Drain pi stderr concurrently so verbose diagnostics cannot block stdout."""
+        if proc.stderr is None:
+            return
+
+        try:
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    return
+
+                text = chunk.decode(errors="replace")
+                redacted = make_log_redactor()(logger, "error", {"message": text})
+                safe_text = str(redacted["message"])
+                existing = self._stderr_buffers.get(session_id, "")
+                self._stderr_buffers[session_id] = (existing + safe_text)[
+                    -_PI_STDERR_CAPTURE_CHARS:
+                ]
+                for line in safe_text.splitlines():
+                    if line.strip():
+                        logger.debug(
+                            "Pi stderr",
+                            session_id=session_id,
+                            line=line,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Pi stderr drain failed", session_id=session_id)
+
+    async def _capture_remaining_stderr(
+        self, session_id: str, proc: asyncio.subprocess.Process
+    ) -> None:
+        """Capture stderr when tests or direct callers bypass _spawn's drain task."""
+        if proc.stderr is None or self._stderr_buffers.get(session_id):
+            return
+        try:
+            try:
+                chunk = await asyncio.wait_for(
+                    proc.stderr.read(_PI_STDERR_CAPTURE_CHARS), timeout=0.2
+                )
+            except TypeError:
+                chunk = await asyncio.wait_for(proc.stderr.read(), timeout=0.2)
+        except (asyncio.TimeoutError, Exception):
+            return
+        if not chunk:
+            return
+        text = (
+            chunk.decode(errors="replace") if isinstance(chunk, bytes) else str(chunk)
+        )
+        redacted = make_log_redactor()(logger, "error", {"message": text})
+        safe_text = str(redacted["message"])
+        self._stderr_buffers[session_id] = safe_text[-_PI_STDERR_CAPTURE_CHARS:]
+
     # Internal: event reader
     # ------------------------------------------------------------------
 
@@ -594,36 +720,20 @@ class PiRpcRunner:
             except asyncio.TimeoutError:
                 proc.kill()
 
-            # Read stderr
-            if proc.stderr:
-                try:
-                    stderr_data = await asyncio.wait_for(
-                        proc.stderr.read(), timeout=2.0
-                    )
-                    if stderr_data:
-                        # Startup diagnostics can contain configured credentials.
-                        redacted = make_log_redactor()(
-                            logger,
-                            "error",
-                            {"message": stderr_data.decode(errors="replace")},
-                        )
-                        stderr_text = str(redacted["message"]).strip()[-2000:]
-                        if proc.returncode not in (0, None):
-                            logger.warning(
-                                "Pi process failed",
-                                session_id=session_id,
-                                exit_code=proc.returncode,
-                                stderr=stderr_data.decode(errors="replace")[:4000],
-                            )
-                        for line in stderr_data.decode(errors="replace").splitlines():
-                            if line.strip():
-                                logger.debug(
-                                    "Pi stderr",
-                                    session_id=session_id,
-                                    line=line,
-                                )
-                except (asyncio.TimeoutError, Exception):
-                    pass
+            stderr_task = self._stderr_tasks.get(session_id)
+            if stderr_task and stderr_task is not asyncio.current_task():
+                with suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                    await asyncio.wait_for(stderr_task, timeout=2.0)
+            else:
+                await self._capture_remaining_stderr(session_id, proc)
+            stderr_text = self._stderr_buffers.get(session_id, "").strip()[-2000:]
+            if stderr_text and proc.returncode not in (0, None):
+                logger.warning(
+                    "Pi process failed",
+                    session_id=session_id,
+                    exit_code=proc.returncode,
+                    stderr=stderr_text,
+                )
 
             # Final heartbeat
             elapsed = time.monotonic() - start_time
@@ -972,7 +1082,7 @@ class PiRpcRunner:
             await self._handle_tool_execution_end(session_id, event)
 
     async def _handle_tool_execution_start(self, session_id: str, event: dict) -> None:
-        """Emit a tool call and auto-resolve pi tool permissions."""
+        """Emit a Pi tool call notification after Pi has started the tool."""
         tool_name = event.get("toolName", "unknown")
         args = event.get("args", {})
 
@@ -989,22 +1099,6 @@ class PiRpcRunner:
             ),
         )
         self._assistant_marker_needed[session_id] = True
-
-        if tool_name not in _PERMISSION_TOOLS:
-            return
-
-        request_id = event.get("toolCallId", f"pi_{uuid.uuid4().hex[:12]}")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
-
-        store.add_pending_permission(session_id, request_id, tool_name, args, future)
-        store.resolve_pending_permission(session_id, request_id, {"behavior": "allow"})
-        await self._events.on_permission_resolved(
-            session_id,
-            request_id=request_id,
-            resolved_by="auto",
-            allowed=True,
-        )
 
     async def _handle_tool_execution_update(self, session_id: str, event: dict) -> None:
         """Emit streamed tool output without updating line-start state."""
@@ -1229,7 +1323,7 @@ class PiRpcRunner:
             event,
             future,
         )
-        asyncio.create_task(
+        waiter = asyncio.create_task(
             self._wait_for_extension_ui_response(
                 session_id,
                 tether_request_id,
@@ -1239,6 +1333,9 @@ class PiRpcRunner:
                 future,
             )
         )
+        waiters = self._extension_waiters.setdefault(session_id, set())
+        waiters.add(waiter)
+        waiter.add_done_callback(waiters.discard)
 
         title = str(event.get("title") or "Input needed")
         if method == "select":

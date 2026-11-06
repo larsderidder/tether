@@ -30,6 +30,8 @@ from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
+DISPOSE_INTERRUPT_TIMEOUT = 5.0
+DISPOSE_TASK_TIMEOUT = 2.0
 
 
 class OpenCodeSidecarRunner:
@@ -114,6 +116,35 @@ class OpenCodeSidecarRunner:
         if task:
             task.cancel()
         return None
+
+    async def dispose_session(self, session_id: str) -> bool:
+        """Interrupt remote turns and dispose cached stream resources."""
+        task = self._streams.get(session_id)
+        thread_id = store.get_runner_session_id(session_id)
+        disposed = bool(task or thread_id)
+        if task or thread_id:
+            store.request_stop(session_id)
+            await asyncio.wait_for(
+                self._post_json("/sessions/interrupt", {"session_id": session_id}),
+                timeout=DISPOSE_INTERRUPT_TIMEOUT,
+            )
+
+        task = self._streams.pop(session_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=DISPOSE_TASK_TIMEOUT)
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("OpenCode sidecar stream did not cancel.") from exc
+            except asyncio.CancelledError:
+                pass
+        store.clear_stop_requested(session_id)
+        return disposed
+
+    async def shutdown(self) -> None:
+        """Dispose all cached stream resources owned by this runner."""
+        for session_id in list(self._streams):
+            await self.dispose_session(session_id)
 
     def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
         """OpenCode sidecar owns the permission policy; nothing to do here."""

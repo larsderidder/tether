@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -66,6 +67,7 @@ from tether.store import store
 
 router = APIRouter(tags=["sessions"])
 logger = structlog.get_logger(__name__)
+RUNNER_STOP_TIMEOUT_SECONDS = 15.0
 
 
 def _validate_model_allowed(adapter: str | None, model: str | None) -> None:
@@ -884,7 +886,11 @@ async def interrupt_session(
         runner = get_api_runner(adapter)
         stop_error: tuple[str, Exception] | None = None
         try:
-            await runner.stop(session_id)
+            await asyncio.wait_for(
+                runner.stop(session_id), timeout=RUNNER_STOP_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            stop_error = ("timeout", exc)
         except RunnerUnavailableError as exc:
             stop_error = ("unavailable", exc)
         except Exception as exc:
@@ -898,11 +904,16 @@ async def interrupt_session(
 
             if stop_error:
                 kind, exc = stop_error
+                store.clear_pending_permissions(session_id)
                 # Only transition if a callback hasn't already moved to ERROR
                 if session.state != SessionState.ERROR:
                     await finalize_output(session, status="error")
                     transition(session, SessionState.ERROR, ended_at=True)
                     await emit_state(session)
+                if kind == "timeout":
+                    message = "Runner did not stop within the interrupt deadline."
+                    await emit_error(session, "RUNNER_STOP_FAILED", message)
+                    raise_http_error("RUNNER_STOP_FAILED", message, 504)
                 if kind == "unavailable":
                     logger.warning(
                         "Runner unavailable during interrupt",

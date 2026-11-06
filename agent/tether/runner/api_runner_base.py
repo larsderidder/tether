@@ -68,17 +68,30 @@ class ApiRunnerBase(ABC):
             self._tasks[session_id] = task
 
     async def stop(self, session_id: str) -> int | None:
-        store.request_stop(session_id)
         task = self._tasks.get(session_id)
-        if task and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+        if task is None or task.done():
+            self._tasks.pop(session_id, None)
+            store.clear_stop_requested(session_id)
+            return None
+
+        store.request_stop(session_id)
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
         self._tasks.pop(session_id, None)
         store.clear_stop_requested(session_id)
         return 0
+
+    async def dispose_session(self, session_id: str) -> bool:
+        """Dispose cached resources for one session."""
+        return await self.stop(session_id) is not None
+
+    async def shutdown(self) -> None:
+        """Cancel every cached conversation task owned by this runner."""
+        for session_id in list(self._tasks):
+            await self.dispose_session(session_id)
 
     def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
         """Permission mode is read at start time from the session; no-op here."""
@@ -234,9 +247,7 @@ class ApiRunnerBase(ABC):
         ...
 
     @abstractmethod
-    async def _call_api(
-        self, session_id: str, messages: list[dict]
-    ) -> dict | None:
+    async def _call_api(self, session_id: str, messages: list[dict]) -> dict | None:
         """Call the LLM API. Return dict with content, stop_reason, usage or None."""
         ...
 

@@ -412,12 +412,11 @@ class TestPiRpcEventHandling:
             {"kind": "tool_call", "text": '{"command": "ls -la"}', "label": "bash"}
         ]
 
-        # Pi auto-approves tools, so no permission request should be emitted
-        # Instead, should directly emit permission_resolved
-        assert len(events.permissions) == 0
-        assert len(events.permission_resolved) == 1
-        assert events.permission_resolved[0]["allowed"] is True
-        assert events.permission_resolved[0]["resolved_by"] == "auto"
+        # Pi reports ordinary tool execution after it has already begun.
+        # Tether must not present that as an interceptable approval.
+        assert events.permissions == []
+        assert events.permission_resolved == []
+        assert fresh_store.get_all_pending_permissions(session_id) == []
 
     @pytest.mark.anyio
     async def test_handle_tool_execution_start_read_no_permission(
@@ -1272,6 +1271,10 @@ class TestPiRpcEventHandling:
 
         assert events.permissions[0]["request_id"] == "pi_extui:confirm:uuid-1"
         assert events.permissions[0]["tool_name"] == "AskUserQuestion"
+        assert (
+            events.permissions[0]["tool_input"]["questions"][0]["question"]
+            == "Save this memory?"
+        )
 
         from tether.store import store
 
@@ -1288,6 +1291,41 @@ class TestPiRpcEventHandling:
             "id": "uuid-1",
             "confirmed": True,
         }
+
+    @pytest.mark.anyio
+    async def test_confirm_extension_stays_interactive_without_session_approval_mode(
+        self, runner_and_events, fresh_store, monkeypatch
+    ):
+        """Pi extension confirmations are real prompts even when tool approvals are unsupported."""
+        runner, events = runner_and_events
+        monkeypatch.setattr("tether.runner.pi_rpc.store", fresh_store)
+        proc = FakeProcess()
+        session = fresh_store.create_session(repo_id="/tmp/test", base_ref=None)
+        session.adapter = "pi_rpc"
+        session.approval_mode = None
+        fresh_store.update_session(session)
+        runner._processes[session.id] = proc
+
+        await runner._handle_event(
+            session.id,
+            proc,
+            {
+                "type": "extension_ui_request",
+                "id": "uuid-none",
+                "method": "confirm",
+                "title": "Confirm action",
+                "message": "Proceed?",
+            },
+        )
+
+        request_id = "pi_extui:confirm:uuid-none"
+        assert events.permissions[0]["request_id"] == request_id
+        assert (
+            fresh_store.get_all_pending_permissions(session.id)[0].request_id
+            == request_id
+        )
+        assert proc.stdin.writes == []
+        assert events.permission_resolved == []
 
     @pytest.mark.anyio
     async def test_handle_input_extension_round_trips_value(self, runner_and_events):

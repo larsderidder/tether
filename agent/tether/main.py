@@ -1,9 +1,10 @@
 """FastAPI application entrypoint for the agent server."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import asyncio
-import os
 import signal
 import socket
 import sys
@@ -23,6 +24,8 @@ from tether.config import load_config
 load_config()
 
 from tether.api import api_router, root_router
+from tether.api.runner_events import get_runner_registry
+from tether.api.runner_registry import RUNNER_SHUTDOWN_TIMEOUT_SECONDS
 from tether.middleware import (
     http_exception_handler,
     request_logging_middleware,
@@ -30,7 +33,11 @@ from tether.middleware import (
 )
 from tether.external_session_watcher import external_session_watcher
 from tether.log_config import configure_logging
-from tether.maintenance import maintenance_loop, telegram_topic_cleanup_loop
+from tether.maintenance import (
+    maintenance_loop,
+    reconcile_persisted_lifecycle_states,
+    telegram_topic_cleanup_loop,
+)
 from tether.settings import settings
 from tether.startup import log_ui_urls
 from tether.bridges.glue import (
@@ -45,6 +52,7 @@ from tether.bridges.glue import (
 
 configure_logging()
 logger = structlog.get_logger(__name__)
+SHUTDOWN_PHASE_TIMEOUT_SECONDS = 5.0
 
 
 @asynccontextmanager
@@ -58,6 +66,7 @@ async def lifespan(app: FastAPI):
         await ensure_opencode_sidecar_started()
     await _init_bridges()
     _subscribe_existing_sessions()
+    await reconcile_persisted_lifecycle_states()
     await external_session_watcher.start()
     maintenance_task = asyncio.create_task(maintenance_loop())
     topic_cleanup_task = asyncio.create_task(telegram_topic_cleanup_loop())
@@ -71,16 +80,12 @@ async def lifespan(app: FastAPI):
             await topic_cleanup_task
         with suppress(asyncio.CancelledError):
             await maintenance_task
-        # Give bridges and sidecars a few seconds to stop; don't block
-        # shutdown indefinitely if something hangs.
         try:
-            await asyncio.wait_for(_shutdown_services(), timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning("Shutdown timed out after 5s, forcing exit")
-        logger.info("Shutdown complete")
-        # Force exit: blocking threads (SSE readers, subprocess pipes) can
-        # keep the process alive indefinitely after uvicorn stops serving.
-        os._exit(0)
+            await _shutdown_services()
+        except Exception:
+            logger.exception("Shutdown incomplete")
+        else:
+            logger.info("Shutdown complete")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -197,26 +202,103 @@ async def _init_bridges() -> None:
 
 
 async def _shutdown_services() -> None:
-    """Stop watchers, bridges, and managed sidecars."""
-    await external_session_watcher.stop()
-    await _stop_bridges()
-    if settings.opencode_sidecar_managed():
-        from tether.runner.opencode_sidecar_manager import (
-            stop_managed_opencode_sidecar,
-        )
+    """Stop watchers, runners, bridges, and managed sidecars in flush-safe order."""
+    failures: list[str] = []
 
-        await stop_managed_opencode_sidecar()
+    try:
+        await asyncio.wait_for(
+            external_session_watcher.stop(), timeout=SHUTDOWN_PHASE_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.exception("External session watcher shutdown timed out")
+        failures.append("external session watcher")
+    except asyncio.CancelledError:
+        logger.warning("External session watcher shutdown cancelled")
+        failures.append("external session watcher")
+    except Exception:
+        logger.exception("External session watcher shutdown failed")
+        failures.append("external session watcher")
+
+    try:
+        await asyncio.wait_for(
+            get_runner_registry().shutdown(),
+            timeout=RUNNER_SHUTDOWN_TIMEOUT_SECONDS + 1.0,
+        )
+    except asyncio.TimeoutError:
+        logger.exception("Runner shutdown timed out")
+        failures.append("runners")
+    except asyncio.CancelledError:
+        logger.warning("Runner shutdown cancelled")
+        failures.append("runners")
+    except Exception:
+        logger.exception("Runner shutdown failed")
+        failures.append("runners")
+
+    try:
+        await _stop_bridges()
+    except Exception:
+        logger.exception("Bridge shutdown failed")
+        failures.append("bridges")
+    finally:
+        if settings.opencode_sidecar_managed():
+            from tether.runner.opencode_sidecar_manager import (
+                stop_managed_opencode_sidecar,
+            )
+
+            try:
+                await asyncio.wait_for(
+                    stop_managed_opencode_sidecar(),
+                    timeout=SHUTDOWN_PHASE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.exception("Managed OpenCode sidecar shutdown timed out")
+                failures.append("managed OpenCode sidecar")
+            except asyncio.CancelledError:
+                logger.warning("Managed OpenCode sidecar shutdown cancelled")
+                failures.append("managed OpenCode sidecar")
+            except Exception:
+                logger.exception("Managed OpenCode sidecar shutdown failed")
+                failures.append("managed OpenCode sidecar")
+
+    if failures:
+        raise RuntimeError("Shutdown incomplete: " + ", ".join(failures))
 
 
 async def _stop_bridges() -> None:
     """Stop all registered messaging bridges."""
-    for platform in bridge_manager.list_bridges():
-        bridge = bridge_manager.get_bridge(platform)
-        if bridge and hasattr(bridge, "stop"):
-            try:
-                await bridge.stop()
-            except Exception:
-                logger.exception("Failed to stop bridge", platform=platform)
+
+    async def stop_bridge(platform: str, bridge: object) -> str | None:
+        stop = getattr(bridge, "stop", None)
+        if not callable(stop):
+            return None
+        try:
+            await asyncio.wait_for(stop(), timeout=SHUTDOWN_PHASE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.exception("Bridge shutdown timed out", platform=platform)
+            return platform
+        except asyncio.CancelledError:
+            logger.warning("Bridge shutdown cancelled", platform=platform)
+            return platform
+        except Exception:
+            logger.exception("Failed to stop bridge", platform=platform)
+            return platform
+        return None
+
+    bridges = [
+        (platform, bridge)
+        for platform in bridge_manager.list_bridges()
+        if (bridge := bridge_manager.get_bridge(platform)) is not None
+    ]
+    failures = [
+        platform
+        for platform in await asyncio.gather(
+            *(stop_bridge(platform, bridge) for platform, bridge in bridges)
+        )
+        if platform is not None
+    ]
+    if failures:
+        names = ", ".join(sorted(failures))
+        raise RuntimeError(f"Bridge shutdown failed for: {names}")
 
 
 def _subscribe_existing_sessions() -> None:
@@ -246,22 +328,16 @@ _interrupted = False
 
 
 def _install_signal_handlers() -> None:
-    """Install signal handlers that force-exit on repeated ctrl+c.
-
-    Uvicorn handles the first SIGINT to start graceful shutdown, but
-    blocking threads (SSE readers, subprocess pipes) can prevent the
-    process from actually exiting. On the second SIGINT we force-kill.
-    """
+    """Install signal handlers that delegate graceful shutdown to Uvicorn."""
     global _interrupted
 
     def _handler(signum, frame):
         global _interrupted
         if _interrupted:
-            logger.info("Forced exit (repeated interrupt)")
-            os._exit(1)
-        _interrupted = True
-        logger.info("Shutting down (press ctrl+c again to force)")
-        # Re-raise so uvicorn's handler fires too.
+            logger.warning("Repeated interrupt during shutdown")
+        else:
+            _interrupted = True
+            logger.info("Shutting down")
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _handler)

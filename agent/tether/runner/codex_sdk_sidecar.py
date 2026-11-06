@@ -22,6 +22,8 @@ logger = structlog.get_logger(__name__)
 
 
 HEARTBEAT_INTERVAL = 5.0
+DISPOSE_INTERRUPT_TIMEOUT = 5.0
+DISPOSE_TASK_TIMEOUT = 2.0
 
 
 class SidecarRunner:
@@ -32,6 +34,16 @@ class SidecarRunner:
     def __init__(self, events: RunnerEvents) -> None:
         self._events = events
         self._base_url = settings.codex_sidecar_url()
+        url = urllib.parse.urlparse(self._base_url)
+        if url.scheme not in {"http", "https"} or not url.hostname:
+            raise ValueError(
+                "TETHER_CODEX_SIDECAR_URL must point to Tether's HTTP REST sidecar. "
+                "Codex's native app-server WebSocket is a different protocol; use make start-codex."
+            )
+        if url.username or url.password:
+            raise ValueError(
+                "Use TETHER_CODEX_SIDECAR_TOKEN instead of credentials in the sidecar URL"
+            )
         self._token = settings.codex_sidecar_token()
         self._streams: dict[str, asyncio.Task] = {}
         self._cli_processes: dict[str, asyncio.subprocess.Process] = {}
@@ -156,6 +168,54 @@ class SidecarRunner:
         if task:
             task.cancel()
         return None
+
+    async def dispose_session(self, session_id: str) -> bool:
+        """Interrupt remote turns and dispose local resources for one session."""
+        stream = self._streams.get(session_id)
+        proc = self._cli_processes.get(session_id)
+        thread_id = store.get_runner_session_id(session_id)
+        disposed = bool(stream or proc or thread_id)
+
+        if proc and proc.returncode is None:
+            await self._stop_cli_process(session_id, proc)
+        elif stream or thread_id:
+            store.request_stop(session_id)
+            await asyncio.wait_for(
+                self._post_json("/sessions/interrupt", {"session_id": session_id}),
+                timeout=DISPOSE_INTERRUPT_TIMEOUT,
+            )
+
+        stream = self._streams.pop(session_id, None)
+        if stream and not stream.done():
+            stream.cancel()
+            try:
+                await asyncio.wait_for(stream, timeout=DISPOSE_TASK_TIMEOUT)
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("Codex sidecar stream did not cancel.") from exc
+            except asyncio.CancelledError:
+                pass
+        heartbeat = self._cli_heartbeats.pop(session_id, None)
+        if heartbeat and not heartbeat.done():
+            heartbeat.cancel()
+            try:
+                await asyncio.wait_for(heartbeat, timeout=DISPOSE_TASK_TIMEOUT)
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("Codex CLI heartbeat did not cancel.") from exc
+            except asyncio.CancelledError:
+                pass
+        self._cli_processes.pop(session_id, None)
+        self._cli_readers.pop(session_id, None)
+        store.clear_process(session_id)
+        store.clear_stop_requested(session_id)
+        return disposed
+
+    async def shutdown(self) -> None:
+        """Dispose all cached stream and fallback CLI resources."""
+        session_ids = (
+            set(self._streams) | set(self._cli_processes) | set(self._cli_readers)
+        )
+        for session_id in list(session_ids):
+            await self.dispose_session(session_id)
 
     def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
         """Codex sidecar owns the approval policy; nothing to do here."""
@@ -593,8 +653,13 @@ class SidecarRunner:
             session_id: Internal session identifier.
         """
         url = urllib.parse.urlparse(self._base_url)
-        conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=30)
-        path = f"/events/{session_id}"
+        connection = (
+            http.client.HTTPSConnection
+            if url.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        conn = connection(url.hostname, url.port, timeout=30)
+        path = f"{url.path.rstrip('/')}/events/{session_id}"
         headers = {}
         if self._token:
             headers["X-Sidecar-Token"] = self._token
@@ -758,16 +823,19 @@ class SidecarRunner:
         asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     async def _post_json(self, path: str, payload: dict) -> None:
-        """POST JSON to the sidecar and raise on non-2xx responses.
+        """POST JSON without blocking the control-plane event loop."""
+        await asyncio.to_thread(self._post_json_sync, path, payload)
 
-        Args:
-            path: Sidecar API path, e.g. "/sessions/start".
-            payload: JSON body to send.
-        """
+    def _post_json_sync(self, path: str, payload: dict) -> None:
+        """Run the blocking transport in a worker and preserve HTTPS configuration."""
         url = urllib.parse.urlparse(self._base_url)
-        if not url.hostname:
-            raise RunnerUnavailableError(f"Invalid sidecar URL: {self._base_url}")
-        conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=10)
+        connection = (
+            http.client.HTTPSConnection
+            if url.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        conn = connection(url.hostname, url.port, timeout=10)
+        path = f"{url.path.rstrip('/')}{path}"
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self._token:

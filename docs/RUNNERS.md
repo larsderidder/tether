@@ -103,6 +103,18 @@ See `AUTOMATIONS.md` for the full YAML and manifest contract.
 Caches runner instances. `get_runner_registry()` provides global singleton.
 `get_api_runner(adapter_name)` returns the runner for a given adapter.
 
+## Runner Lifecycle Hooks
+
+Runners may implement optional lifecycle hooks in addition to the core protocol:
+
+- `recover_session(session_id) -> bool`, used during startup reconciliation. Return `true` only after restoring a functioning live owner for a persisted active session.
+- `dispose_session(session_id) -> bool`, used when an interrupt has timed out or a single session must be reaped. It must only stop resources owned by this Tether runner instance. Return `true` when resources were disposed, `false` when none were owned, and raise when cleanup fails.
+- `shutdown()`, used during FastAPI lifespan shutdown. The registry bounds each runner shutdown and only removes a cached runner after its shutdown hook succeeds.
+
+Shutdown stops runner event production before bridges are stopped, so final runner events can still be persisted and delivered while bridge subscribers are alive. Attached external sessions are not disposed through these hooks unless the runner instance owns the process.
+
+Owned Pi processes are disposed concurrently. Runner shutdown and maintenance cleanup have 15-second deadlines, allowing Pi's five-second graceful abort and two-second kill wait to finish before the outer timeout. Other shutdown phases have separate deadlines. Failed cleanup retains runner handles and reports an incomplete shutdown instead of logging success.
+
 ## Config
 
 | Env Var | Description |

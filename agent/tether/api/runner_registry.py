@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import structlog
 
 from tether.runner import Runner, RunnerEvents, get_runner, normalize_adapter_name
 from tether.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+RUNNER_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 
 
 class RunnerRegistry:
@@ -57,6 +61,46 @@ class RunnerRegistry:
             runner_type=runner.runner_type,
         )
         return runner
+
+    async def shutdown(
+        self, timeout_s: float = RUNNER_SHUTDOWN_TIMEOUT_SECONDS
+    ) -> None:
+        """Shut down cached runners without dropping handles that fail cleanup."""
+        runners = list(self._runners.items())
+
+        async def shutdown_one(name: str, runner: Runner) -> str | None:
+            shutdown = getattr(runner, "shutdown", None)
+            if not callable(shutdown):
+                logger.warning("Runner has no shutdown hook", adapter=name)
+                return name
+            try:
+                await asyncio.wait_for(shutdown(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                logger.exception("Runner shutdown timed out", adapter=name)
+                return name
+            except asyncio.CancelledError:
+                logger.warning("Runner shutdown cancelled", adapter=name)
+                return name
+            except Exception:
+                logger.exception("Runner shutdown failed", adapter=name)
+                return name
+            return None
+
+        failures = [
+            name
+            for name in await asyncio.gather(
+                *(shutdown_one(name, runner) for name, runner in runners)
+            )
+            if name is not None
+        ]
+        failed_names = set(failures)
+        for name, _runner in runners:
+            if name not in failed_names:
+                self._runners.pop(name, None)
+
+        if failures:
+            names = ", ".join(sorted(failures))
+            raise RuntimeError(f"Runner shutdown failed for: {names}")
 
     def get_default_adapter(self) -> str | None:
         """Get the default adapter name from environment, or None if not configured."""

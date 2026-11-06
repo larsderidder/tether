@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from string import Formatter
@@ -23,6 +24,9 @@ from tether.settings import settings
 from tether.store import store
 
 logger = structlog.get_logger(__name__)
+AUTOMATION_TERMINATE_TIMEOUT_SECONDS = 5.0
+AUTOMATION_KILL_TIMEOUT_SECONDS = 2.0
+AUTOMATION_TASK_CANCEL_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class AutomationRunner:
         self._events = events
         self._tasks: dict[str, asyncio.Task] = {}
         self._queues: dict[str, asyncio.Queue[AutomationTurn]] = {}
+        self._processes: dict[str, asyncio.subprocess.Process] = {}
 
     async def start(
         self,
@@ -69,16 +74,60 @@ class AutomationRunner:
     async def stop(self, session_id: str) -> int | None:
         """Cancel the active automation turn, if any."""
 
-        task = self._tasks.pop(session_id, None)
-        queue = self._queues.pop(session_id, None)
+        disposed = await self.dispose_session(session_id)
+        return 130 if disposed else None
+
+    async def dispose_session(self, session_id: str) -> bool:
+        """Dispose cached task, queue, and subprocess resources for one session."""
+        task = self._tasks.get(session_id)
+        queue = self._queues.get(session_id)
+        proc = self._processes.get(session_id)
+        disposed = any((task, queue, proc))
+
+        if proc and proc.returncode is None:
+            terminated = await self._terminate_process(proc)
+            if not terminated:
+                logger.warning(
+                    "Automation subprocess did not exit during disposal",
+                    session_id=session_id,
+                )
+                raise RuntimeError(
+                    "Automation subprocess did not exit during disposal."
+                )
+        if proc is not None:
+            self._processes.pop(session_id, None)
+            store.clear_process(session_id)
+
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(
+                    task, timeout=AUTOMATION_TASK_CANCEL_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError as exc:
+                logger.warning(
+                    "Automation task did not cancel during disposal",
+                    session_id=session_id,
+                )
+                raise RuntimeError(
+                    "Automation task did not cancel during disposal."
+                ) from exc
+            except asyncio.CancelledError:
+                pass
+        self._tasks.pop(session_id, None)
+
         if queue:
             while not queue.empty():
                 queue.get_nowait()
                 queue.task_done()
-        if task and not task.done():
-            task.cancel()
-            return 130
-        return None
+            self._queues.pop(session_id, None)
+        return disposed
+
+    async def shutdown(self) -> None:
+        """Dispose all automation tasks and subprocesses owned by this runner."""
+        session_ids = set(self._tasks) | set(self._processes) | set(self._queues)
+        for session_id in list(session_ids):
+            await self.dispose_session(session_id)
 
     def update_permission_mode(self, session_id: str, approval_choice: int) -> None:
         """Accept permission-mode updates for runner compatibility."""
@@ -311,6 +360,8 @@ class AutomationRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            self._processes[session_id] = proc
+            store.set_process(session_id, proc)
             stop_streaming = asyncio.Event()
             stream_task = asyncio.create_task(
                 self._stream_output_messages(
@@ -322,12 +373,20 @@ class AutomationRunner:
                     proc.communicate(), timeout=automation.timeout_seconds
                 )
             except asyncio.TimeoutError as exc:
-                proc.kill()
-                await proc.communicate()
-                raise AutomationError(
+                terminated = await self._terminate_process(proc)
+                message = (
                     f"Automation timed out after {automation.timeout_seconds} seconds."
-                ) from exc
+                )
+                if not terminated:
+                    message += " The subprocess did not exit after termination."
+                raise AutomationError(message) from exc
+            except asyncio.CancelledError:
+                await self._terminate_process(proc)
+                raise
             finally:
+                if proc.returncode is not None:
+                    self._processes.pop(session_id, None)
+                    store.clear_process(session_id)
                 stop_streaming.set()
                 await stream_task
             stdout_text = stdout.decode("utf-8", errors="replace")
@@ -354,6 +413,28 @@ class AutomationRunner:
         if stdout_text.strip():
             return stdout_text.strip()
         return f"Automation `{automation.name}` completed. Run directory: `{run_dir}`"
+
+    async def _terminate_process(self, proc: asyncio.subprocess.Process) -> bool:
+        """Terminate an automation subprocess and report whether it exited."""
+        if proc.returncode is not None:
+            return True
+
+        with suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(
+                proc.wait(), timeout=AUTOMATION_TERMINATE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            try:
+                await asyncio.wait_for(
+                    proc.wait(), timeout=AUTOMATION_KILL_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                return False
+        return proc.returncode is not None
 
     async def _stream_output_messages(
         self,
