@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -720,3 +721,62 @@ async def test_watcher_errors_do_not_stop_future_syncs(
 
     assert attempts == 2
     assert synced == [session.id]
+
+
+@pytest.mark.anyio
+async def test_sync_once_returns_total_synced_messages(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """A sync pass reports how many messages it delivered across sessions."""
+    session_a = _attached_session(fresh_store, tmp_path)
+    session_b = _attached_session(fresh_store, tmp_path)
+    fresh_store.set_runner_session_id(session_b.id, "external-2")
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Deliver a distinct message count per session."""
+        return SyncResult(synced=2 if session_id == session_a.id else 3, total=10)
+
+    watcher = ExternalSessionWatcher(sync_func=sync_func)
+    watcher.register(session_a.id)
+    watcher.register(session_b.id)
+
+    assert await watcher.sync_once() == 5
+
+
+def test_watcher_interval_backs_off_while_idle_and_resets_on_activity() -> None:
+    """Idle passes double the poll interval up to the cap; activity resets it."""
+    watcher = ExternalSessionWatcher(interval_seconds=3.0, max_interval_seconds=60.0)
+
+    assert watcher._next_interval(3.0, 0) == 6.0
+    assert watcher._next_interval(6.0, 0) == 12.0
+    assert watcher._next_interval(48.0, 0) == 60.0
+    assert watcher._next_interval(60.0, 0) == 60.0
+    assert watcher._next_interval(60.0, 2) == 3.0
+
+
+@pytest.mark.anyio
+async def test_watcher_run_loop_keeps_polling_until_stopped(
+    fresh_store: SessionStore,
+    tmp_path: Path,
+) -> None:
+    """The adaptive loop runs repeated passes and stops cleanly."""
+    session = _attached_session(fresh_store, tmp_path)
+    calls = 0
+
+    async def sync_func(session_id: str) -> SyncResult:
+        """Record passes without delivering messages."""
+        nonlocal calls
+        calls += 1
+        return SyncResult(synced=0, total=0)
+
+    watcher = ExternalSessionWatcher(
+        interval_seconds=0.01, max_interval_seconds=0.02, sync_func=sync_func
+    )
+    watcher.register(session.id)
+
+    await watcher.start()
+    await asyncio.sleep(0.15)
+    await watcher.stop()
+
+    assert calls >= 2

@@ -9,7 +9,6 @@ from agent_sessions import (
     SessionSummary as ExternalSessionSummary,
     get_claude_session_detail,
     get_opencode_session_detail,
-    get_pi_session_detail,
     list_claude_sessions,
     list_opencode_sessions,
     list_pi_sessions,
@@ -19,6 +18,7 @@ from tether.discovery.codex_sessions import (
     get_codex_session_detail,
     list_codex_sessions,
 )
+from tether.discovery.pi_detail_cache import get_pi_session_detail_cached
 
 
 def discover_external_sessions(
@@ -57,7 +57,7 @@ def get_external_session_detail(
     if runner_type == ExternalRunnerType.OPENCODE:
         return get_opencode_session_detail(session_id, limit=limit)
     if runner_type == ExternalRunnerType.PI:
-        return get_pi_session_detail(session_id, limit=limit)
+        return get_pi_session_detail_cached(session_id, limit=limit)
     return None
 
 

@@ -28,10 +28,12 @@ class ExternalSessionWatcher:
         self,
         *,
         interval_seconds: float | None = None,
+        max_interval_seconds: float | None = None,
         sync_func: SyncFunction | None = None,
     ) -> None:
         """Create a watcher with optional test overrides."""
         self._interval_seconds = interval_seconds
+        self._max_interval_seconds = max_interval_seconds
         self._sync_func = sync_func
         self._session_ids: set[str] = set()
         self._task: asyncio.Task | None = None
@@ -55,7 +57,9 @@ class ExternalSessionWatcher:
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="external-session-watcher")
         logger.info(
-            "External session watcher started", interval_seconds=self._interval()
+            "External session watcher started",
+            interval_seconds=self._interval(),
+            max_interval_seconds=self._max_interval(),
         )
 
     async def stop(self) -> None:
@@ -70,31 +74,35 @@ class ExternalSessionWatcher:
         self._stop_event = None
         logger.info("External session watcher stopped")
 
-    async def sync_once(self) -> None:
+    async def sync_once(self) -> int:
         """Run one sync pass for all currently eligible sessions."""
+        synced = 0
         for session_id in self._eligible_session_ids():
-            await self._sync_one(session_id)
+            synced += await self._sync_one(session_id)
+        return synced
 
     async def _run(self) -> None:
-        """Run the watcher loop until stopped."""
+        """Run the watcher loop, backing off while no pass delivers new messages."""
         assert self._stop_event is not None
+        interval = self._interval()
         while not self._stop_event.is_set():
-            await self.sync_once()
+            synced = await self.sync_once()
+            interval = self._next_interval(interval, synced)
             try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=self._interval()
-                )
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
 
-    async def _sync_one(self, session_id: str) -> None:
+    async def _sync_one(self, session_id: str) -> int:
         """Sync one eligible session and keep the watcher alive on errors."""
         try:
-            await self._sync()(session_id)
+            result = await self._sync()(session_id)
         except Exception:
             logger.exception(
                 "External session watcher sync failed", session_id=session_id
             )
+            return 0
+        return result.synced
 
     def _eligible_session_ids(self) -> list[str]:
         """Return registered and discovered sessions eligible for watcher sync."""
@@ -147,10 +155,22 @@ class ExternalSessionWatcher:
         )
 
     def _interval(self) -> float:
-        """Return the configured polling interval."""
+        """Return the configured base polling interval."""
         if self._interval_seconds is not None:
             return self._interval_seconds
         return settings.external_sync_interval_seconds()
+
+    def _max_interval(self) -> float:
+        """Return the upper bound for the adaptive polling interval."""
+        if self._max_interval_seconds is not None:
+            return self._max_interval_seconds
+        return settings.external_sync_max_interval_seconds()
+
+    def _next_interval(self, interval: float, synced: int) -> float:
+        """Double the poll interval while idle, reset it when syncs deliver."""
+        if synced > 0:
+            return self._interval()
+        return min(interval * 2, self._max_interval())
 
     def _sync(self) -> SyncFunction:
         """Return the sync function, importing lazily to avoid cycles."""

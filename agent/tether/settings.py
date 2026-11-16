@@ -589,6 +589,19 @@ class Settings:
         )
 
     @staticmethod
+    def external_sync_max_interval_seconds() -> float:
+        """Maximum watcher polling interval while no pass delivers new messages.
+
+        Env: TETHER_EXTERNAL_SYNC_MAX_INTERVAL_SECONDS (default: 60)
+        """
+        return _get_bounded_float(
+            "TETHER_EXTERNAL_SYNC_MAX_INTERVAL_SECONDS",
+            60.0,
+            minimum=1.0,
+            maximum=600.0,
+        )
+
+    @staticmethod
     def external_sync_initial_lookback_seconds() -> float:
         """Maximum initial watcher catch-up window when the cursor is missing.
 
